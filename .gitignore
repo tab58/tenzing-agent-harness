@@ -41,4 +41,5 @@ Thumbs.db
 __debug_bin*
 
 # AI ignores
-docs/superpowers
+docs/*
+
