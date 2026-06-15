@@ -75,6 +75,11 @@ func (h *Harness) RunLoop(ctx context.Context, input string) (string, error) {
 
 	transitionLoopStates(ctx, LoopTransitionReset)
 	for {
+		if err := ctx.Err(); err != nil {
+			loopErr = fmt.Errorf("loop canceled: %w", err)
+			break
+		}
+
 		// Reason phase: constructs a plan based on recent input (user, tool results, etc.)
 		transitionLoopStates(ctx, LoopTransitionStartReasoning)
 		reasoningResult, err := h.agent.DoReasoning(inputs)
@@ -92,6 +97,11 @@ func (h *Harness) RunLoop(ctx context.Context, input string) (string, error) {
 			slog.Debug(fmt.Sprintf("final answer: %s", finalAnswer))
 			transitionLoopStates(ctx, LoopTransitionStop)
 			return finalAnswer, nil
+		}
+
+		if err := ctx.Err(); err != nil {
+			loopErr = fmt.Errorf("loop canceled: %w", err)
+			break
 		}
 
 		// Act: harness executes tool on agent's behalf
