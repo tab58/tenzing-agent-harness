@@ -6,7 +6,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"tenzing-agent/internal/harness"
 )
 
 const (
@@ -34,10 +33,10 @@ func (t *ReadTool) Schema() Schema {
 	}
 }
 
-func (t *ReadTool) Execute(ctx context.Context, exctx ExecutionContext) (harness.ToolResult, error) {
+func (t *ReadTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
 	args := exctx.Arguments
 	if len(args) == 0 || args[0] == "" {
-		return harness.ToolResult{Output: "file_path is required", IsError: true}, nil
+		return ToolResult{Output: "file_path is required", IsError: true}, nil
 	}
 	filePath := args[0]
 
@@ -46,21 +45,21 @@ func (t *ReadTool) Execute(ctx context.Context, exctx ExecutionContext) (harness
 	if len(args) > 1 && args[1] != "" {
 		n, err := strconv.Atoi(args[1])
 		if err != nil || n < 0 {
-			return harness.ToolResult{Output: "limit must be a non-negative integer", IsError: true}, nil
+			return ToolResult{Output: "limit must be a non-negative integer", IsError: true}, nil
 		}
 		limit = n
 	}
 	if len(args) > 2 && args[2] != "" {
 		n, err := strconv.Atoi(args[2])
 		if err != nil || n < 0 {
-			return harness.ToolResult{Output: "offset must be a non-negative integer", IsError: true}, nil
+			return ToolResult{Output: "offset must be a non-negative integer", IsError: true}, nil
 		}
 		offset = n
 	}
 
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		return harness.ToolResult{Output: fmt.Sprintf("cannot read file: %v", err), IsError: true}, nil
+		return ToolResult{Output: fmt.Sprintf("cannot read file: %v", err), IsError: true}, nil
 	}
 
 	lines := strings.Split(string(data), "\n")
@@ -82,5 +81,5 @@ func (t *ReadTool) Execute(ctx context.Context, exctx ExecutionContext) (harness
 		fmt.Fprintf(&sb, "%6d\t%s\n", lineNum, line)
 	}
 
-	return harness.ToolResult{Output: sb.String()}, nil
+	return ToolResult{Output: sb.String()}, nil
 }

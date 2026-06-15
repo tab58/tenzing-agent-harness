@@ -1,0 +1,44 @@
+# Binary output
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Build artifacts
+*.o
+*.a
+*.test
+
+# Go workspace
+go.work
+go.work.sum
+
+# Coverage
+*.out
+coverage.html
+
+# Env
+.env
+.env.*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Vendor (if not committed)
+# vendor/
+
+# Debug
+__debug_bin*
+
+# AI ignores
+docs/superpowers

@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"tenzing-agent/internal/harness"
 )
 
 var _ Definition = (*GlobTool)(nil)
@@ -29,10 +28,10 @@ func (t *GlobTool) Schema() Schema {
 	}
 }
 
-func (t *GlobTool) Execute(ctx context.Context, exctx ExecutionContext) (harness.ToolResult, error) {
+func (t *GlobTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
 	args := exctx.Arguments
 	if len(args) == 0 || args[0] == "" {
-		return harness.ToolResult{Output: "pattern is required", IsError: true}, nil
+		return ToolResult{Output: "pattern is required", IsError: true}, nil
 	}
 	pattern := args[0]
 
@@ -52,13 +51,13 @@ func (t *GlobTool) Execute(ctx context.Context, exctx ExecutionContext) (harness
 		matches, err = filepath.Glob(pattern)
 	}
 	if err != nil {
-		return harness.ToolResult{Output: fmt.Sprintf("invalid glob pattern: %v", err), IsError: true}, nil
+		return ToolResult{Output: fmt.Sprintf("invalid glob pattern: %v", err), IsError: true}, nil
 	}
 
 	if len(matches) == 0 {
-		return harness.ToolResult{Output: "No matches."}, nil
+		return ToolResult{Output: "No matches."}, nil
 	}
-	return harness.ToolResult{Output: strings.Join(matches, "\n")}, nil
+	return ToolResult{Output: strings.Join(matches, "\n")}, nil
 }
 
 func globRoot(pattern string) string {

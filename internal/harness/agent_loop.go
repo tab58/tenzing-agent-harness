@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"tenzing-agent/internal/tools/tooldef"
 	"tenzing-agent/internal/utils"
 
 	"github.com/looplab/fsm"
@@ -93,18 +94,22 @@ func (h *Harness) RunLoop(ctx context.Context, input string) (string, error) {
 			return finalAnswer, nil
 		}
 
-		// Act: execute tool and get result
+		// Act: harness executes tool on agent's behalf
 		transitionLoopStates(ctx, LoopTransitionStartToolExecution)
-		result, err := h.agent.ExecuteTool()
+		toolCall := reasoningResult.ToolCall
+		exctx := tooldef.ExecutionContext{
+			Arguments: []string{toolCall.Input},
+		}
+		toolResult, err := h.registry.Execute(ctx, toolCall.Name, exctx)
 		if err != nil {
 			loopErr = fmt.Errorf("tool execution error: %w", err)
 			break
 		}
 		transitionLoopStates(ctx, LoopTransitionFinishToolExecution)
-		slog.Debug(fmt.Sprintf("tool execution result: %s", result))
+		slog.Debug(fmt.Sprintf("tool execution result: %s", toolResult.Output))
 
-		// Loop: update plan based on tool result
-		inputs = append(inputs, result)
+		// Loop: feed tool result back to agent for next reasoning cycle
+		inputs = append(inputs, toolResult.Output)
 	}
 
 	// if we exit the loop with an error, return it and reset loop states for next run

@@ -3,16 +3,27 @@ package tools
 import (
 	"context"
 	"fmt"
-	"tenzing-agent/internal/harness"
+	"os"
 	"tenzing-agent/internal/tools/tooldef"
 )
 
 type Registry struct {
 	tools map[string]tooldef.Definition
+	cwd   string
 }
 
-func NewRegistry() (*Registry, error) {
-	return &Registry{}, nil
+func NewRegistry(cwd string) (*Registry, error) {
+	if cwd == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("unable to determine working directory: %w", err)
+		}
+		cwd = wd
+	}
+	return &Registry{
+		tools: make(map[string]tooldef.Definition),
+		cwd:   cwd,
+	}, nil
 }
 
 func (r *Registry) Register(def tooldef.Definition) error {
@@ -24,14 +35,25 @@ func (r *Registry) Register(def tooldef.Definition) error {
 	return nil
 }
 
-func (r *Registry) Execute(ctx context.Context, name string, exctx tooldef.ExecutionContext) (harness.ToolResult, error) {
+func (r *Registry) Execute(ctx context.Context, name string, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
 	toolDef, ok := r.tools[name]
 	if !ok {
-		return harness.ToolResult{}, fmt.Errorf("tool name %s not found", name)
+		return tooldef.ToolResult{}, fmt.Errorf("tool name %s not found", name)
 	}
-	result, err := toolDef.Execute(ctx, exctx)
+	resolved := r.resolveWorkingDir(exctx)
+	result, err := toolDef.Execute(ctx, resolved)
 	if err != nil {
-		return harness.ToolResult{}, fmt.Errorf("error executing tool %s: %w", name, err)
+		return tooldef.ToolResult{}, fmt.Errorf("error executing tool %s: %w", name, err)
 	}
 	return result, nil
+}
+
+func (r *Registry) resolveWorkingDir(exctx tooldef.ExecutionContext) tooldef.ExecutionContext {
+	if exctx.WorkingDir != "" {
+		return exctx
+	}
+	return tooldef.ExecutionContext{
+		Arguments:  exctx.Arguments,
+		WorkingDir: r.cwd,
+	}
 }

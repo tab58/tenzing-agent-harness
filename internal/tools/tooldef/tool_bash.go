@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"tenzing-agent/internal/harness"
 	"time"
 )
 
@@ -38,10 +37,10 @@ func isValidDirectory(cwd string) bool {
 	return true
 }
 
-func (t *BashTool) Execute(ctx context.Context, exctx ExecutionContext) (harness.ToolResult, error) {
+func (t *BashTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
 	args := exctx.Arguments
 	if len(args) == 0 || args[0] == "" {
-		return harness.ToolResult{Output: "command is required", IsError: true}, nil
+		return ToolResult{Output: "command is required", IsError: true}, nil
 	}
 	command := args[0]
 
@@ -54,7 +53,7 @@ func (t *BashTool) Execute(ctx context.Context, exctx ExecutionContext) (harness
 		// set as current working directory
 		currentDir, err := os.Getwd()
 		if err != nil {
-			return harness.ToolResult{}, fmt.Errorf("unable to get cwd: %w", err)
+			return ToolResult{}, fmt.Errorf("unable to get cwd: %w", err)
 		}
 		cwd = currentDir
 	}
@@ -78,8 +77,8 @@ func (t *BashTool) Execute(ctx context.Context, exctx ExecutionContext) (harness
 		} else {
 			output = fmt.Sprintf("%s\nexec error: %v", output, execErr)
 		}
-		return harness.ToolResult{Output: output, IsError: true}, nil
+		return ToolResult{Output: output, IsError: true}, nil
 	}
 
-	return harness.ToolResult{Output: output}, nil
+	return ToolResult{Output: output}, nil
 }

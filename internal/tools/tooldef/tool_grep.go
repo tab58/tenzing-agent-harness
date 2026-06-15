@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"tenzing-agent/internal/harness"
 )
 
 const (
@@ -36,16 +35,16 @@ func (t *GrepTool) Schema() Schema {
 	}
 }
 
-func (t *GrepTool) Execute(ctx context.Context, exctx ExecutionContext) (harness.ToolResult, error) {
+func (t *GrepTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
 	args := exctx.Arguments
 	if len(args) == 0 || args[0] == "" {
-		return harness.ToolResult{Output: "pattern is required", IsError: true}, nil
+		return ToolResult{Output: "pattern is required", IsError: true}, nil
 	}
 	pattern := args[0]
 
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return harness.ToolResult{Output: fmt.Sprintf("invalid regexp: %v", err), IsError: true}, nil
+		return ToolResult{Output: fmt.Sprintf("invalid regexp: %v", err), IsError: true}, nil
 	}
 
 	searchRoot := exctx.WorkingDir
@@ -55,7 +54,7 @@ func (t *GrepTool) Execute(ctx context.Context, exctx ExecutionContext) (harness
 	if searchRoot == "" {
 		wd, wdErr := os.Getwd()
 		if wdErr != nil {
-			return harness.ToolResult{}, fmt.Errorf("unable to get cwd: %w", wdErr)
+			return ToolResult{}, fmt.Errorf("unable to get cwd: %w", wdErr)
 		}
 		searchRoot = wd
 	}
@@ -106,17 +105,17 @@ func (t *GrepTool) Execute(ctx context.Context, exctx ExecutionContext) (harness
 		return nil
 	})
 	if err != nil && err != filepath.SkipAll {
-		return harness.ToolResult{Output: fmt.Sprintf("walk error: %v", err), IsError: true}, nil
+		return ToolResult{Output: fmt.Sprintf("walk error: %v", err), IsError: true}, nil
 	}
 
 	if len(matches) == 0 {
-		return harness.ToolResult{Output: "No matches."}, nil
+		return ToolResult{Output: "No matches."}, nil
 	}
 	output := strings.Join(matches, "\n")
 	if capped {
 		output += fmt.Sprintf("\n[truncated at %d matches]", maxGrepMatches)
 	}
-	return harness.ToolResult{Output: output}, nil
+	return ToolResult{Output: output}, nil
 }
 
 func isBinary(data []byte) bool {

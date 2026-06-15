@@ -1,31 +1,15 @@
 package harness
 
-// type MemoryStore interface {
-// 	Save(key string, value string) error
-// 	Load(key string) (string, error)
-// }
-
-// type Toolbox interface {
-// 	List() ([]string, error)
-// 	Execute(name string, arguments any) (string, error)
-// }
-
-// type ExecutionContext struct {
-// 	Store MemoryStore
-// 	Tools Toolbox
-// }
+import "tenzing-agent/internal/tools"
 
 type Harness struct {
-	agent Agent
-	// exctx *ExecutionContext
+	agent    Agent
+	registry *tools.Registry
 }
 
-func New(agent Agent) (*Harness, error) {
+func New(agent Agent, registry *tools.Registry) (*Harness, error) {
 	return &Harness{
-		agent: agent,
-		// exctx: &ExecutionContext{
-		// 	Store: store,
-		// 	Tools: tools,
-		// },
+		agent:    agent,
+		registry: registry,
 	}, nil
 }

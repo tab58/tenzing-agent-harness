@@ -3,19 +3,29 @@ package tooldef
 import (
 	"context"
 	"encoding/json"
-	"tenzing-agent/internal/harness"
 )
+
+type ToolResult struct {
+	ToolUseID string
+	Output    string
+	IsError   bool
+}
+
+type ToolCall struct {
+	Name  string
+	Input string
+}
 
 type Definition interface {
 	Name() string
 	Description() string
 	Schema() Schema
-	Execute(ctx context.Context, exctx ExecutionContext) (harness.ToolResult, error)
+	Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error)
 }
 
 type ExecutionContext struct {
-	Arguments  []string
-	WorkingDir string
+	Arguments  []string `json:"arguments"`
+	WorkingDir string   `json:"working_dir"`
 }
 
 type Schema struct {
@@ -40,8 +50,8 @@ type JsonType string
 func (t JsonType) String() string { return string(t) }
 
 const (
-	JsonTypeObject = "object"
-	JsonTypeString = "string"
+	JsonTypeObject  = "object"
+	JsonTypeString  = "string"
 	JsonTypeNumber  = "number"
 	JsonTypeBoolean = "boolean"
 )
