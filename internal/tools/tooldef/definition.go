@@ -54,8 +54,10 @@ const (
 	JsonTypeString  = "string"
 	JsonTypeNumber  = "number"
 	JsonTypeBoolean = "boolean"
+	JsonTypeArray   = "array"
 )
 
 type SchemaProperty struct {
-	Type JsonType `json:"type"`
+	Type  JsonType        `json:"type"`
+	Items *SchemaProperty `json:"items,omitempty"`
 }

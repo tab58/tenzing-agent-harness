@@ -3,27 +3,17 @@ package tools
 import (
 	"context"
 	"fmt"
-	"os"
 	"tenzing-agent/internal/tools/tooldef"
 )
 
 type Registry struct {
 	tools map[string]tooldef.Definition
-	cwd   string
 }
 
-func NewRegistry(cwd string) (*Registry, error) {
-	if cwd == "" {
-		wd, err := os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("unable to determine working directory: %w", err)
-		}
-		cwd = wd
-	}
+func NewRegistry() *Registry {
 	return &Registry{
 		tools: make(map[string]tooldef.Definition),
-		cwd:   cwd,
-	}, nil
+	}
 }
 
 func (r *Registry) Register(def tooldef.Definition) error {
@@ -40,20 +30,34 @@ func (r *Registry) Execute(ctx context.Context, name string, exctx tooldef.Execu
 	if !ok {
 		return tooldef.ToolResult{}, fmt.Errorf("tool name %s not found", name)
 	}
-	resolved := r.resolveWorkingDir(exctx)
-	result, err := toolDef.Execute(ctx, resolved)
+	result, err := toolDef.Execute(ctx, exctx)
 	if err != nil {
 		return tooldef.ToolResult{}, fmt.Errorf("error executing tool %s: %w", name, err)
 	}
 	return result, nil
 }
 
-func (r *Registry) resolveWorkingDir(exctx tooldef.ExecutionContext) tooldef.ExecutionContext {
-	if exctx.WorkingDir != "" {
-		return exctx
+func NewDefaultRegistry() *Registry {
+	r := NewRegistry()
+
+	snapshots := tooldef.NewSnapshotStore()
+
+	defaults := []tooldef.Definition{
+		&tooldef.BashTool{},
+		&tooldef.ReadTool{},
+		tooldef.NewWriteTool(snapshots),
+		&tooldef.EditTool{},
+		&tooldef.GrepTool{},
+		&tooldef.GlobTool{},
+		tooldef.NewRevertTool(snapshots),
+		tooldef.NewTodoWriteTool(),
+		tooldef.NewTodoUpdateTool(),
+		tooldef.NewTodoReadTool(),
 	}
-	return tooldef.ExecutionContext{
-		Arguments:  exctx.Arguments,
-		WorkingDir: r.cwd,
+
+	for _, def := range defaults {
+		r.Register(def)
 	}
+
+	return r
 }

@@ -82,7 +82,8 @@ func (h *Harness) RunLoop(ctx context.Context, input string) (string, error) {
 
 		// Reason phase: constructs a plan based on recent input (user, tool results, etc.)
 		transitionLoopStates(ctx, LoopTransitionStartReasoning)
-		reasoningResult, err := h.agent.DoReasoning(inputs)
+		reminders := h.buildSystemReminders()
+		reasoningResult, err := h.agent.DoReasoning(inputs, reminders)
 		if err != nil {
 			loopErr = fmt.Errorf("reasoning error: %w", err)
 			break
@@ -108,9 +109,10 @@ func (h *Harness) RunLoop(ctx context.Context, input string) (string, error) {
 		transitionLoopStates(ctx, LoopTransitionStartToolExecution)
 		toolCall := reasoningResult.ToolCall
 		exctx := tooldef.ExecutionContext{
-			Arguments: []string{toolCall.Input},
+			Arguments:  []string{toolCall.Input},
+			WorkingDir: h.cwd,
 		}
-		toolResult, err := h.registry.Execute(ctx, toolCall.Name, exctx)
+		toolResult, err := h.toolRegistry.Execute(ctx, toolCall.Name, exctx)
 		if err != nil {
 			loopErr = fmt.Errorf("tool execution error: %w", err)
 			break
@@ -118,8 +120,17 @@ func (h *Harness) RunLoop(ctx context.Context, input string) (string, error) {
 		transitionLoopStates(ctx, LoopTransitionFinishToolExecution)
 		slog.Debug(fmt.Sprintf("tool execution result: %s", toolResult.Output))
 
+		// send out the data from the tool call
+		if h.hooks.OnToolCall != nil {
+			h.hooks.OnToolCall(toolCall.Name, toolCall.Input, toolResult.Output)
+		}
+
 		// Loop: feed tool result back to agent for next reasoning cycle
 		inputs = append(inputs, toolResult.Output)
+
+		if reminder := tooldef.ReadTodoReminder(h.cwd); reminder != "" {
+			inputs = append(inputs, reminder)
+		}
 	}
 
 	// if we exit the loop with an error, return it and reset loop states for next run

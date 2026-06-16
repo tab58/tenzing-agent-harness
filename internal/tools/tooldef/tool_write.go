@@ -9,12 +9,18 @@ import (
 
 var _ Definition = (*WriteTool)(nil)
 
-type WriteTool struct{}
+type WriteTool struct {
+	snapshots *SnapshotStore
+}
+
+func NewWriteTool(snapshots *SnapshotStore) *WriteTool {
+	return &WriteTool{snapshots: snapshots}
+}
 
 func (t *WriteTool) Name() string { return "Write" }
 
 func (t *WriteTool) Description() string {
-	return "Write content to a file, creating parent directories as needed."
+	return "Write content to a file, creating parent directories as needed. Automatically snapshots the previous content so it can be reverted."
 }
 
 func (t *WriteTool) Schema() Schema {
@@ -37,6 +43,10 @@ func (t *WriteTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRe
 
 	if filePath == "" {
 		return ToolResult{Output: "file_path is required", IsError: true}, nil
+	}
+
+	if existing, err := os.ReadFile(filePath); err == nil {
+		t.snapshots.Save(filePath, existing)
 	}
 
 	dir := filepath.Dir(filePath)

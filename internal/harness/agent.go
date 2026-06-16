@@ -3,7 +3,7 @@ package harness
 import "tenzing-agent/internal/tools/tooldef"
 
 type Agent interface {
-	DoReasoning(input []string) (ReasoningResult, error)
+	DoReasoning(inputs []string, systemReminders []string) (ReasoningResult, error)
 }
 
 type ReasoningResult struct {
