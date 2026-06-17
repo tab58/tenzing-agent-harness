@@ -28,7 +28,7 @@ func (h *Harness) RunSession(ctx context.Context, in io.Reader, out io.Writer) e
 			break
 		}
 
-		answer, err := h.RunLoop(ctx, query)
+		answer, err := h.mainRunner.RunLoop(ctx, query)
 		if err != nil {
 			return fmt.Errorf("agent loop error: %w", err)
 		}
