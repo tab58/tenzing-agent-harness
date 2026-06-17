@@ -54,7 +54,7 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 			break
 		}
 		reminders := h.buildSystemReminders()
-		reasoningResult, err := h.agent.DoReasoning(inputs, reminders)
+		reasoningResult, err := h.agent.DoReasoning(ctx, inputs, reminders)
 		if err != nil {
 			loopErr = fmt.Errorf("reasoning error: %w", err)
 			break

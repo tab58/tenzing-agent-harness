@@ -1,9 +1,13 @@
 package harness
 
-import "tenzing-agent/internal/tools/tooldef"
+import (
+	"context"
+
+	"tenzing-agent/internal/tools/tooldef"
+)
 
 type Agent interface {
-	DoReasoning(inputs []string, systemReminders []string) (ReasoningResult, error)
+	DoReasoning(ctx context.Context, inputs []string, systemReminders []string) (ReasoningResult, error)
 }
 
 type ReasoningResult struct {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"tenzing-agent/internal/agent"
 	"tenzing-agent/internal/harness"
 	"tenzing-agent/internal/tools"
 )
@@ -19,15 +20,17 @@ func main() {
 	}
 
 	toolRegistry := tools.NewRegistry(cwd, tools.GetDefaultToolDefs()...)
+	toolProviderDefinitions := toolRegistry.ProviderDefinitions()
 	hooks := harness.Hooks{}
 
-	// plug in your harness.Agent implementation here
-	agent := (harness.Agent)(nil)
-
-	mainCfg := harness.DefaultMainConfig(agent, toolRegistry, hooks, cwd)
+	// build the main agent
+	mainAgent := agent.New(agent.AgentConfig{
+		Model:           nil,
+		ToolDefinitions: toolProviderDefinitions,
+	})
 
 	agentHarness, err := harness.New(harness.HarnessConfig{
-		Main: mainCfg,
+		MainRunner: harness.DefaultMainConfig(mainAgent, toolRegistry, hooks, cwd),
 	})
 	if err != nil {
 		panic(err)

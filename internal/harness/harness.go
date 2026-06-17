@@ -38,12 +38,12 @@ type ReminderBuilder func() []string
 type RunnerFactory func(prompt string) (*AgentRunner, error)
 
 type HarnessConfig struct {
-	Main              AgentRunnerConfig
+	MainRunner        AgentRunnerConfig
 	NewSubagentRunner RunnerFactory // nil = subagent tool not registered
 }
 
 func New(cfg HarnessConfig) (*Harness, error) {
-	mainCfg := cfg.Main
+	mainCfg := cfg.MainRunner
 
 	if cfg.NewSubagentRunner != nil {
 		spawnFn := func(ctx context.Context, prompt string) (string, error) {

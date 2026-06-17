@@ -150,7 +150,7 @@ func (m *model) runAgent(query string) tea.Cmd {
 		}
 
 		h, err := harness.New(harness.HarnessConfig{
-			Main: mainCfg,
+			MainRunner: mainCfg,
 		})
 		if err != nil {
 			return agentResultMsg{err: err}

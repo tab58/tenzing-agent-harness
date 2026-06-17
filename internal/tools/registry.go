@@ -2,7 +2,10 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+
+	"tenzing-agent/internal/provider"
 	"tenzing-agent/internal/tools/tooldef"
 )
 
@@ -75,6 +78,20 @@ func (r *Registry) Definitions() []tooldef.Definition {
 		defs = append(defs, d)
 	}
 	return defs
+}
+
+func (r *Registry) ProviderDefinitions() []provider.ToolDefinition {
+	defs := r.Definitions()
+	providerDefs := make([]provider.ToolDefinition, len(defs))
+	for i, d := range defs {
+		schema, _ := json.Marshal(d.Schema())
+		providerDefs[i] = provider.ToolDefinition{
+			Name:        d.Name(),
+			Description: d.Description(),
+			InputSchema: schema,
+		}
+	}
+	return providerDefs
 }
 
 func (r *Registry) Execute(ctx context.Context, name string, input string) (tooldef.ToolResult, error) {
