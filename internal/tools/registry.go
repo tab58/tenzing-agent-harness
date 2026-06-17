@@ -28,12 +28,14 @@ func GetDefaultToolDefs() []tooldef.Definition {
 }
 
 type Registry struct {
-	tools map[string]tooldef.Definition
+	tools      map[string]tooldef.Definition
+	workingDir string
 }
 
-func NewRegistry(tools ...tooldef.Definition) *Registry {
+func NewRegistry(workingDir string, tools ...tooldef.Definition) *Registry {
 	r := &Registry{
-		tools: make(map[string]tooldef.Definition),
+		tools:      make(map[string]tooldef.Definition),
+		workingDir: workingDir,
 	}
 
 	for _, def := range tools {
@@ -58,7 +60,7 @@ func (r *Registry) CopyWithout(names ...string) *Registry {
 	for _, n := range names {
 		exclude[n] = struct{}{}
 	}
-	filtered := NewRegistry()
+	filtered := NewRegistry(r.workingDir)
 	for name, def := range r.tools {
 		if _, skip := exclude[name]; !skip {
 			filtered.tools[name] = def
@@ -75,10 +77,14 @@ func (r *Registry) Definitions() []tooldef.Definition {
 	return defs
 }
 
-func (r *Registry) Execute(ctx context.Context, name string, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
+func (r *Registry) Execute(ctx context.Context, name string, input string) (tooldef.ToolResult, error) {
 	toolDef, ok := r.tools[name]
 	if !ok {
 		return tooldef.ToolResult{}, fmt.Errorf("tool name %s not found", name)
+	}
+	exctx := tooldef.ExecutionContext{
+		Arguments:  []string{input},
+		WorkingDir: r.workingDir,
 	}
 	result, err := toolDef.Execute(ctx, exctx)
 	if err != nil {

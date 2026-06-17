@@ -8,7 +8,11 @@
 - **AgentRunner** — the reusable loop primitive. Owns the FSM, drives perception→action→observation, dispatches tools via the registry. Knows how to run *any* agent through the cycle. Does not know about CLI, sessions, or users.
 - **Agent** — the reasoning engine. Decides what to do, which tools to call, how to interpret results. Talks to the LLM. Does not touch the filesystem or manage processes directly.
 
-The Harness creates an AgentRunner for the main session. A subagent spawns a fresh AgentRunner with its own FSM and message history — same registry, no Harness involved. This separation means you can swap the agent (different LLM, different strategy) without touching execution infrastructure, swap the harness (CLI → server, local → remote) without touching decision logic, and reuse the loop for subagents without coupling them to the CLI layer.
+The Harness creates an AgentRunner for the main session. A subagent spawns a fresh AgentRunner with its own FSM and message history. This separation means you can swap the agent (different LLM, different strategy) without touching execution infrastructure, swap the harness (CLI → server, local → remote) without touching decision logic, and reuse the loop for subagents without coupling them to the CLI layer.
+
+**Everything that isn't invariant is configurable.** The loop (perception → action → observation), the FSM, and the dispatch pattern (`name → handler(input)`) are structural invariants — they never change. Everything else is injectable via `AgentRunnerConfig`: which agent, which tools, which system prompt, which reminders get injected, how subagents are constructed. This allows piece-by-piece optimization of the harness without touching the loop. Swap the model, swap the reminder strategy, give subagents different tools or a different provider — all through configuration, not code changes.
+
+**`AgentRunnerConfig` is the single DI surface.** All non-invariant runner behavior flows through this struct. The Harness is deliberately thin — it wires a main runner, optionally registers the subagent tool, and owns the session REPL. Nothing else.
 
 **The loop never changes.** Perception → action → observation is the single primitive. New capabilities are added by registering tools or wrapping the loop with new mechanisms (planning, subagents, context compression) — never by modifying the loop itself.
 
@@ -28,8 +32,9 @@ internal/
 ├── errors/errors.go                    Wrap() helper
 ├── harness/                            Core loop & orchestration
 │   ├── agent.go                        Agent interface + ReasoningResult
-│   ├── agent_loop.go                   FSM-driven perception-action loop
-│   ├── harness.go                      Harness struct, constructor, system prompt
+│   ├── agent_runner.go                 AgentRunner: FSM-driven loop, DI config
+│   ├── loop_fsm.go                     Per-runner FSM (6 states, 6 transitions)
+│   ├── harness.go                      Thin orchestrator, config types, defaults
 │   └── session.go                      REPL stdin→loop→stdout driver
 ├── provider/                           LLM abstraction layer
 │   ├── llm.go                          LLM interface (6 implementations)
@@ -71,7 +76,25 @@ internal/tools/tooldef/                 Tool implementations
 
 ## AgentRunner (Core Loop)
 
-The agent loop is an FSM-driven perception→action→observation cycle. The runner never branches on model output beyond `stop_reason`. Currently implemented as methods on `Harness` — will be extracted to its own `AgentRunner` type as part of Phase 1.4 (subagent support).
+The agent loop is an FSM-driven perception→action→observation cycle. The runner never branches on model output beyond `stop_reason`. Each runner owns its own FSM instance — subagents and concurrent loops don't share state.
+
+### Configuration (DI Surface)
+
+```go
+type AgentRunnerConfig struct {
+    Agent          Agent              // reasoning engine (injectable)
+    ToolRegistry   *tools.Registry    // which tools this runner has (injectable)
+    Hooks          Hooks              // lifecycle observation (injectable)
+    SystemPrompt   string             // instructions for this runner (injectable)
+    BuildReminders ReminderBuilder    // system reminders per turn (injectable, nil = none)
+}
+
+type ReminderBuilder func() []string
+```
+
+Every field is caller-controlled. Main runner and subagent runners can have completely different configurations — different model, different tools, different system prompt, different reminder strategy. The loop code is identical for both; only the config differs.
+
+The runner has no `Cwd` — working directory is a tool execution concern owned by the `Registry`. `ReminderBuilder` closes over any state it needs (e.g. cwd) rather than receiving it from the runner.
 
 ### State Machine
 
@@ -90,9 +113,7 @@ started ──StartReasoning──▶ reasoning_started ──FinishReasoning─
                                                     started via Reset)
 ```
 
-Six states, six transitions. `Reset` can fire from any state except `started`.
-
-**Known issue:** FSM is a package-level singleton (`var loopFSM`). Concurrent or nested `RunLoop` calls (e.g. subagents) would corrupt shared state. Must be moved to per-AgentRunner instance as part of the extraction.
+Six states, six transitions. `Reset` can fire from any state except `started`. FSM is per-runner instance.
 
 ### RunLoop Flow
 
@@ -102,12 +123,12 @@ RunLoop(ctx, input string) → (string, error)
 1. Reset FSM
 2. Loop:
    a. Check ctx cancellation
-   b. StartReasoning → agent.DoReasoning(inputs, reminders) → FinishReasoning
-   c. If ToolCall == nil → Stop → return FinalAnswer
-   d. StartToolExecution → registry.Execute(toolName, args) → FinishToolExecution
-   e. Fire hooks.OnToolCall(name, input, output)
-   f. Append tool result to inputs
-   g. Append todo reminder to inputs (if .agent_todo.json exists)
+   b. Build system reminders via BuildReminders (injectable)
+   c. StartReasoning → agent.DoReasoning(inputs, reminders) → FinishReasoning
+   d. If ToolCall == nil → Stop → return FinalAnswer
+   e. StartToolExecution → registry.Execute(toolName, args) → FinishToolExecution
+   f. Fire hooks.OnToolCall(name, input, output)
+   g. Append tool result to inputs
    h. Loop to 2a
 3. On error: Reset FSM, return error
 ```
@@ -134,37 +155,40 @@ The AgentRunner owns the loop; `Agent` owns the LLM interaction. `inputs` accumu
 
 ## Harness
 
-The outermost shell — CLI/session/process concerns only. Currently also contains the AgentRunner logic (loop + FSM); these will be extracted into a separate `AgentRunner` type.
+Deliberately thin orchestrator. Holds the main runner, optionally registers the subagent tool, owns the session REPL. No loop logic, no tool dispatch, no reminders.
 
 ```go
 type Harness struct {
-    agent        Agent              // will move to AgentRunner
-    toolRegistry *tools.Registry    // will move to AgentRunner
-    hooks        Hooks              // will move to AgentRunner
-    cwd          string             // shared by both layers
-    systemPrompt string             // will move to AgentRunner
+    mainRunner *AgentRunner
 }
+
+type HarnessConfig struct {
+    Main              AgentRunnerConfig  // full config for main runner
+    NewSubagentRunner RunnerFactory      // nil = subagent tool not registered
+}
+
+type RunnerFactory func(prompt string) (*AgentRunner, error)
 
 type Hooks struct {
     OnToolCall func(name string, input string, output string)
 }
 ```
 
-Constructor: `New(agent, registry, hooks, cwd) → (*Harness, error)`
+Constructor: `New(HarnessConfig) → (*Harness, error)`. If `NewSubagentRunner` is provided, registers the subagent spawn tool in the main runner's registry. Creates the main `AgentRunner` from `Main` config. Done.
+
+### Subagent Configuration
+
+Subagent creation is fully injectable via `RunnerFactory`. The caller controls every aspect: which agent (model/provider), which tools, which system prompt, which hooks, which reminders. The harness just calls the factory and runs the returned runner.
+
+Convenience helpers for common setups:
+- `DefaultMainConfig(agent, registry, hooks, cwd)` — default system prompt + default reminders
+- `DefaultSubagentConfig(agent, registry, hooks, cwd)` — subagent prompt, registry without SubagentSpawn
+- `DefaultRunnerFactory(base AgentRunnerConfig)` — factory that stamps out runners from a base config
+- `DefaultReminderBuilder()` — injects todo plan state
 
 ### Session
 
-`RunSession(ctx, in io.Reader, out io.Writer)` — line-oriented REPL. Reads stdin, skips empty lines, handles `q`/`exit`, calls `RunLoop`, prints answer. No prompt display or history. This is the true Harness responsibility — everything below it (loop, tool dispatch, reminders) belongs to AgentRunner.
-
-### System Prompt & Reminders
-
-Default system prompt enforces TodoWrite-first planning:
-```
-"You are a coding agent at {cwd}. Before working on any multi-step task,
- ALWAYS call TodoWrite first..."
-```
-
-`buildSystemReminders()` reads `.agent_todo.json` and injects current plan state as a `<system-reminder>` block after every tool call. These are AgentRunner concerns (they shape loop behavior, not session management) and will move with the extraction.
+`RunSession(ctx, in io.Reader, out io.Writer)` — line-oriented REPL. Reads stdin, skips empty lines, handles `q`/`exit`, calls `RunLoop`, prints answer. This is the true Harness responsibility — everything below it belongs to AgentRunner.
 
 ## Tool System
 
@@ -172,13 +196,16 @@ Default system prompt enforces TodoWrite-first planning:
 
 ```go
 type Registry struct {
-    tools map[string]tooldef.Definition
+    tools      map[string]tooldef.Definition
+    workingDir string
 }
 ```
 
+- `NewRegistry(workingDir, tools...)` — creates registry with working directory for tool execution
 - `Register(def)` — adds tool, fails if name exists
-- `Execute(ctx, name, exctx)` — lookup + run, returns `ToolResult`
-- `NewDefaultRegistry()` — pre-populates 10 tools
+- `Execute(ctx, name, input)` — lookup, build `ExecutionContext` with registry's `workingDir`, run tool, return `ToolResult`
+- `CopyWithout(names...)` — clone registry excluding named tools (preserves `workingDir`)
+- `Definitions()` — return all registered tool definitions
 
 ### Tool Interface
 
@@ -337,13 +364,16 @@ Each provider converts between canonical types and SDK-specific types:
 | `looplab/fsm` | Finite state machine for loop transitions |
 | `golang.org/x/sync` | Weighted semaphore for concurrency limiting |
 
+## Known Design Issues
+
+- **`Agent.DoReasoning` tool definitions** — Agent interface has no access to tool definitions. The `DoReasoning` implementation must get `[]provider.ToolDefinition` from somewhere external (e.g. constructor injection). Not yet wired up.
+- **`FileTracker`** — exists but isn't wired into Edit/Write tools.
+
 ## What's Not Built Yet
 
 - `cmd/app/main.go` is a stub — no Agent implementation wired to a provider
 - `internal/agent/agent.go` is an empty package
-- `Agent.DoReasoning` has no way to receive tool definitions from the registry
-- AgentRunner not yet extracted from Harness — FSM is a package-level singleton, loop logic is Harness methods
-- FSM must become per-AgentRunner instance (blocks subagent/concurrent loop work)
-- `FileTracker` exists but isn't wired into Edit/Write tools
-- No subagent support (Phase 1.4)
-- No context compression, skill loading, async execution (Phases 2-6)
+- No context compression, skill loading, task dependency graph (Phase 2)
+- No async execution, multi-agent teams (Phase 3)
+- No permission governance, event bus, session persistence (Phase 4)
+- No parallel tool execution, prompt caching, MCP integration (Phase 5)

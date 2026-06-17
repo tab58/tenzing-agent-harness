@@ -13,35 +13,26 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	// start with the cwd
 	cwd, err := os.Getwd()
 	if err != nil {
 		panic(err)
 	}
 
-	// register the tools
-	toolRegistry := tools.NewRegistry(
-		tools.GetDefaultToolDefs()...,
-	)
-
-	// create hooks
+	toolRegistry := tools.NewRegistry(cwd, tools.GetDefaultToolDefs()...)
 	hooks := harness.Hooks{}
 
-	// create the agent
+	// plug in your harness.Agent implementation here
 	agent := (harness.Agent)(nil)
 
-	// create the harness
+	mainCfg := harness.DefaultMainConfig(agent, toolRegistry, hooks, cwd)
+
 	agentHarness, err := harness.New(harness.HarnessConfig{
-		Agent:        agent,
-		Hooks:        hooks,
-		ToolRegistry: toolRegistry,
-		Cwd:          cwd,
+		Main: mainCfg,
 	})
 	if err != nil {
 		panic(err)
 	}
 
-	// run the session
 	err = agentHarness.RunSession(ctx, os.Stdin, os.Stdout)
 	if err != nil {
 		panic(err)

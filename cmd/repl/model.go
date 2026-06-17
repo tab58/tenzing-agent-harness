@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"tenzing-agent/internal/harness"
-	"tenzing-agent/internal/tools"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -38,9 +37,7 @@ type model struct {
 	height       int
 	scrollOffset int
 
-	cwd          string
-	toolRegistry *tools.Registry
-	agent        harness.Agent
+	mainCfg harness.AgentRunnerConfig
 }
 
 type historyEntry struct {
@@ -48,19 +45,12 @@ type historyEntry struct {
 	content string
 }
 
-func newModel(cfg harness.HarnessConfig) model {
-	cwd := cfg.Cwd
-	agent := cfg.Agent
-	toolDefs := tools.GetDefaultToolDefs()
-	registry := tools.NewRegistry(toolDefs...)
-
+func newModel(cfg harness.AgentRunnerConfig) model {
 	return model{
-		state:        stateInput,
-		cwd:          cwd,
-		toolRegistry: registry,
-		agent:        agent,
-		width:        80,
-		height:       24,
+		state:   stateInput,
+		mainCfg: cfg,
+		width:   80,
+		height:  24,
 	}
 }
 
@@ -152,23 +142,16 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) runAgent(query string) tea.Cmd {
-	agent := m.agent
-	registry := m.toolRegistry
-	cwd := m.cwd
+	mainCfg := m.mainCfg
 
 	return func() tea.Msg {
-		if agent == nil {
+		if mainCfg.Agent == nil {
 			return agentResultMsg{err: fmt.Errorf("no agent configured — implement harness.Agent and pass to newModel")}
 		}
 
-		hooks := harness.Hooks{}
-		cfg := harness.HarnessConfig{
-			Agent:        agent,
-			ToolRegistry: registry,
-			Hooks:        hooks,
-			Cwd:          cwd,
-		}
-		h, err := harness.New(cfg)
+		h, err := harness.New(harness.HarnessConfig{
+			Main: mainCfg,
+		})
 		if err != nil {
 			return agentResultMsg{err: err}
 		}

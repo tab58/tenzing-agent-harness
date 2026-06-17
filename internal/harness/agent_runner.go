@@ -5,38 +5,37 @@ import (
 	"fmt"
 	"log/slog"
 	"tenzing-agent/internal/tools"
-	"tenzing-agent/internal/tools/tooldef"
 )
 
 type AgentRunner struct {
-	agent        Agent
-	fsm          *LoopFSM
-	toolRegistry *tools.Registry
-	hooks        Hooks
-	cwd          string
-	systemPrompt string
+	agent          Agent
+	fsm            *LoopFSM
+	toolRegistry   *tools.Registry
+	hooks          Hooks
+	systemPrompt   string
+	buildReminders ReminderBuilder
 }
 
 type AgentRunnerConfig struct {
-	Agent        Agent
-	ToolRegistry *tools.Registry
-	Hooks        Hooks
-	Cwd          string
-	SystemPrompt string
+	Agent          Agent
+	ToolRegistry   *tools.Registry
+	Hooks          Hooks
+	SystemPrompt   string
+	BuildReminders ReminderBuilder
 }
 
 func NewAgentRunner(cfg AgentRunnerConfig) *AgentRunner {
 	return &AgentRunner{
-		agent:        cfg.Agent,
-		fsm:          createNewLoopFSM(),
-		toolRegistry: cfg.ToolRegistry,
-		hooks:        cfg.Hooks,
-		cwd:          cfg.Cwd,
-		systemPrompt: cfg.SystemPrompt,
+		agent:          cfg.Agent,
+		fsm:            createNewLoopFSM(),
+		toolRegistry:   cfg.ToolRegistry,
+		hooks:          cfg.Hooks,
+		systemPrompt:   cfg.SystemPrompt,
+		buildReminders: cfg.BuildReminders,
 	}
 }
 
-// RunTaskLoop executes a single turn: user input -> agent plan/execute loop -> agent result
+// RunLoop executes a single turn: user input -> agent plan/execute loop -> agent result
 func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error) {
 	inputs := []string{input}
 	var loopErr error
@@ -85,11 +84,7 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 			break
 		}
 		toolCall := reasoningResult.ToolCall
-		exctx := tooldef.ExecutionContext{
-			Arguments:  []string{toolCall.Input},
-			WorkingDir: h.cwd,
-		}
-		toolResult, err := h.toolRegistry.Execute(ctx, toolCall.Name, exctx)
+		toolResult, err := h.toolRegistry.Execute(ctx, toolCall.Name, toolCall.Input)
 		if err != nil {
 			loopErr = fmt.Errorf("tool execution error: %w", err)
 			break
@@ -100,17 +95,12 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 		}
 		slog.Debug(fmt.Sprintf("tool execution result: %s", toolResult.Output))
 
-		// send out the data from the tool call
 		if h.hooks.OnToolCall != nil {
 			h.hooks.OnToolCall(toolCall.Name, toolCall.Input, toolResult.Output)
 		}
 
 		// Loop: feed tool result back to agent for next reasoning cycle
 		inputs = append(inputs, toolResult.Output)
-
-		if reminder := tooldef.ReadTodoReminder(h.cwd); reminder != "" {
-			inputs = append(inputs, reminder)
-		}
 	}
 
 	if err := h.fsm.TransitionStates(ctx, LoopTransitionReset); err != nil {
@@ -125,9 +115,8 @@ func (h *AgentRunner) SystemPrompt() string {
 }
 
 func (h *AgentRunner) buildSystemReminders() []string {
-	var reminders []string
-	if r := tooldef.ReadTodoReminder(h.cwd); r != "" {
-		reminders = append(reminders, r)
+	if h.buildReminders == nil {
+		return nil
 	}
-	return reminders
+	return h.buildReminders()
 }

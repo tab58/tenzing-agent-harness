@@ -26,68 +26,87 @@ type Hooks struct {
 }
 
 type Harness struct {
-	agent        Agent
-	toolRegistry *tools.Registry
-	hooks        Hooks
-	cwd          string
-	systemPrompt string
-	mainRunner   *AgentRunner
+	mainRunner *AgentRunner
 }
 
-type AgentFactory func() Agent
+// ReminderBuilder produces system reminders injected before each reasoning call.
+// nil means no reminders. Callers close over any state they need (e.g. cwd).
+type ReminderBuilder func() []string
+
+// RunnerFactory creates a configured AgentRunner for subagent execution.
+// Receives the subagent's prompt; returns a ready-to-run runner.
+type RunnerFactory func(prompt string) (*AgentRunner, error)
 
 type HarnessConfig struct {
-	Agent        Agent
-	ToolRegistry *tools.Registry
-	Hooks        Hooks
-	Cwd          string
-	NewAgent     AgentFactory
+	Main              AgentRunnerConfig
+	NewSubagentRunner RunnerFactory // nil = subagent tool not registered
 }
 
 func New(cfg HarnessConfig) (*Harness, error) {
-	agent := cfg.Agent
-	registry := cfg.ToolRegistry
-	hooks := cfg.Hooks
-	cwd := cfg.Cwd
-	newAgent := cfg.NewAgent
+	mainCfg := cfg.Main
 
-	subRegistry := registry.CopyWithout("SubagentSpawn")
-
-	spawnFn := func(ctx context.Context, prompt string) (string, error) {
-		if newAgent == nil {
-			return "", fmt.Errorf("no agent factory configured")
+	if cfg.NewSubagentRunner != nil {
+		spawnFn := func(ctx context.Context, prompt string) (string, error) {
+			runner, err := cfg.NewSubagentRunner(prompt)
+			if err != nil {
+				return "", fmt.Errorf("create subagent runner: %w", err)
+			}
+			return runner.RunLoop(ctx, prompt)
 		}
-		subAgent := newAgent()
-		subRunner := NewAgentRunner(AgentRunnerConfig{
-			Agent:        subAgent,
-			ToolRegistry: subRegistry,
-			Hooks:        hooks,
-			Cwd:          cwd,
-			SystemPrompt: SubagentSystemPrompt(cwd),
-		})
-		return subRunner.RunLoop(ctx, prompt)
+		if err := mainCfg.ToolRegistry.Register(tooldef.NewSubagentTool(spawnFn)); err != nil {
+			return nil, fmt.Errorf("register subagent tool: %w", err)
+		}
 	}
 
-	if err := registry.Register(tooldef.NewSubagentTool(spawnFn)); err != nil {
-		return nil, fmt.Errorf("register subagent tool: %w", err)
-	}
-
-	mainRunner := NewAgentRunner(AgentRunnerConfig{
-		Agent:        agent,
-		ToolRegistry: registry,
-		Hooks:        hooks,
-		Cwd:          cwd,
-		SystemPrompt: DefaultSystemPrompt(cwd),
-	})
+	mainRunner := NewAgentRunner(mainCfg)
 
 	return &Harness{
-		agent:        agent,
-		toolRegistry: registry,
-		hooks:        hooks,
-		cwd:          cwd,
-		systemPrompt: DefaultSystemPrompt(cwd),
-		mainRunner:   mainRunner,
+		mainRunner: mainRunner,
 	}, nil
+}
+
+// DefaultReminderBuilder returns a ReminderBuilder that injects todo state
+// from the given working directory.
+func DefaultReminderBuilder(cwd string) ReminderBuilder {
+	return func() []string {
+		var reminders []string
+		if r := tooldef.ReadTodoReminder(cwd); r != "" {
+			reminders = append(reminders, r)
+		}
+		return reminders
+	}
+}
+
+// DefaultRunnerFactory creates a RunnerFactory from a base config.
+// Each subagent gets a fresh runner with the base config.
+func DefaultRunnerFactory(base AgentRunnerConfig) RunnerFactory {
+	return func(prompt string) (*AgentRunner, error) {
+		return NewAgentRunner(base), nil
+	}
+}
+
+// DefaultMainConfig builds an AgentRunnerConfig with standard defaults:
+// default system prompt, default reminder builder.
+func DefaultMainConfig(agent Agent, registry *tools.Registry, hooks Hooks, cwd string) AgentRunnerConfig {
+	return AgentRunnerConfig{
+		Agent:          agent,
+		ToolRegistry:   registry,
+		Hooks:          hooks,
+		SystemPrompt:   DefaultSystemPrompt(cwd),
+		BuildReminders: DefaultReminderBuilder(cwd),
+	}
+}
+
+// DefaultSubagentConfig builds an AgentRunnerConfig for subagents:
+// subagent system prompt, registry without SubagentSpawn.
+func DefaultSubagentConfig(agent Agent, registry *tools.Registry, hooks Hooks, cwd string) AgentRunnerConfig {
+	return AgentRunnerConfig{
+		Agent:          agent,
+		ToolRegistry:   registry.CopyWithout("SubagentSpawn"),
+		Hooks:          hooks,
+		SystemPrompt:   SubagentSystemPrompt(cwd),
+		BuildReminders: DefaultReminderBuilder(cwd),
+	}
 }
 
 type systemPromptData struct {
@@ -111,13 +130,5 @@ func SubagentSystemPrompt(cwd string) string {
 }
 
 func (h *Harness) SystemPrompt() string {
-	return h.systemPrompt
-}
-
-func (h *Harness) buildSystemReminders() []string {
-	var reminders []string
-	if r := tooldef.ReadTodoReminder(h.cwd); r != "" {
-		reminders = append(reminders, r)
-	}
-	return reminders
+	return h.mainRunner.SystemPrompt()
 }
