@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"tenzing-agent/internal/harness/skills"
+	"tenzing-agent/internal/harness/tools/tooldef"
 	"tenzing-agent/internal/provider"
-	"tenzing-agent/internal/tools/tooldef"
 )
 
-func GetDefaultToolDefs() []tooldef.Definition {
+func GetDefaultToolDefs(skillRegistry *skills.Registry) []tooldef.Definition {
 	snapshotStore := tooldef.NewSnapshotStore()
 	return []tooldef.Definition{
 		// basic tools
@@ -19,6 +20,9 @@ func GetDefaultToolDefs() []tooldef.Definition {
 		&tooldef.GrepTool{},
 		&tooldef.GlobTool{},
 
+		// subagent spawn
+		&tooldef.SubagentTool{},
+
 		// snapshot-required
 		tooldef.NewWriteTool(snapshotStore),
 		tooldef.NewRevertTool(snapshotStore),
@@ -27,6 +31,10 @@ func GetDefaultToolDefs() []tooldef.Definition {
 		tooldef.NewTodoReadTool(),
 		tooldef.NewTodoWriteTool(),
 		tooldef.NewTodoUpdateTool(),
+
+		// skills tools
+		tooldef.NewLoadSkillTool(skillRegistry),
+		tooldef.NewListSkillsTool(skillRegistry),
 	}
 }
 

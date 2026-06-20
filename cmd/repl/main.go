@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"os"
 	"tenzing-agent/internal/harness"
-	"tenzing-agent/internal/tools"
+	"tenzing-agent/internal/harness/skills"
+	"tenzing-agent/internal/harness/tools"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -16,7 +17,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	toolRegistry := tools.NewRegistry(cwd, tools.GetDefaultToolDefs()...)
+	skillsRegistry := skills.NewRegistry(
+		"~/.claude/skills",
+	)
+	toolRegistry := tools.NewRegistry(cwd,
+		tools.GetDefaultToolDefs(skillsRegistry)...,
+	)
 	hooks := harness.Hooks{}
 
 	// plug in your harness.Agent implementation here

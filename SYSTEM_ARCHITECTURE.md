@@ -20,6 +20,28 @@ The Harness creates an AgentRunner for the main session. A subagent spawns a fre
 
 **Provider agnosticism.** All LLM interaction flows through canonical types (`Message`, `ContentBlock`, `CompletionRequest/Response`). Provider implementations convert to/from SDK-specific types. Swapping providers requires zero changes above the provider layer.
 
+**Risk changes the process.** Tools carry a risk classification (read_only, draft, external_write). Read-only tools execute autonomously. Draft tools simulate without side effects. External writes require human approval before finalization. This is the draft-commit pattern: dangerous actions are first drafted, then explicitly committed. The permission check happens in the Runner before tool execution — not in the tool itself, not in the Agent. Injectable via `AgentRunnerConfig` so different runners can enforce different policies. *(Not yet implemented — Phase 4.)*
+
+**Long tasks have budgets.** Every agent loop enforces hard limits: step budget (max iterations), time budget (wall-clock), token budget (per turn and cumulative), and cost budget (USD). When a budget is exhausted, the harness terminates gracefully and returns a structured result — not a crash. Budget checks sit alongside `ctx.Err()` at the top of the loop, injectable via config. Without budgets, a runaway loop burns money silently. *(Not yet implemented — Phase 4.)*
+
+**Context is assembled, not dumped.** The system prompt is ordered by stability for cache efficiency: Layer 0 (system policies, stable prefix, cached) → Layer 1 (skill definitions, rarely change, cached) → Layer 2 (session instructions, per conversation, not cached) → Layer 3 (JIT-retrieved tool outputs, fresh, not cached). Untrusted data (user input, tool output from external sources) is marked with trust labels so the harness can treat it differently. *(Partially implemented — skills use progressive disclosure, but no cache-aware ordering or trust labels yet.)*
+
+**Registries own implementations, Agent gets metadata.** Tools and skills follow the same wiring pattern: registries load from disk at startup, the Agent receives metadata (tool definitions, skill names/descriptions) as data via `AgentConfig`, and the AgentRunner dispatches execution at runtime. The Agent never touches a registry directly — it tells the LLM what capabilities exist, the Runner actually runs them.
+
+```
+main.go
+  ├── skills.NewRegistry(skillsDir)     → discovers skill metadata from disk
+  ├── tools.NewRegistry(cwd, defs...)   → holds tool implementations
+  │     └── includes skill tools that reference skill registry
+  │
+  ├── Agent gets metadata only:
+  │     ├── toolRegistry.ProviderDefinitions()  → what tools exist
+  │     └── skillRegistry.Discover()            → what skills exist
+  │
+  └── AgentRunner gets registries for execution:
+        └── toolRegistry                        → executes tool calls
+```
+
 ---
 
 Go module: `tenzing-agent` (go 1.25.9)
@@ -28,7 +50,8 @@ Go module: `tenzing-agent` (go 1.25.9)
 cmd/app/main.go                         Entry point (stub — TODO: wire harness)
 
 internal/
-├── agent/agent.go                      Empty package (placeholder)
+├── agent/                              Concrete Agent implementation
+│   └── agent.go                        Agent struct, AgentConfig, DoReasoning
 ├── errors/errors.go                    Wrap() helper
 ├── harness/                            Core loop & orchestration
 │   ├── agent.go                        Agent interface + ReasoningResult
@@ -52,8 +75,10 @@ internal/
 │   └── utils/
 │       ├── token_bucket.go             Token-bucket rate limiter
 │       └── semaphore.go                Concurrency semaphore
+├── skills/                             Skill discovery & lazy loading
+│   └── registry.go                     Discover frontmatter at startup, Load on demand
 ├── tools/                              Tool dispatch system
-│   └── registry.go                     Name→Definition map, Execute()
+│   └── registry.go                     Name→Definition map, Execute(), ProviderDefinitions()
 └── utils/strings.go                    Generic Strings() helper
 
 internal/tools/tooldef/                 Tool implementations
@@ -140,7 +165,7 @@ Error: ctx canceled, DoReasoning error, or tool execution error.
 
 ```go
 type Agent interface {
-    DoReasoning(inputs []string, systemReminders []string) (ReasoningResult, error)
+    DoReasoning(ctx context.Context, inputs []string, systemReminders []string) (ReasoningResult, error)
 }
 
 type ReasoningResult struct {
@@ -151,7 +176,17 @@ type ReasoningResult struct {
 
 The AgentRunner owns the loop; `Agent` owns the LLM interaction. `inputs` accumulates user message + tool results as raw strings. `systemReminders` carries the current todo plan state.
 
-**Gap:** `Agent` interface has no access to tool definitions. The `DoReasoning` implementation must get `[]provider.ToolDefinition` from somewhere external to this interface (e.g. constructor injection). This is not yet wired up — `cmd/app/main.go` is a stub.
+The concrete implementation lives in `internal/agent/`. Tool definitions are injected at construction via `AgentConfig` — the tool registry converts its definitions to `[]provider.ToolDefinition` via `Registry.ProviderDefinitions()`.
+
+```go
+type AgentConfig struct {
+    Model           provider.LLM
+    ToolDefinitions []provider.ToolDefinition
+    SystemPrompt    string
+}
+```
+
+`Agent` manages conversation history as `[]provider.Message`, builds `CompletionRequest` each reasoning cycle, and parses `CompletionResponse` into `ReasoningResult`.
 
 ## Harness
 
@@ -206,6 +241,7 @@ type Registry struct {
 - `Execute(ctx, name, input)` — lookup, build `ExecutionContext` with registry's `workingDir`, run tool, return `ToolResult`
 - `CopyWithout(names...)` — clone registry excluding named tools (preserves `workingDir`)
 - `Definitions()` — return all registered tool definitions
+- `ProviderDefinitions()` — convert registered tools to `[]provider.ToolDefinition` (name, description, JSON schema) for injection into Agent
 
 ### Tool Interface
 
@@ -255,6 +291,31 @@ Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn
 **fsutil** — per-path mutex locks (`sync.Map`) for concurrent file access. `writeFileAtomic` uses temp-file + rename for crash safety.
 
 **todo.go** — `ReadTodoReminder(workingDir)` reads `.agent_todo.json`, formats as `<system-reminder>` block. Returns `""` if no file. Called by harness after each tool execution and in `buildSystemReminders()`.
+
+## Skill System
+
+### Registry
+
+```go
+type Definition struct {
+    Name        string
+    Description string
+    path        string   // unexported — callers use Load()
+}
+
+type Registry struct {
+    skills    map[string]Definition
+    skillsDir string
+}
+```
+
+- `NewRegistry(skillsDir)` — scans directory at construction, discovers all skills via frontmatter parsing
+- `Discover()` — returns a copy of the skills map (metadata only, no file content)
+- `Load(name)` — lazy-loads full `SKILL.md` content from disk on demand
+
+Skills are subdirectories of `skillsDir`, each containing a `SKILL.md` with YAML frontmatter (`name`, `description`) between `---` fences. Discovery reads only frontmatter — zero full-body reads at startup.
+
+Skill metadata is passed as data into `AgentConfig` for system prompt injection. The `SkillRegistry` itself is passed to `list_skills`/`load_skill` tool constructors for runtime access.
 
 ## Provider Layer
 
@@ -366,14 +427,13 @@ Each provider converts between canonical types and SDK-specific types:
 
 ## Known Design Issues
 
-- **`Agent.DoReasoning` tool definitions** — Agent interface has no access to tool definitions. The `DoReasoning` implementation must get `[]provider.ToolDefinition` from somewhere external (e.g. constructor injection). Not yet wired up.
 - **`FileTracker`** — exists but isn't wired into Edit/Write tools.
 
 ## What's Not Built Yet
 
-- `cmd/app/main.go` is a stub — no Agent implementation wired to a provider
-- `internal/agent/agent.go` is an empty package
-- No context compression, skill loading, task dependency graph (Phase 2)
+- `cmd/app/main.go` is a stub — Agent implementation exists but isn't wired to a provider yet
+- No context compression, task dependency graph (Phase 2 — skill loading done)
+- No `list_skills`/`load_skill` tool definitions yet (Phase 2)
 - No async execution, multi-agent teams (Phase 3)
 - No permission governance, event bus, session persistence (Phase 4)
 - No parallel tool execution, prompt caching, MCP integration (Phase 5)

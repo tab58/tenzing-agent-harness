@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"tenzing-agent/internal/harness"
+	"tenzing-agent/internal/harness/tools/tooldef"
 	"tenzing-agent/internal/provider"
-	"tenzing-agent/internal/tools/tooldef"
 )
 
 type Agent struct {
@@ -19,13 +19,23 @@ type AgentConfig struct {
 	Model           provider.LLM
 	ToolDefinitions []provider.ToolDefinition
 	SystemPrompt    string
+	Skills          map[string]string // name -> description, injected into system prompt
 }
 
 func New(cfg AgentConfig) *Agent {
+	systemPrompt := cfg.SystemPrompt
+	if len(cfg.Skills) > 0 {
+		systemPrompt += "\n\nAvailable skills (call load_skill to get full instructions):"
+		for name, desc := range cfg.Skills {
+			systemPrompt += fmt.Sprintf("\n- %s: %s", name, desc)
+		}
+		systemPrompt += "\nWhen a task requires specialised knowledge, call load_skill(name) to get full instructions before starting. Do NOT guess."
+	}
+
 	return &Agent{
 		model:        cfg.Model,
 		tools:        cfg.ToolDefinitions,
-		systemPrompt: cfg.SystemPrompt,
+		systemPrompt: systemPrompt,
 		history:      make([]provider.Message, 0),
 	}
 }

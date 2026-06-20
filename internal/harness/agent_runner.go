@@ -4,13 +4,15 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"tenzing-agent/internal/tools"
+	"tenzing-agent/internal/harness/skills"
+	"tenzing-agent/internal/harness/tools"
 )
 
 type AgentRunner struct {
 	agent          Agent
 	fsm            *LoopFSM
 	toolRegistry   *tools.Registry
+	skillsRegistry *skills.Registry
 	hooks          Hooks
 	systemPrompt   string
 	buildReminders ReminderBuilder
@@ -19,6 +21,7 @@ type AgentRunner struct {
 type AgentRunnerConfig struct {
 	Agent          Agent
 	ToolRegistry   *tools.Registry
+	SkillsRegistry *skills.Registry
 	Hooks          Hooks
 	SystemPrompt   string
 	BuildReminders ReminderBuilder

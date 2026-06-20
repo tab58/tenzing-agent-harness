@@ -132,9 +132,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	default:
-		if msg.Type == tea.KeyRunes {
+		switch msg.Type {
+		case tea.KeyRunes:
 			m.input += string(msg.Runes)
-		} else if msg.Type == tea.KeySpace {
+		case tea.KeySpace:
 			m.input += " "
 		}
 		return m, nil

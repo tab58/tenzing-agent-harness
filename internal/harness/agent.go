@@ -3,7 +3,7 @@ package harness
 import (
 	"context"
 
-	"tenzing-agent/internal/tools/tooldef"
+	"tenzing-agent/internal/harness/tools/tooldef"
 )
 
 type Agent interface {
