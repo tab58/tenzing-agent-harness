@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	agentctx "tenzing-agent/internal/agent/context"
 	"tenzing-agent/internal/harness"
 	"tenzing-agent/internal/harness/skills"
 	"tenzing-agent/internal/harness/tools"
@@ -20,8 +21,9 @@ func main() {
 	skillsRegistry := skills.NewRegistry(
 		"~/.claude/skills",
 	)
+	taskGraph := agentctx.NewTaskGraph(cwd)
 	toolRegistry := tools.NewRegistry(cwd,
-		tools.GetDefaultToolDefs(skillsRegistry)...,
+		tools.GetDefaultToolDefs(skillsRegistry, taskGraph)...,
 	)
 	hooks := harness.Hooks{}
 
