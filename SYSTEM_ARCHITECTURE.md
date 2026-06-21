@@ -47,17 +47,26 @@ main.go
 Go module: `tenzing-agent` (go 1.25.9)
 
 ```
-cmd/app/main.go                         Entry point (stub — TODO: wire harness)
+cmd/app/main.go                         Entry point — wires agent, tools, skills, task graph
 
 internal/
 ├── agent/                              Concrete Agent implementation
-│   └── agent.go                        Agent struct, AgentConfig, DoReasoning
+│   ├── agent.go                        Agent struct, AgentConfig, DoReasoning, NewWithCompressor
+│   └── context/                        Knowledge & context management
+│       ├── compression.go              Three-layer context compression + memory persistence
+│       ├── context.go                  Context struct (placeholder)
+│       └── graph.go                    TaskGraph — persistent dependency-aware task graph
 ├── errors/errors.go                    Wrap() helper
 ├── harness/                            Core loop & orchestration
 │   ├── agent.go                        Agent interface + ReasoningResult
 │   ├── agent_runner.go                 AgentRunner: FSM-driven loop, DI config
 │   ├── loop_fsm.go                     Per-runner FSM (6 states, 6 transitions)
 │   ├── harness.go                      Thin orchestrator, config types, defaults
+│   ├── prompts/                        System prompt construction
+│   ├── skills/                         Skill discovery & lazy loading
+│   │   └── registry.go                 Discover frontmatter at startup, Load on demand
+│   ├── tools/                          Tool dispatch system
+│   │   └── registry.go                 Name→Definition map, Execute(), ProviderDefinitions()
 │   └── session.go                      REPL stdin→loop→stdout driver
 ├── provider/                           LLM abstraction layer
 │   ├── llm.go                          LLM interface (6 implementations)
@@ -75,13 +84,9 @@ internal/
 │   └── utils/
 │       ├── token_bucket.go             Token-bucket rate limiter
 │       └── semaphore.go                Concurrency semaphore
-├── skills/                             Skill discovery & lazy loading
-│   └── registry.go                     Discover frontmatter at startup, Load on demand
-├── tools/                              Tool dispatch system
-│   └── registry.go                     Name→Definition map, Execute(), ProviderDefinitions()
 └── utils/strings.go                    Generic Strings() helper
 
-internal/tools/tooldef/                 Tool implementations
+internal/harness/tools/tooldef/         Tool implementations
 ├── definition.go                       Definition interface, Schema, ToolCall, ToolResult
 ├── tool_bash.go                        Shell command execution (120s timeout)
 ├── tool_read.go                        File read with line numbers
@@ -90,6 +95,13 @@ internal/tools/tooldef/                 Tool implementations
 ├── tool_grep.go                        Regex search across files (cap 500)
 ├── tool_glob.go                        File pattern matching
 ├── tool_revert.go                      Restore file from snapshot
+├── tool_subagent.go                    Subagent spawn tool
+├── tool_list_skills.go                 List available skills (interface: SkillLister)
+├── tool_load_skill.go                  Load skill content (interface: SkillContentLoader)
+├── tool_task_create.go                 Create task in graph (interface: TaskCreator)
+├── tool_task_next.go                   Get next unblocked task (interface: TaskNexter)
+├── tool_task_update.go                 Update task status (interface: TaskUpdater)
+├── tool_task_list.go                   List all tasks (interface: TaskLister)
 ├── tool_todowrite.go                   Write plan as JSON task list
 ├── tool_todoupdate.go                  Mark task status (done/in_progress/blocked)
 ├── tool_todoread.go                    Read and display current plan
@@ -183,10 +195,15 @@ type AgentConfig struct {
     Model           provider.LLM
     ToolDefinitions []provider.ToolDefinition
     SystemPrompt    string
+    Skills          map[string]string // name → description, injected into system prompt
 }
 ```
 
 `Agent` manages conversation history as `[]provider.Message`, builds `CompletionRequest` each reasoning cycle, and parses `CompletionResponse` into `ReasoningResult`.
+
+Two constructors:
+- `New(cfg)` — basic agent, no compression
+- `NewWithCompressor(cfg, cwd)` — adds context compression. Loads prior memory from `.agent_memory.md` into history at startup. After each `DoReasoning` call, runs `MaybeCompress` to keep history within bounds.
 
 ## Harness
 
@@ -267,7 +284,7 @@ type ToolResult struct {
 
 Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn't break on tool errors.
 
-### Tool Inventory (10 tools)
+### Tool Inventory (16 tools)
 
 | Tool | Description | Key behavior |
 |------|-------------|--------------|
@@ -278,6 +295,13 @@ Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn
 | `Grep` | Regex search | Caps at 500 matches |
 | `Glob` | File patterns | Supports `**` wildcard |
 | `Revert` | Restore file | Pops from snapshot store (one-shot) |
+| `SubagentSpawn` | Spawn subagent | Runs a sub-loop with its own config |
+| `list_skills` | List skills | Returns name→description map from skill registry |
+| `load_skill` | Load skill | Lazy-loads full `SKILL.md` content by name |
+| `task_create` | Create task | Persistent task graph, validates dependencies |
+| `task_next` | Next task | Highest-priority pending with all deps done |
+| `task_update` | Update task | Status change by ID or prefix match |
+| `task_list` | List tasks | All tasks with IDs, statuses, priorities, deps |
 | `TodoWrite` | Write plan | JSON array → `.agent_todo.json`, all `pending` |
 | `TodoUpdate` | Update status | By index: `done`, `in_progress`, `blocked` |
 | `TodoRead` | Show plan | Formatted task list |
@@ -316,6 +340,46 @@ type Registry struct {
 Skills are subdirectories of `skillsDir`, each containing a `SKILL.md` with YAML frontmatter (`name`, `description`) between `---` fences. Discovery reads only frontmatter — zero full-body reads at startup.
 
 Skill metadata is passed as data into `AgentConfig` for system prompt injection. The `SkillRegistry` itself is passed to `list_skills`/`load_skill` tool constructors for runtime access.
+
+## Task Graph
+
+Persistent, dependency-aware task tracking in `internal/agent/context/graph.go`. Persists to `.agent_tasks.json` in the working directory. Survives session restarts.
+
+```go
+type Task struct {
+    ID, Description, Status, Result string
+    Priority    TaskPriority       // high, medium, low
+    DependsOn   []string           // task IDs
+}
+
+type TaskGraph struct { file string; mu sync.Mutex }
+```
+
+- `CreateTask(desc, dependsOn, priority)` — validates dependencies exist, assigns random hex ID
+- `NextTask()` — returns highest-priority pending task with all deps done (JSON string)
+- `UpdateTask(taskID, status, result)` — supports prefix matching on task ID
+- `ListTasks()` — all tasks as indented JSON
+- `Reminder()` — formatted `<system-reminder>` block injected per turn
+
+Four tools (`task_create`, `task_next`, `task_update`, `task_list`) use narrow interfaces (`TaskCreator`, `TaskNexter`, `TaskUpdater`, `TaskLister`) to avoid import cycles. `TaskGraph` satisfies all four.
+
+Coexists with `TodoWrite`/`TodoUpdate`/`TodoRead` — task graph is for persistent multi-step work with dependencies; todo is simpler session-scoped planning.
+
+## Context Compression
+
+Three-layer compression in `internal/agent/context/compression.go`. Prevents unbounded history growth during long sessions.
+
+```go
+type Compressor struct { llm provider.LLM; memoryFile string }
+```
+
+- `EstimateSize(messages)` — sums char lengths across all content blocks
+- `MaybeCompress(ctx, messages)` — triggers when history exceeds 40k chars AND more than 6 messages. Splits at `len-6`, summarizes older portion via LLM, persists summary to `.agent_memory.md`, returns `[summary, ack, ...recent_6]`
+- `LoadMemory()` / `SaveMemory(summary)` — disk persistence with timestamp header
+
+Integrated in `Agent.DoReasoning` — runs after each assistant response. `NewWithCompressor` loads prior memory at startup, seeding history with previous session context.
+
+Compression is non-fatal: LLM errors are logged, original history preserved.
 
 ## Provider Layer
 
@@ -431,9 +495,7 @@ Each provider converts between canonical types and SDK-specific types:
 
 ## What's Not Built Yet
 
-- `cmd/app/main.go` is a stub — Agent implementation exists but isn't wired to a provider yet
-- No context compression, task dependency graph (Phase 2 — skill loading done)
-- No `list_skills`/`load_skill` tool definitions yet (Phase 2)
+- `cmd/app/main.go` wires everything but Agent model is `nil` — needs a provider instance
 - No async execution, multi-agent teams (Phase 3)
 - No permission governance, event bus, session persistence (Phase 4)
 - No parallel tool execution, prompt caching, MCP integration (Phase 5)

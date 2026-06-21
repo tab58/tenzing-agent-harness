@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	agentctx "tenzing-agent/internal/agent/context"
 	"tenzing-agent/internal/harness"
 	"tenzing-agent/internal/harness/tools/tooldef"
 	"tenzing-agent/internal/provider"
@@ -13,6 +15,7 @@ type Agent struct {
 	tools        []provider.ToolDefinition
 	history      []provider.Message
 	systemPrompt string
+	compressor   *agentctx.Compressor
 }
 
 type AgentConfig struct {
@@ -38,6 +41,20 @@ func New(cfg AgentConfig) *Agent {
 		systemPrompt: systemPrompt,
 		history:      make([]provider.Message, 0),
 	}
+}
+
+func NewWithCompressor(cfg AgentConfig, cwd string) *Agent {
+	a := New(cfg)
+	a.compressor = agentctx.NewCompressor(cfg.Model, cwd+"/"+agentctx.MemoryFileName)
+
+	if mem, err := a.compressor.LoadMemory(); err == nil && mem != "" {
+		a.history = append(a.history,
+			provider.NewUserMessage("[Context summary from previous conversation]\n\n"+mem),
+			provider.NewAssistantMessage("Understood. I have the full context from our previous work."),
+		)
+	}
+
+	return a
 }
 
 func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminders []string) (harness.ReasoningResult, error) {
@@ -70,6 +87,16 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 		Role:    provider.RoleAssistant,
 		Content: resp.Content,
 	})
+
+	if a.compressor != nil {
+		compressed, did, compErr := a.compressor.MaybeCompress(ctx, a.history)
+		if compErr != nil {
+			slog.Warn("compression failed", "error", compErr)
+		} else if did {
+			slog.Info("context compressed", "before", len(a.history), "after", len(compressed))
+			a.history = compressed
+		}
+	}
 
 	// Check for tool calls
 	toolCalls := resp.ToolCalls()

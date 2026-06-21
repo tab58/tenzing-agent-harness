@@ -35,10 +35,10 @@ func main() {
 	hooks := harness.Hooks{}
 
 	// build the main agent
-	mainAgent := agent.New(agent.AgentConfig{
+	mainAgent := agent.NewWithCompressor(agent.AgentConfig{
 		Model:           nil,
 		ToolDefinitions: toolRegistry.ProviderDefinitions(),
-	})
+	}, cwd)
 
 	// build the agent runner
 	mainRunnerConfig := harness.AgentRunnerConfig{
