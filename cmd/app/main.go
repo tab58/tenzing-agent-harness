@@ -47,7 +47,7 @@ func main() {
 		SkillsRegistry: skillsRegistry,
 		Hooks:          hooks,
 		SystemPrompt:   prompts.DefaultSystemPrompt(cwd),
-		BuildReminders: harness.DefaultReminderBuilder(cwd),
+		BuildReminders: harness.DefaultReminderBuilder(cwd, taskGraph),
 	}
 
 	// build and run the harness

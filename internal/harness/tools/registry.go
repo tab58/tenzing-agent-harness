@@ -11,7 +11,7 @@ import (
 	"tenzing-agent/internal/provider"
 )
 
-func GetDefaultToolDefs(skillRegistry *skills.Registry, taskGraph *agentctx.Graph) []tooldef.Definition {
+func GetDefaultToolDefs(skillRegistry *skills.Registry, taskGraph *agentctx.TaskGraph) []tooldef.Definition {
 	snapshotStore := tooldef.NewSnapshotStore()
 	return []tooldef.Definition{
 		// basic tools

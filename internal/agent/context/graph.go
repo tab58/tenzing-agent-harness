@@ -12,14 +12,14 @@ import (
 	"sync"
 )
 
-const FileName = ".agent_tasks.json"
+const TasksFileName = ".agent_tasks.json"
 
 type TaskPriority string
 
 const (
-	TaskPriorityLow = iota
-	TaskPriorityMedium
-	TaskPriorityHigh
+	TaskPriorityHigh   TaskPriority = "high"
+	TaskPriorityMedium TaskPriority = "medium"
+	TaskPriorityLow    TaskPriority = "low"
 )
 
 type Task struct {
@@ -31,24 +31,28 @@ type Task struct {
 	Result      string       `json:"result,omitempty"`
 }
 
-type Graph struct {
+type TaskGraph struct {
 	file string
 	mu   sync.Mutex
 }
 
-func NewTaskGraph(cwd string) *Graph {
-	return &Graph{
-		file: filepath.Join(cwd, FileName),
+func NewTaskGraph(cwd string) *TaskGraph {
+	return &TaskGraph{
+		file: filepath.Join(cwd, TasksFileName),
 	}
 }
 
-func (g *Graph) CreateTask(desc string, dependsOn []string, priority TaskPriority) (string, error) {
+func (g *TaskGraph) CreateTask(desc string, dependsOn []string, priority TaskPriority) (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	tasks, err := g.load()
 	if err != nil {
 		return "", err
+	}
+
+	if priority == "" {
+		priority = TaskPriorityMedium
 	}
 
 	if dependsOn == nil {
@@ -78,7 +82,7 @@ func (g *Graph) CreateTask(desc string, dependsOn []string, priority TaskPriorit
 	return string(data), nil
 }
 
-func (g *Graph) NextTask() (string, error) {
+func (g *TaskGraph) NextTask() (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -94,7 +98,7 @@ func (g *Graph) NextTask() (string, error) {
 		}
 	}
 
-	// priorityOrder := map[string]int{"high": 0, "medium": 1, "low": 2}
+	priorityOrder := map[TaskPriority]int{TaskPriorityHigh: 0, TaskPriorityMedium: 1, TaskPriorityLow: 2}
 
 	var pending []Task
 	for _, t := range tasks {
@@ -107,7 +111,7 @@ func (g *Graph) NextTask() (string, error) {
 	}
 
 	sort.SliceStable(pending, func(i, j int) bool {
-		return pending[i].Priority < pending[j].Priority
+		return priorityOrder[pending[i].Priority] < priorityOrder[pending[j].Priority]
 	})
 
 	if len(pending) == 0 {
@@ -118,7 +122,7 @@ func (g *Graph) NextTask() (string, error) {
 	return string(data), nil
 }
 
-func (g *Graph) UpdateTask(taskID string, status string, result string) error {
+func (g *TaskGraph) UpdateTask(taskID string, status string, result string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -151,7 +155,7 @@ func (g *Graph) UpdateTask(taskID string, status string, result string) error {
 	return g.save(updated)
 }
 
-func (g *Graph) ListTasks() (string, error) {
+func (g *TaskGraph) ListTasks() (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -167,7 +171,7 @@ func (g *Graph) ListTasks() (string, error) {
 	return string(data), nil
 }
 
-func (g *Graph) Reminder() string {
+func (g *TaskGraph) Reminder() string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -189,7 +193,7 @@ func (g *Graph) Reminder() string {
 	return b.String()
 }
 
-func (g *Graph) load() ([]Task, error) {
+func (g *TaskGraph) load() ([]Task, error) {
 	data, err := os.ReadFile(g.file)
 	if os.IsNotExist(err) {
 		return []Task{}, nil
@@ -204,7 +208,7 @@ func (g *Graph) load() ([]Task, error) {
 	return tasks, nil
 }
 
-func (g *Graph) save(tasks []Task) error {
+func (g *TaskGraph) save(tasks []Task) error {
 	data, err := json.MarshalIndent(tasks, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal tasks: %w", err)

@@ -30,7 +30,7 @@ func main() {
 	// plug in your harness.Agent implementation here
 	agent := (harness.Agent)(nil)
 
-	mainCfg := harness.DefaultMainConfig(agent, toolRegistry, hooks, cwd)
+	mainCfg := harness.DefaultMainConfig(agent, toolRegistry, hooks, cwd, taskGraph)
 
 	m := newModel(mainCfg)
 	p := tea.NewProgram(m, tea.WithAltScreen())

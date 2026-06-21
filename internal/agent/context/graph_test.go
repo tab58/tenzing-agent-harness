@@ -138,7 +138,7 @@ func TestFilePersistence(t *testing.T) {
 		t.Fatal("expected task from new graph instance")
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, FileName))
+	data, err := os.ReadFile(filepath.Join(dir, TasksFileName))
 	if err != nil {
 		t.Fatalf("read file: %v", err)
 	}
