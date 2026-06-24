@@ -24,14 +24,6 @@ func DefaultReminderBuilder(cwd string, taskGraph *agentctx.TaskGraph) ReminderB
 	}
 }
 
-// DefaultRunnerFactory creates a RunnerFactory from a base config.
-// Each subagent gets a fresh runner with the base config.
-func DefaultRunnerFactory(base AgentRunnerConfig) RunnerFactory {
-	return func(prompt string) (*AgentRunner, error) {
-		return NewAgentRunner(base), nil
-	}
-}
-
 // DefaultMainConfig builds an AgentRunnerConfig with standard defaults:
 // default system prompt, default reminder builder.
 func DefaultMainConfig(agent Agent, registry *tools.Registry, hooks Hooks, cwd string, taskGraph *agentctx.TaskGraph) AgentRunnerConfig {
@@ -40,18 +32,6 @@ func DefaultMainConfig(agent Agent, registry *tools.Registry, hooks Hooks, cwd s
 		ToolRegistry:   registry,
 		Hooks:          hooks,
 		SystemPrompt:   prompts.DefaultSystemPrompt(cwd),
-		BuildReminders: DefaultReminderBuilder(cwd, taskGraph),
-	}
-}
-
-// DefaultSubagentConfig builds an AgentRunnerConfig for subagents:
-// subagent system prompt, registry without SubagentSpawn.
-func DefaultSubagentConfig(agent Agent, registry *tools.Registry, hooks Hooks, cwd string, taskGraph *agentctx.TaskGraph) AgentRunnerConfig {
-	return AgentRunnerConfig{
-		Agent:          agent,
-		ToolRegistry:   registry.CopyWithout("SubagentSpawn"),
-		Hooks:          hooks,
-		SystemPrompt:   prompts.SubagentSystemPrompt(cwd),
 		BuildReminders: DefaultReminderBuilder(cwd, taskGraph),
 	}
 }

@@ -18,12 +18,17 @@ import (
 //go:embed bootstrap.py
 var bootstrapScript string
 
+// RLMQueryFunc spawns a child RLM engine to process a prompt recursively.
+// nil means rlm_query is not available (max depth reached).
+type RLMQueryFunc func(ctx context.Context, prompt string) (string, error)
+
 type REPL struct {
 	cmd        *exec.Cmd
 	stdin      *json.Encoder
 	scanner    *bufio.Scanner
 	workingDir string
 	subLLM     provider.LLM
+	rlmQueryFn RLMQueryFunc
 }
 
 type message struct {
@@ -43,7 +48,7 @@ type message struct {
 	Result string `json:"result,omitempty"`
 }
 
-func NewREPL(subLLM provider.LLM, workingDir string) (*REPL, error) {
+func NewREPL(subLLM provider.LLM, workingDir string, rlmQueryFn RLMQueryFunc) (*REPL, error) {
 	cmd := exec.Command("python3", "-u", "-c", bootstrapScript)
 	cmd.Dir = workingDir
 	cmd.Stderr = os.Stderr
@@ -61,13 +66,23 @@ func NewREPL(subLLM provider.LLM, workingDir string) (*REPL, error) {
 		return nil, fmt.Errorf("start python: %w", err)
 	}
 
-	return &REPL{
+	repl := &REPL{
 		cmd:        cmd,
 		stdin:      json.NewEncoder(stdinPipe),
 		scanner:    bufio.NewScanner(stdoutPipe),
 		workingDir: workingDir,
 		subLLM:     subLLM,
-	}, nil
+		rlmQueryFn: rlmQueryFn,
+	}
+
+	if rlmQueryFn != nil {
+		if err := repl.send(message{Type: "enable_rlm_query"}); err != nil {
+			cmd.Process.Kill()
+			return nil, fmt.Errorf("enable rlm_query: %w", err)
+		}
+	}
+
+	return repl, nil
 }
 
 func (r *REPL) Execute(ctx context.Context, code string) (stdout string, done bool, final string, err error) {
@@ -134,6 +149,8 @@ func (r *REPL) handleCallback(ctx context.Context, funcName string, args map[str
 	switch funcName {
 	case "sub_lm":
 		return r.callbackSubLM(ctx, args)
+	case "rlm_query":
+		return r.callbackRLMQuery(ctx, args)
 	case "read_file":
 		return r.callbackReadFile(args)
 	case "grep_file":
@@ -143,6 +160,17 @@ func (r *REPL) handleCallback(ctx context.Context, funcName string, args map[str
 	default:
 		return "", fmt.Errorf("unknown callback: %s", funcName)
 	}
+}
+
+func (r *REPL) callbackRLMQuery(ctx context.Context, args map[string]any) (string, error) {
+	if r.rlmQueryFn == nil {
+		return "", fmt.Errorf("rlm_query not available: max recursion depth reached")
+	}
+	prompt, _ := args["prompt"].(string)
+	if prompt == "" {
+		return "", fmt.Errorf("rlm_query requires a non-empty prompt")
+	}
+	return r.rlmQueryFn(ctx, prompt)
 }
 
 func (r *REPL) callbackSubLM(ctx context.Context, args map[string]any) (string, error) {

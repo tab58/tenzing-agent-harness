@@ -81,7 +81,7 @@ func (m *multiResponseLLM) SendSyncMessage(_ context.Context, req provider.Compl
 
 func TestREPLPrint(t *testing.T) {
 	skipIfNoPython(t)
-	r, err := NewREPL(nil, t.TempDir())
+	r, err := NewREPL(nil, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestREPLPrint(t *testing.T) {
 
 func TestREPLPromptVariable(t *testing.T) {
 	skipIfNoPython(t)
-	r, err := NewREPL(nil, t.TempDir())
+	r, err := NewREPL(nil, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestREPLPromptVariable(t *testing.T) {
 func TestREPLSubLM(t *testing.T) {
 	skipIfNoPython(t)
 	llm := &fakeLLM{response: "the answer is 42"}
-	r, err := NewREPL(llm, t.TempDir())
+	r, err := NewREPL(llm, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestREPLSubLM(t *testing.T) {
 func TestREPLSubLMInLoop(t *testing.T) {
 	skipIfNoPython(t)
 	multi := &multiResponseLLM{responses: []string{"summary-a", "summary-b", "summary-c"}}
-	r, err := NewREPL(multi, t.TempDir())
+	r, err := NewREPL(multi, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -169,7 +169,7 @@ print("|".join(results))`)
 func TestREPLSubLMError(t *testing.T) {
 	skipIfNoPython(t)
 	llm := &fakeLLM{err: fmt.Errorf("api down")}
-	r, err := NewREPL(llm, t.TempDir())
+	r, err := NewREPL(llm, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestREPLReadFile(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "test.txt"), []byte("line1\nline2\nline3\n"), 0644)
 
-	r, err := NewREPL(nil, dir)
+	r, err := NewREPL(nil, dir, nil)
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestREPLReadFileLineRange(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "test.txt"), []byte("line0\nline1\nline2\nline3\nline4\n"), 0644)
 
-	r, err := NewREPL(nil, dir)
+	r, err := NewREPL(nil, dir, nil)
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -235,7 +235,7 @@ print(content)`)
 func TestREPLReadFilePathTraversal(t *testing.T) {
 	skipIfNoPython(t)
 	dir := t.TempDir()
-	r, err := NewREPL(nil, dir)
+	r, err := NewREPL(nil, dir, nil)
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -257,7 +257,7 @@ except RuntimeError as e:
 
 func TestREPLFinal(t *testing.T) {
 	skipIfNoPython(t)
-	r, err := NewREPL(nil, t.TempDir())
+	r, err := NewREPL(nil, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestREPLFinal(t *testing.T) {
 
 func TestREPLFinalVar(t *testing.T) {
 	skipIfNoPython(t)
-	r, err := NewREPL(nil, t.TempDir())
+	r, err := NewREPL(nil, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestREPLFinalVar(t *testing.T) {
 
 func TestREPLStatePersists(t *testing.T) {
 	skipIfNoPython(t)
-	r, err := NewREPL(nil, t.TempDir())
+	r, err := NewREPL(nil, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestREPLStatePersists(t *testing.T) {
 
 func TestREPLPythonError(t *testing.T) {
 	skipIfNoPython(t)
-	r, err := NewREPL(nil, t.TempDir())
+	r, err := NewREPL(nil, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestREPLPythonError(t *testing.T) {
 
 func TestREPLClose(t *testing.T) {
 	skipIfNoPython(t)
-	r, err := NewREPL(nil, t.TempDir())
+	r, err := NewREPL(nil, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}

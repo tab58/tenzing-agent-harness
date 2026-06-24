@@ -1,9 +1,10 @@
-When working with large inputs that exceed what you can process in a single pass:
+When working with large inputs that exceed what you can process in a single pass,
+use the `rlm` tool to delegate. The RLM loads the input into a Python REPL as a
+variable, then you write code to programmatically decompose, analyze (via llm_query
+calls), and aggregate results.
 
-1. PROBE: Use read to examine the file structure (length, format, sections)
-2. DECOMPOSE: Split the input into manageable chunks (by section, function, paragraph)
-3. PROCESS: Use sub_lm to analyze each chunk with a focused question
-4. AGGREGATE: Combine sub-results into your final answer
-
-sub_lm is lightweight (single LLM call, no tools) — use it freely for focused queries on text chunks.
-SubagentSpawn is heavyweight (full agent loop with tools) — use it when the subtask needs tools like read, write, or bash.
+Strategy:
+1. PROBE: Examine the input structure (length, format, sections)
+2. DECOMPOSE: Split into manageable chunks (by section, function, paragraph)
+3. PROCESS: Use llm_query() inside the REPL to analyze each chunk
+4. AGGREGATE: Combine sub-results and call FINAL() with the answer

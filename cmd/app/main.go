@@ -53,35 +53,42 @@ func main() {
 		"~/.claude/skills",
 	)
 
-	toolRegistry := tools.NewRegistry(cwd,
-		tools.GetDefaultToolDefs(skillsRegistry, taskGraph)...,
-	)
+	toolDefs, err := tools.GetDefaultToolDefs(skillsRegistry, taskGraph, cwd, &tools.RLMConfig{
+		RootModel: llm,
+		MaxDepth:  1,
+	})
+	if err != nil {
+		slog.Error("tool init failed", "error", err)
+		fmt.Fprintf(os.Stderr, "tool init failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	toolRegistry := tools.NewRegistry(cwd, toolDefs...)
 
 	hooks := harness.Hooks{}
+
+	systemPrompt := prompts.DefaultSystemPrompt(cwd) + "\n\n" + prompts.RLMGuidance()
 
 	mainAgent := agent.NewWithCompressor(agent.AgentConfig{
 		Model:           llm,
 		ToolDefinitions: toolRegistry.ProviderDefinitions(),
 	}, cwd)
 
-	mainRunnerConfig := harness.AgentRunnerConfig{
-		Agent:          mainAgent,
-		ToolRegistry:   toolRegistry,
-		Hooks:          hooks,
-		SystemPrompt:   prompts.DefaultSystemPrompt(cwd),
-		BuildReminders: harness.DefaultReminderBuilder(cwd, taskGraph),
-	}
-
 	agentHarness, err := harness.New(harness.HarnessConfig{
-		MainRunner:   mainRunnerConfig,
-		SubLMModel:   llm,
-		RLMRootModel: llm,
+		MainRunner: harness.AgentRunnerConfig{
+			Agent:          mainAgent,
+			ToolRegistry:   toolRegistry,
+			Hooks:          hooks,
+			SystemPrompt:   systemPrompt,
+			BuildReminders: harness.DefaultReminderBuilder(cwd, taskGraph),
+		},
 	})
 	if err != nil {
 		slog.Error("harness init failed", "error", err, "stack", string(debug.Stack()))
 		fmt.Fprintf(os.Stderr, "harness init failed: %v\n", err)
 		os.Exit(1)
 	}
+
 	slog.Info("session started", "model", llm.GetCurrentModel(), "cwd", cwd, "tools", len(toolRegistry.Definitions()))
 
 	fmt.Println("tenzing agent harness")

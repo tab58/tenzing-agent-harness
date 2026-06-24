@@ -36,6 +36,7 @@ type EngineConfig struct {
 	WorkingDir    string
 	MaxIterations int
 	TruncateMax   int
+	MaxDepth      int // 0=no sub-calls, 1=llm_query only, 2+=rlm_query available
 }
 
 type Engine struct {
@@ -44,6 +45,8 @@ type Engine struct {
 	workingDir    string
 	maxIterations int
 	truncateMax   int
+	maxDepth      int
+	currentDepth  int
 }
 
 func NewEngine(cfg EngineConfig) (*Engine, error) {
@@ -62,23 +65,53 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 	if truncMax <= 0 {
 		truncMax = 2000
 	}
+	maxDepth := cfg.MaxDepth
+	if maxDepth < 0 {
+		maxDepth = 0
+	}
 	return &Engine{
 		rootLLM:       cfg.RootLLM,
 		subLLM:        subLLM,
 		workingDir:    cfg.WorkingDir,
 		maxIterations: maxIter,
 		truncateMax:   truncMax,
+		maxDepth:      maxDepth,
+		currentDepth:  0,
 	}, nil
 }
 
+func (e *Engine) childEngine() *Engine {
+	return &Engine{
+		rootLLM:       e.rootLLM,
+		subLLM:        e.subLLM,
+		workingDir:    e.workingDir,
+		maxIterations: e.maxIterations,
+		truncateMax:   e.truncateMax,
+		maxDepth:      e.maxDepth,
+		currentDepth:  e.currentDepth + 1,
+	}
+}
+
 type promptData struct {
-	PromptLength int
-	LineCount    int
-	TruncateMax  int
+	PromptLength   int
+	LineCount      int
+	TruncateMax    int
+	HasSubLM       bool
+	HasRLMQuery    bool
+	CurrentDepth   int
+	MaxDepth       int
 }
 
 func (e *Engine) Run(ctx context.Context, prompt string) (string, error) {
-	repl, err := NewREPL(e.subLLM, e.workingDir)
+	var rlmQueryFn RLMQueryFunc
+	if e.currentDepth < e.maxDepth {
+		child := e.childEngine()
+		rlmQueryFn = func(ctx context.Context, childPrompt string) (string, error) {
+			return child.Run(ctx, childPrompt)
+		}
+	}
+
+	repl, err := NewREPL(e.subLLM, e.workingDir, rlmQueryFn)
 	if err != nil {
 		return "", fmt.Errorf("create repl: %w", err)
 	}
@@ -98,7 +131,7 @@ func (e *Engine) Run(ctx context.Context, prompt string) (string, error) {
 	}
 
 	rlmStart := time.Now()
-	slog.Info("[RLM] started", "prompt_len", len(prompt), "max_iterations", e.maxIterations)
+	slog.Info("[RLM] started", "prompt_len", len(prompt), "max_iterations", e.maxIterations, "depth", e.currentDepth, "max_depth", e.maxDepth)
 
 	for i := 0; i < e.maxIterations; i++ {
 		if ctx.Err() != nil {
@@ -107,10 +140,12 @@ func (e *Engine) Run(ctx context.Context, prompt string) (string, error) {
 
 		model := e.rootLLM.GetCurrentModel()
 
+		d := e.currentDepth
+
 		if slog.Default().Enabled(ctx, levelTrace) {
-			slog.Log(ctx, levelTrace, "[RLM] request system prompt", "iter", i+1, "model", model, "system", systemPrompt)
+			slog.Log(ctx, levelTrace, "[RLM] request system prompt", "depth", d, "iter", i+1, "model", model, "system", systemPrompt)
 			if raw, err := json.Marshal(history); err == nil {
-				slog.Log(ctx, levelTrace, "[RLM] request messages", "iter", i+1, "model", model, "messages_json", string(raw))
+				slog.Log(ctx, levelTrace, "[RLM] request messages", "depth", d, "iter", i+1, "model", model, "messages_json", string(raw))
 			}
 		}
 
@@ -124,13 +159,13 @@ func (e *Engine) Run(ctx context.Context, prompt string) (string, error) {
 			return "", fmt.Errorf("root LLM error on turn %d: %w", i+1, err)
 		}
 
-		slog.Debug("[RLM] iteration", "iter", i+1, "model", model, "input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens)
+		slog.Debug("[RLM] iteration", "depth", d, "iter", i+1, "model", model, "input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens)
 
 		response := resp.Text()
-		slog.Debug("[RLM] assistant text", "iter", i+1, "text", response)
+		slog.Debug("[RLM] assistant text", "depth", d, "iter", i+1, "text", response)
 
 		if answer, ok := detectFinalInText(response); ok {
-			slog.Info("[RLM] completed", "iter", i+1, "duration", time.Since(rlmStart).Round(time.Millisecond), "answer_len", len(answer), "reason", "final_in_text")
+			slog.Info("[RLM] completed", "depth", d, "iter", i+1, "duration", time.Since(rlmStart).Round(time.Millisecond), "answer_len", len(answer), "reason", "final_in_text")
 			return answer, nil
 		}
 
@@ -140,7 +175,7 @@ func (e *Engine) Run(ctx context.Context, prompt string) (string, error) {
 		}
 
 		if len(codeBlocks) == 0 {
-			slog.Debug("[RLM] nudge", "iter", i+1, "reason", "no_code_blocks")
+			slog.Debug("[RLM] nudge", "depth", d, "iter", i+1, "reason", "no_code_blocks")
 			nudge := "[No code block detected. Write ```repl code to process the prompt, or use FINAL(answer) to return your answer.]"
 			history = append(history,
 				provider.NewAssistantMessage(response),
@@ -151,21 +186,21 @@ func (e *Engine) Run(ctx context.Context, prompt string) (string, error) {
 
 		var allOutput strings.Builder
 		for j, code := range codeBlocks {
-			slog.Debug("[RLM] repl execute", "iter", i+1, "block", j+1, "code", code)
+			slog.Debug("[RLM] repl execute", "depth", d, "iter", i+1, "block", j+1, "code", code)
 			stdout, done, final, err := repl.Execute(ctx, code)
 			if err != nil {
 				return "", fmt.Errorf("repl execute: %w", err)
 			}
-			slog.Debug("[RLM] repl result", "iter", i+1, "block", j+1, "stdout_len", len(stdout), "done", done)
-			slog.Log(ctx, levelTrace, "[RLM] repl stdout", "iter", i+1, "block", j+1, "stdout", stdout)
+			slog.Debug("[RLM] repl result", "depth", d, "iter", i+1, "block", j+1, "stdout_len", len(stdout), "done", done)
+			slog.Log(ctx, levelTrace, "[RLM] repl stdout", "depth", d, "iter", i+1, "block", j+1, "stdout", stdout)
 			allOutput.WriteString(stdout)
 			if done {
-				slog.Info("[RLM] completed", "iter", i+1, "duration", time.Since(rlmStart).Round(time.Millisecond), "answer_len", len(final), "reason", "final_in_repl")
+				slog.Info("[RLM] completed", "depth", d, "iter", i+1, "duration", time.Since(rlmStart).Round(time.Millisecond), "answer_len", len(final), "reason", "final_in_repl")
 				return final, nil
 			}
 		}
 
-		slog.Debug("[RLM] repl output", "iter", i+1, "code_blocks", len(codeBlocks), "output_len", allOutput.Len())
+		slog.Debug("[RLM] repl output", "depth", d, "iter", i+1, "code_blocks", len(codeBlocks), "output_len", allOutput.Len())
 
 		feedback := Truncate(allOutput.String(), e.truncateMax)
 		history = append(history,
@@ -174,7 +209,7 @@ func (e *Engine) Run(ctx context.Context, prompt string) (string, error) {
 		)
 	}
 
-	slog.Error("[RLM] failed", "reason", "max_iterations", "max", e.maxIterations, "duration", time.Since(rlmStart).Round(time.Millisecond))
+	slog.Error("[RLM] failed", "depth", e.currentDepth, "reason", "max_iterations", "max", e.maxIterations, "duration", time.Since(rlmStart).Round(time.Millisecond))
 	return "", fmt.Errorf("exceeded max iterations (%d)", e.maxIterations)
 }
 
@@ -183,6 +218,10 @@ func (e *Engine) buildSystemPrompt(prompt string) (string, error) {
 		PromptLength: len(prompt),
 		LineCount:    strings.Count(prompt, "\n") + 1,
 		TruncateMax:  e.truncateMax,
+		HasSubLM:     e.maxDepth >= 1 || e.currentDepth < e.maxDepth,
+		HasRLMQuery:  e.currentDepth+1 < e.maxDepth,
+		CurrentDepth: e.currentDepth,
+		MaxDepth:     e.maxDepth,
 	}
 	var buf bytes.Buffer
 	if err := systemTmpl.Execute(&buf, data); err != nil {

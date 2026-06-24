@@ -40,19 +40,25 @@ func main() {
 		}
 	}()
 
-	skillsRegistry := skills.NewRegistry(
-		"~/.claude/skills",
-	)
-	taskGraph := agentctx.NewTaskGraph(cwd)
-	toolRegistry := tools.NewRegistry(cwd,
-		tools.GetDefaultToolDefs(skillsRegistry, taskGraph)...,
-	)
-	hooks := harness.Hooks{}
-
 	llm := provider.NewOllamaClient(provider.OllamaConfig{
 		APIKey: os.Getenv("OLLAMA_API_KEY"),
 		Model:  "glm-5.2",
 	})
+
+	skillsRegistry := skills.NewRegistry(
+		"~/.claude/skills",
+	)
+	taskGraph := agentctx.NewTaskGraph(cwd)
+	toolDefs, err := tools.GetDefaultToolDefs(skillsRegistry, taskGraph, cwd, &tools.RLMConfig{
+		RootModel: llm,
+		MaxDepth:  1,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "tool init failed: %v\n", err)
+		os.Exit(1)
+	}
+	toolRegistry := tools.NewRegistry(cwd, toolDefs...)
+	hooks := harness.Hooks{}
 
 	mainAgent := agent.NewWithCompressor(agent.AgentConfig{
 		Model:           llm,

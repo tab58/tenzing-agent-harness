@@ -8,11 +8,18 @@ DATA ACCESS:
   read_file(path, start_line?, end_line?)  Read a file. Returns string.
   grep_file(pattern, path?)                Regex search. Returns matching lines.
   list_files(pattern)                      Glob file listing. Returns string.
-
+{{if .HasSubLM}}
 SUB-LLM:
-  sub_lm(text, max_tokens=4096)            Query a sub-LLM for analysis. Returns string.
-  Use for analyzing chunks, summarizing sections, answering sub-questions.
-
+  llm_query(text, max_tokens=4096)         Query a sub-LLM for analysis. Returns string.
+  Use for summarizing chunks, extracting facts, answering sub-questions about text.
+{{end}}{{if .HasRLMQuery}}
+RECURSIVE RLM:
+  rlm_query(context, query)                Spawn a child RLM loop to process complex sub-tasks.
+  The child gets its own REPL environment with llm_query and code execution.
+  Use when a sub-task is too complex for a single llm_query — e.g. when the
+  sub-task itself requires chunking, aggregation, or multi-step reasoning.
+  Note: if the maximum recursion depth is reached, rlm_query falls back to llm_query.
+{{end}}
 OUTPUT:
   print(...)                               Print to stdout (truncated to ~{{.TruncateMax}} chars)
   page_output(offset=0, limit=2000)        Paginate previous turn's full stdout.
@@ -30,12 +37,19 @@ information inside the FINAL() string.
 
 IMPORTANT: Wrap all code in ```repl blocks. Each block should be at most 30 lines.
 One step per turn. You will see stdout output and can adjust before proceeding.
-
-IMPORTANT: sub_lm() is expensive. Batch information into fewer calls when possible.
-Collect data first, then make one sub_lm() call with the combined context.
-
+{{if .HasSubLM}}
+IMPORTANT: llm_query() is expensive. Batch information into fewer calls when possible.
+Collect data first, then make one llm_query() call with the combined context.
+{{end}}{{if .HasRLMQuery}}
+Choosing between llm_query and rlm_query:
+- Use llm_query(prompt) for simple sub-tasks: summarize a chunk, extract a fact, answer
+  a direct question. Single LLM call, fast and cheap.
+- Use rlm_query(context, query) when a sub-task is complex enough to require iterative
+  reasoning with code execution — e.g. analyzing a very large sub-context that needs its
+  own chunking strategy, or a multi-step reasoning chain.
+{{end}}
 Strategy for large inputs:
 1. PROBE: Examine prompt structure — len(prompt), prompt[:500], prompt.count('\n')
 2. DECOMPOSE: Split into chunks — prompt.split("\n\n"), line ranges, regex
-3. PROCESS: Use sub_lm() to analyze each chunk
+3. PROCESS: Use {{if .HasSubLM}}llm_query(){{else}}code{{end}} to analyze each chunk
 4. AGGREGATE: Combine results and call FINAL()

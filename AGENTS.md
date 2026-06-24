@@ -42,7 +42,7 @@ Three layers, strict dependency direction: **Harness → AgentRunner → Agent**
 
 1. Create `internal/harness/tools/tooldef/tool_<name>.go`
 2. Implement `tooldef.Definition` interface: `Name()`, `Description()`, `Schema()`, `Execute()`
-3. Register: most tools go in `GetDefaultToolDefs()` in `internal/harness/tools/registry.go`. Three tools (`SubagentSpawn`, `sub_lm`, `rlm`) are wired conditionally in `harness.New()` via `HarnessConfig` fields
+3. Register: most tools go in `GetDefaultToolDefs()` in `internal/harness/tools/registry.go`. The `rlm` tool is wired conditionally in `harness.New()` via `HarnessConfig.RLM`
 4. Tool descriptions are **instructions to the model**, not documentation — precise wording controls tool selection
 5. Tools never throw. Errors return `ToolResult{IsError: true}`. Loop doesn't break on tool errors
 

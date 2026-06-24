@@ -74,6 +74,16 @@ def _list_files(pattern):
     return resp["result"]
 
 
+def _rlm_query(context, query):
+    """Spawn a child RLM to recursively process context with a query."""
+    _send({"type": "callback", "func": "rlm_query",
+           "args": {"prompt": f"Context:\n{str(context)}\n\nQuery: {str(query)}"}})
+    resp = _recv()
+    if resp.get("error"):
+        raise RuntimeError(resp["error"])
+    return resp["result"]
+
+
 def _page_output(offset=0, limit=2000):
     text = _last_output
     total = len(text)
@@ -103,7 +113,8 @@ def _final_var(var_name):
 
 
 _namespace["print"] = _print
-_namespace["sub_lm"] = _sub_lm
+_namespace["llm_query"] = _sub_lm
+_namespace["sub_lm"] = _sub_lm  # backwards compat alias
 _namespace["read_file"] = _read_file
 _namespace["grep_file"] = _grep_file
 _namespace["list_files"] = _list_files
@@ -118,6 +129,10 @@ while True:
 
     if msg["type"] == "shutdown":
         break
+
+    if msg["type"] == "enable_rlm_query":
+        _namespace["rlm_query"] = _rlm_query
+        continue
 
     if msg["type"] == "set_var":
         _namespace[msg["name"]] = msg["value"]

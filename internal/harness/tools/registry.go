@@ -8,14 +8,21 @@ import (
 	"strings"
 
 	agentctx "tenzing-agent/internal/agent/context"
+	"tenzing-agent/internal/harness/rlm"
 	"tenzing-agent/internal/harness/skills"
 	"tenzing-agent/internal/harness/tools/tooldef"
 	"tenzing-agent/internal/provider"
 )
 
-func GetDefaultToolDefs(skillRegistry *skills.Registry, taskGraph *agentctx.TaskGraph) []tooldef.Definition {
+type RLMConfig struct {
+	RootModel provider.LLM
+	SubModel  provider.LLM // nil = use RootModel
+	MaxDepth  int          // 0=REPL only, 1=llm_query, 2+=rlm_query
+}
+
+func GetDefaultToolDefs(skillRegistry *skills.Registry, taskGraph *agentctx.TaskGraph, workingDir string, rlmCfg *RLMConfig) ([]tooldef.Definition, error) {
 	snapshotStore := tooldef.NewSnapshotStore()
-	return []tooldef.Definition{
+	defs := []tooldef.Definition{
 		// basic tools
 		&tooldef.BashTool{},
 		&tooldef.ReadTool{},
@@ -42,6 +49,26 @@ func GetDefaultToolDefs(skillRegistry *skills.Registry, taskGraph *agentctx.Task
 		tooldef.NewTaskUpdateTool(taskGraph),
 		tooldef.NewTaskListTool(taskGraph),
 	}
+
+	// set up the RLM
+	if rlmCfg != nil {
+		subModel := rlmCfg.SubModel
+		if subModel == nil {
+			subModel = rlmCfg.RootModel
+		}
+		engine, err := rlm.NewEngine(rlm.EngineConfig{
+			RootLLM:    rlmCfg.RootModel,
+			SubLLM:     subModel,
+			MaxDepth:   rlmCfg.MaxDepth,
+			WorkingDir: workingDir,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create rlm engine: %w", err)
+		}
+		defs = append(defs, tooldef.NewRLMTool(engine.Run))
+	}
+
+	return defs, nil
 }
 
 type Registry struct {
