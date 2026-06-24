@@ -304,6 +304,13 @@ func (o *Ollama) GetCurrentModel() string {
 	return string(o.model)
 }
 
+func (o *Ollama) GetContextWindowSize() int {
+	if o.contextSize > 0 {
+		return int(o.contextSize)
+	}
+	return contextWindowDefault
+}
+
 // CountTokens is not supported by Ollama. Returns ErrNotSupported.
 func (o *Ollama) CountTokens(_ context.Context, _ CompletionRequest) (TokenCount, error) {
 	return TokenCount{}, fmt.Errorf("ollama count tokens: %w", ErrNotSupported)
@@ -513,7 +520,10 @@ func fromOllamaResponse(res ollamaChatResponse, log Logger) CompletionResponse {
 		content = append(content, NewToolUseContent(id, tc.Function.Name, args))
 	}
 
+	responseID := fmt.Sprintf("ollama-%s-%d", res.Model, res.PromptEvalCount+res.EvalCount)
+
 	return CompletionResponse{
+		ID:         responseID,
 		Content:    content,
 		StopReason: fromOllamaStopReason(res),
 		Usage: Usage{

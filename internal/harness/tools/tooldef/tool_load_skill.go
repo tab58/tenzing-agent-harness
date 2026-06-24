@@ -40,14 +40,14 @@ func (t *LoadSkillTool) Execute(ctx context.Context, exctx ExecutionContext) (To
 		Name string `json:"name"`
 	}
 	if len(exctx.Arguments) == 0 {
-		return ToolResult{Output: "missing arguments", IsError: true}, nil
+		return NewToolResult("missing arguments", WithError()), nil
 	}
 	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &args); err != nil {
-		return ToolResult{Output: fmt.Sprintf("invalid arguments: %v", err), IsError: true}, nil
+		return NewToolResult(fmt.Sprintf("invalid arguments: %v", err), WithError()), nil
 	}
 	content, err := t.loader.Load(args.Name)
 	if err != nil {
-		return ToolResult{Output: err.Error(), IsError: true}, nil
+		return NewToolResult(err.Error(), WithError()), nil
 	}
-	return ToolResult{Output: content}, nil
+	return NewToolResult(content), nil
 }

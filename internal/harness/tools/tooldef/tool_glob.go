@@ -2,6 +2,7 @@ package tooldef
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,11 +30,21 @@ func (t *GlobTool) Schema() Schema {
 }
 
 func (t *GlobTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
-	args := exctx.Arguments
-	if len(args) == 0 || args[0] == "" {
-		return ToolResult{Output: "pattern is required", IsError: true}, nil
+	if len(exctx.Arguments) == 0 || exctx.Arguments[0] == "" {
+		return NewToolResult("pattern is required", WithError()), nil
 	}
-	pattern := args[0]
+
+	var input struct {
+		Pattern string `json:"pattern"`
+	}
+	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &input); err != nil {
+		return NewToolResult(fmt.Sprintf("invalid input JSON: %v", err), WithError()), nil
+	}
+	if input.Pattern == "" {
+		return NewToolResult("pattern is required", WithError()), nil
+	}
+
+	pattern := input.Pattern
 
 	if !filepath.IsAbs(pattern) && exctx.WorkingDir != "" {
 		pattern = filepath.Join(exctx.WorkingDir, pattern)
@@ -51,13 +62,13 @@ func (t *GlobTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRes
 		matches, err = filepath.Glob(pattern)
 	}
 	if err != nil {
-		return ToolResult{Output: fmt.Sprintf("invalid glob pattern: %v", err), IsError: true}, nil
+		return NewToolResult(fmt.Sprintf("invalid glob pattern: %v", err), WithError()), nil
 	}
 
 	if len(matches) == 0 {
-		return ToolResult{Output: "No matches."}, nil
+		return NewToolResult("No matches."), nil
 	}
-	return ToolResult{Output: strings.Join(matches, "\n")}, nil
+	return NewToolResult(strings.Join(matches, "\n")), nil
 }
 
 func globRoot(pattern string) string {

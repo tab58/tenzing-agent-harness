@@ -38,23 +38,27 @@ func (t *SubagentTool) Schema() Schema {
 
 func (t *SubagentTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
 	if len(exctx.Arguments) < 1 || exctx.Arguments[0] == "" {
-		return ToolResult{Output: "prompt is required", IsError: true}, nil
+		return NewToolResult("prompt is required", WithError()), nil
 	}
 
 	var input struct {
 		Prompt string `json:"prompt"`
 	}
 	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &input); err != nil {
-		return ToolResult{Output: fmt.Sprintf("invalid input JSON: %v", err), IsError: true}, nil
+		return NewToolResult(fmt.Sprintf("invalid input JSON: %v", err), WithError()), nil
 	}
 	if input.Prompt == "" {
-		return ToolResult{Output: "prompt is required", IsError: true}, nil
+		return NewToolResult("prompt is required", WithError()), nil
+	}
+
+	if t.spawnFn == nil {
+		return NewToolResult("subagent spawning is not configured", WithError()), nil
 	}
 
 	result, err := t.spawnFn(ctx, input.Prompt)
 	if err != nil {
-		return ToolResult{Output: fmt.Sprintf("subagent error: %v", err), IsError: true}, nil
+		return NewToolResult(fmt.Sprintf("subagent error: %v", err), WithError()), nil
 	}
 
-	return ToolResult{Output: result}, nil
+	return NewToolResult(result), nil
 }

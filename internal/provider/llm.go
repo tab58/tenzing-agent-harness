@@ -41,4 +41,7 @@ type LLM interface {
 
 	// Gets the current model.
 	GetCurrentModel() string
+
+	// GetContextWindowSize returns the model's total context window in tokens.
+	GetContextWindowSize() int
 }

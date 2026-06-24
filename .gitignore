@@ -1,5 +1,7 @@
 # Binary output
 /bin/
+/app
+/repl
 *.exe
 *.exe~
 *.dll
@@ -39,6 +41,12 @@ Thumbs.db
 
 # Debug
 __debug_bin*
+
+# Agent runtime files
+.tenzing-agent.log
+.agent_todo.json
+.agent_tasks.json
+.agent_memory.md
 
 # AI ignores
 docs/*

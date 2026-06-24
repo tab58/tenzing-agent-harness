@@ -35,3 +35,10 @@ func SubagentSystemPrompt(cwd string) string {
 	}
 	return buf.String()
 }
+
+//go:embed rlm_guidance.gotmpl
+var rlmGuidanceString string
+
+func RLMGuidance() string {
+	return rlmGuidanceString
+}

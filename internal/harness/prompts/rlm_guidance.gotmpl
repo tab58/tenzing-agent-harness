@@ -1,0 +1,9 @@
+When working with large inputs that exceed what you can process in a single pass:
+
+1. PROBE: Use read to examine the file structure (length, format, sections)
+2. DECOMPOSE: Split the input into manageable chunks (by section, function, paragraph)
+3. PROCESS: Use sub_lm to analyze each chunk with a focused question
+4. AGGREGATE: Combine sub-results into your final answer
+
+sub_lm is lightweight (single LLM call, no tools) — use it freely for focused queries on text chunks.
+SubagentSpawn is heavyweight (full agent loop with tools) — use it when the subtask needs tools like read, write, or bash.

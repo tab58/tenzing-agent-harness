@@ -32,26 +32,26 @@ func (t *TodoUpdateTool) Schema() Schema {
 
 func (t *TodoUpdateTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
 	if len(exctx.Arguments) < 2 {
-		return ToolResult{Output: "index and status arguments are required", IsError: true}, nil
+		return NewToolResult("index and status arguments are required", WithError()), nil
 	}
 
 	index, err := strconv.Atoi(exctx.Arguments[0])
 	if err != nil {
-		return ToolResult{Output: fmt.Sprintf("invalid index: %v", err), IsError: true}, nil
+		return NewToolResult(fmt.Sprintf("invalid index: %v", err), WithError()), nil
 	}
 
 	status := exctx.Arguments[1]
 	if status == "" {
-		return ToolResult{Output: "status cannot be empty", IsError: true}, nil
+		return NewToolResult("status cannot be empty", WithError()), nil
 	}
 
 	items, err := readTodoItems(exctx.WorkingDir)
 	if err != nil {
-		return ToolResult{Output: err.Error(), IsError: true}, nil
+		return NewToolResult(err.Error(), WithError()), nil
 	}
 
 	if index < 0 || index >= len(items) {
-		return ToolResult{Output: fmt.Sprintf("index %d out of range (0-%d)", index, len(items)-1), IsError: true}, nil
+		return NewToolResult(fmt.Sprintf("index %d out of range (0-%d)", index, len(items)-1), WithError()), nil
 	}
 
 	updated := make([]TodoItem, len(items))
@@ -63,8 +63,8 @@ func (t *TodoUpdateTool) Execute(ctx context.Context, exctx ExecutionContext) (T
 	}
 
 	if err := writeTodoItems(exctx.WorkingDir, updated); err != nil {
-		return ToolResult{Output: fmt.Sprintf("failed to update todo: %v", err), IsError: true}, nil
+		return NewToolResult(fmt.Sprintf("failed to update todo: %v", err), WithError()), nil
 	}
 
-	return ToolResult{Output: fmt.Sprintf("Task %d updated to %s\n\n%s", index, status, formatTodoItems(updated))}, nil
+	return NewToolResult(fmt.Sprintf("Task %d updated to %s\n\n%s", index, status, formatTodoItems(updated))), nil
 }

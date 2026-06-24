@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"strings"
 
 	agentctx "tenzing-agent/internal/agent/context"
 	"tenzing-agent/internal/harness/skills"
@@ -20,9 +22,6 @@ func GetDefaultToolDefs(skillRegistry *skills.Registry, taskGraph *agentctx.Task
 		&tooldef.EditTool{},
 		&tooldef.GrepTool{},
 		&tooldef.GlobTool{},
-
-		// subagent spawn
-		&tooldef.SubagentTool{},
 
 		// snapshot-required
 		tooldef.NewWriteTool(snapshotStore),
@@ -64,7 +63,7 @@ func NewRegistry(workingDir string, tools ...tooldef.Definition) *Registry {
 }
 
 func (r *Registry) Register(def tooldef.Definition) error {
-	name := def.Name()
+	name := strings.ToLower(def.Name())
 	if _, ok := r.tools[name]; ok {
 		return fmt.Errorf("tool already registered")
 	}
@@ -76,7 +75,7 @@ func (r *Registry) Register(def tooldef.Definition) error {
 func (r *Registry) CopyWithout(names ...string) *Registry {
 	exclude := make(map[string]struct{}, len(names))
 	for _, n := range names {
-		exclude[n] = struct{}{}
+		exclude[strings.ToLower(n)] = struct{}{}
 	}
 	filtered := NewRegistry(r.workingDir)
 	for name, def := range r.tools {
@@ -109,10 +108,22 @@ func (r *Registry) ProviderDefinitions() []provider.ToolDefinition {
 	return providerDefs
 }
 
+func (r *Registry) WorkingDir() string {
+	return r.workingDir
+}
+
 func (r *Registry) Execute(ctx context.Context, name string, input string) (tooldef.ToolResult, error) {
-	toolDef, ok := r.tools[name]
+	toolDef, ok := r.tools[strings.ToLower(name)]
 	if !ok {
-		return tooldef.ToolResult{}, fmt.Errorf("tool name %s not found", name)
+		available := make([]string, 0, len(r.tools))
+		for n := range r.tools {
+			available = append(available, n)
+		}
+		slog.Warn("unknown tool called", "tool", name, "available", available)
+		return tooldef.ToolResult{
+			Output:  fmt.Sprintf("Tool %q not found. Available tools: %s", name, strings.Join(available, ", ")),
+			IsError: true,
+		}, nil
 	}
 	exctx := tooldef.ExecutionContext{
 		Arguments:  []string{input},

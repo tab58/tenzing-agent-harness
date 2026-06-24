@@ -11,26 +11,35 @@ import (
 )
 
 const (
-	MemoryFileName    = ".agent_memory.md"
-	CompressThreshold = 40_000 // chars, ~10k tokens
-	KeepRecent        = 6
+	MemoryFileName   = ".agent_memory.md"
+	KeepRecent       = 6
 	maxSummarizeInput = 20_000
+	toolOutputWeight  = 4
+	// ~4 chars per token, compress at 75% of context window
+	charsPerToken        = 4
+	compressAtFraction   = 3 // numerator; denominator is charsPerToken (i.e. 3/4 = 75%)
+	defaultContextWindow = 10_000 // tokens, fallback when caller doesn't specify
 )
 
 type Compressor struct {
 	llm        provider.LLM
 	memoryFile string
+	threshold  int
 }
 
-func NewCompressor(llm provider.LLM, memoryFile string) *Compressor {
+func NewCompressor(llm provider.LLM, memoryFile string, contextWindow int) *Compressor {
 	memFile := memoryFile
 	if memFile == "" {
 		memFile = MemoryFileName
+	}
+	if contextWindow <= 0 {
+		contextWindow = defaultContextWindow
 	}
 
 	return &Compressor{
 		llm:        llm,
 		memoryFile: memFile,
+		threshold:  contextWindow * compressAtFraction,
 	}
 }
 
@@ -39,7 +48,7 @@ func (c *Compressor) EstimateSize(messages []provider.Message) int {
 	for _, msg := range messages {
 		for _, block := range msg.Content {
 			size += len(block.Text)
-			size += len(block.ToolOutput)
+			size += len(block.ToolOutput) / toolOutputWeight
 			size += len(block.ToolInput)
 		}
 	}
@@ -50,7 +59,7 @@ func (c *Compressor) EstimateSize(messages []provider.Message) int {
 // If so, it summarizes the older portion via LLM, persists it to disk,
 // and returns a shorter history with the summary prepended.
 func (c *Compressor) MaybeCompress(ctx context.Context, messages []provider.Message) ([]provider.Message, bool, error) {
-	if c.EstimateSize(messages) < CompressThreshold {
+	if c.EstimateSize(messages) < c.threshold {
 		return messages, false, nil
 	}
 	if len(messages) <= KeepRecent {

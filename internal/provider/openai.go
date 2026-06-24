@@ -15,7 +15,15 @@ const (
 
 	MaxTokensGPT5_4     int64 = 128000
 	MaxTokensGPT5_4Mini int64 = 64000
+
+	ContextWindowGPT5_4     = 1_000_000
+	ContextWindowGPT5_4Mini = 1_000_000
 )
+
+var openAIContextWindows = map[OpenAIModel]int{
+	OpenAIModelGPT5_4:     ContextWindowGPT5_4,
+	OpenAIModelGPT5_4Mini: ContextWindowGPT5_4Mini,
+}
 
 // OpenAI implements the LLM interface using the OpenAI API.
 type OpenAI struct {
@@ -70,6 +78,7 @@ func NewOpenAIClient(cfg OpenAIConfig, opts ...OpenAIOption) *OpenAI {
 		name:                   "openai",
 		client:                 &client,
 		model:                  string(model),
+		contextWindow:          openAIContextWindows[model],
 		rateLimiter:            o.rateLimiter,
 		tokenCostLimit:         true,
 		useMaxCompletionTokens: true,

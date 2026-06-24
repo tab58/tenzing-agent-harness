@@ -2,6 +2,7 @@ package tooldef
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,16 +35,23 @@ func (t *WriteTool) Schema() Schema {
 }
 
 func (t *WriteTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
-	args := exctx.Arguments
-	if len(args) < 2 {
-		return ToolResult{Output: "file_path and content are required", IsError: true}, nil
+	if len(exctx.Arguments) == 0 || exctx.Arguments[0] == "" {
+		return NewToolResult("file_path and content are required", WithError()), nil
 	}
-	filePath := args[0]
-	content := args[1]
 
-	if filePath == "" {
-		return ToolResult{Output: "file_path is required", IsError: true}, nil
+	var input struct {
+		FilePath string `json:"file_path"`
+		Content  string `json:"content"`
 	}
+	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &input); err != nil {
+		return NewToolResult(fmt.Sprintf("invalid input JSON: %v", err), WithError()), nil
+	}
+	if input.FilePath == "" {
+		return NewToolResult("file_path is required", WithError()), nil
+	}
+
+	filePath := input.FilePath
+	content := input.Content
 
 	if existing, err := os.ReadFile(filePath); err == nil {
 		t.snapshots.Save(filePath, existing)
@@ -51,12 +59,12 @@ func (t *WriteTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRe
 
 	dir := filepath.Dir(filePath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return ToolResult{Output: fmt.Sprintf("cannot create directory %q: %v", dir, err), IsError: true}, nil
+		return NewToolResult(fmt.Sprintf("cannot create directory %q: %v", dir, err), WithError()), nil
 	}
 
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-		return ToolResult{Output: fmt.Sprintf("cannot write file: %v", err), IsError: true}, nil
+		return NewToolResult(fmt.Sprintf("cannot write file: %v", err), WithError()), nil
 	}
 
-	return ToolResult{Output: "File written: " + filePath}, nil
+	return NewToolResult("File written: " + filePath), nil
 }

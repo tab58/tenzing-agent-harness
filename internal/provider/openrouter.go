@@ -10,7 +10,13 @@ type OpenRouterModel string
 const (
 	OpenRouterModelGemma4_31B = OpenRouterModel("google/gemma-4-31b-it")
 	openRouterBaseURL         = "https://openrouter.ai/api/v1"
+
+	ContextWindowOpenRouterGemma4_31B = 131_000
 )
+
+var openRouterContextWindows = map[OpenRouterModel]int{
+	OpenRouterModelGemma4_31B: ContextWindowOpenRouterGemma4_31B,
+}
 
 // OpenRouter implements the LLM interface using OpenRouter's
 // OpenAI-compatible API.
@@ -37,8 +43,9 @@ func NewOpenRouterClient(cfg OpenRouterConfig) *OpenRouter {
 	}
 
 	return &OpenRouter{&openAICompat{
-		name:   "openrouter",
-		client: &client,
-		model:  string(model),
+		name:          "openrouter",
+		client:        &client,
+		model:         string(model),
+		contextWindow: openRouterContextWindows[model],
 	}}
 }

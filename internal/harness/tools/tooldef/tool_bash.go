@@ -2,6 +2,7 @@ package tooldef
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -38,11 +39,22 @@ func isValidDirectory(cwd string) bool {
 }
 
 func (t *BashTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
-	args := exctx.Arguments
-	if len(args) == 0 || args[0] == "" {
-		return ToolResult{Output: "command is required", IsError: true}, nil
+	if len(exctx.Arguments) == 0 || exctx.Arguments[0] == "" {
+		return NewToolResult("command is required", WithError()), nil
 	}
-	command := args[0]
+
+	var input struct {
+		Command     string `json:"command"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &input); err != nil {
+		return NewToolResult(fmt.Sprintf("invalid input JSON: %v", err), WithError()), nil
+	}
+	if input.Command == "" {
+		return NewToolResult("command is required", WithError()), nil
+	}
+
+	command := input.Command
 
 	tctx, cancel := context.WithTimeout(ctx, bashTimeout)
 	defer cancel()
@@ -77,8 +89,8 @@ func (t *BashTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRes
 		} else {
 			output = fmt.Sprintf("%s\nexec error: %v", output, execErr)
 		}
-		return ToolResult{Output: output, IsError: true}, nil
+		return NewToolResult(output, WithError()), nil
 	}
 
-	return ToolResult{Output: output}, nil
+	return NewToolResult(output), nil
 }

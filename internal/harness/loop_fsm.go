@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -9,6 +10,10 @@ import (
 
 	"github.com/looplab/fsm"
 )
+
+// LevelTrace is below slog.LevelDebug (-4). Filtered out by default;
+// set handler level to LevelTrace or lower to see these.
+const LevelTrace = slog.Level(-8)
 
 type LoopState string
 
@@ -47,9 +52,13 @@ type LoopFSM struct {
 func (f *LoopFSM) TransitionStates(ctx context.Context, transition LoopTransition) error {
 	err := f.Event(ctx, string(transition))
 	if err != nil {
+		var noTransition fsm.NoTransitionError
+		if errors.As(err, &noTransition) {
+			return nil
+		}
 		return fmt.Errorf("unable to set loop state to %s: %w", transition, err)
 	}
-	slog.Debug(fmt.Sprintf("loop state is now %s", f.Current()))
+	slog.Log(ctx, LevelTrace, fmt.Sprintf("loop state is now %s", f.Current()))
 	return nil
 }
 
@@ -57,7 +66,7 @@ func createNewLoopFSM() *LoopFSM {
 	f := fsm.NewFSM(
 		string(LoopStateStarted),
 		fsm.Events{
-			{Name: LoopTransitionStartReasoning.String(), Src: utils.Strings(LoopStateStarted), Dst: LoopStateReasoningStarted.String()},
+			{Name: LoopTransitionStartReasoning.String(), Src: utils.Strings(LoopStateStarted, LoopStateToolExecutionFinished), Dst: LoopStateReasoningStarted.String()},
 			{Name: LoopTransitionFinishReasoning.String(), Src: utils.Strings(LoopStateReasoningStarted), Dst: LoopStateReasoningFinished.String()},
 			{Name: LoopTransitionStartToolExecution.String(), Src: utils.Strings(LoopStateReasoningFinished), Dst: LoopStateToolExecutionStarted.String()},
 			{Name: LoopTransitionFinishToolExecution.String(), Src: utils.Strings(LoopStateToolExecutionStarted), Dst: LoopStateToolExecutionFinished.String()},

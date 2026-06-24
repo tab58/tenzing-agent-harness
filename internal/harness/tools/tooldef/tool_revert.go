@@ -2,6 +2,7 @@ package tooldef
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 )
@@ -32,24 +33,30 @@ func (t *RevertTool) Schema() Schema {
 }
 
 func (t *RevertTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
-	args := exctx.Arguments
-	if len(args) < 1 {
-		return ToolResult{Output: "file_path is required", IsError: true}, nil
+	if len(exctx.Arguments) == 0 || exctx.Arguments[0] == "" {
+		return NewToolResult("file_path is required", WithError()), nil
 	}
-	filePath := args[0]
 
-	if filePath == "" {
-		return ToolResult{Output: "file_path is required", IsError: true}, nil
+	var input struct {
+		FilePath string `json:"file_path"`
 	}
+	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &input); err != nil {
+		return NewToolResult(fmt.Sprintf("invalid input JSON: %v", err), WithError()), nil
+	}
+	if input.FilePath == "" {
+		return NewToolResult("file_path is required", WithError()), nil
+	}
+
+	filePath := input.FilePath
 
 	content, ok := t.snapshots.Pop(filePath)
 	if !ok {
-		return ToolResult{Output: fmt.Sprintf("no snapshot available for %s", filePath), IsError: true}, nil
+		return NewToolResult(fmt.Sprintf("no snapshot available for %s", filePath), WithError()), nil
 	}
 
 	if err := os.WriteFile(filePath, content, 0644); err != nil {
-		return ToolResult{Output: fmt.Sprintf("cannot revert file: %v", err), IsError: true}, nil
+		return NewToolResult(fmt.Sprintf("cannot revert file: %v", err), WithError()), nil
 	}
 
-	return ToolResult{Output: "File reverted: " + filePath}, nil
+	return NewToolResult("File reverted: " + filePath), nil
 }

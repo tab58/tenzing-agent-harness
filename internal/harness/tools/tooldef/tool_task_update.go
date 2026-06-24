@@ -44,17 +44,17 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, exctx ExecutionContext) (T
 		Result string `json:"result"`
 	}
 	if len(exctx.Arguments) == 0 {
-		return ToolResult{Output: "missing arguments", IsError: true}, nil
+		return NewToolResult("missing arguments", WithError()), nil
 	}
 	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &args); err != nil {
-		return ToolResult{Output: fmt.Sprintf("invalid arguments: %v", err), IsError: true}, nil
+		return NewToolResult(fmt.Sprintf("invalid arguments: %v", err), WithError()), nil
 	}
 	if args.TaskID == "" || args.Status == "" {
-		return ToolResult{Output: "task_id and status are required", IsError: true}, nil
+		return NewToolResult("task_id and status are required", WithError()), nil
 	}
 
 	if err := t.updater.UpdateTask(args.TaskID, args.Status, args.Result); err != nil {
-		return ToolResult{Output: err.Error(), IsError: true}, nil
+		return NewToolResult(err.Error(), WithError()), nil
 	}
-	return ToolResult{Output: fmt.Sprintf("task %s → %s", args.TaskID, args.Status)}, nil
+	return NewToolResult(fmt.Sprintf("task %s → %s", args.TaskID, args.Status)), nil
 }

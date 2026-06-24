@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	agentctx "tenzing-agent/internal/agent/context"
 	"tenzing-agent/internal/harness"
 	"tenzing-agent/internal/harness/tools/tooldef"
@@ -45,7 +47,7 @@ func New(cfg AgentConfig) *Agent {
 
 func NewWithCompressor(cfg AgentConfig, cwd string) *Agent {
 	a := New(cfg)
-	a.compressor = agentctx.NewCompressor(cfg.Model, cwd+"/"+agentctx.MemoryFileName)
+	a.compressor = agentctx.NewCompressor(cfg.Model, cwd+"/"+agentctx.MemoryFileName, cfg.Model.GetContextWindowSize())
 
 	if mem, err := a.compressor.LoadMemory(); err == nil && mem != "" {
 		a.history = append(a.history,
@@ -69,17 +71,37 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 		system += "\n\n" + r
 	}
 
+	model := a.model.GetCurrentModel()
 	req := provider.CompletionRequest{
-		Model:     a.model.GetCurrentModel(),
+		Model:     model,
 		System:    system,
 		Messages:  a.history,
 		MaxTokens: provider.MaxTokensStdResponse,
 		Tools:     a.tools,
 	}
 
+	slog.Debug("llm request", "model", model, "messages", len(a.history), "tools", len(a.tools))
+
+	if slog.Default().Enabled(ctx, harness.LevelTrace) {
+		slog.Log(ctx, harness.LevelTrace, "llm request system prompt", "model", model, "system", system)
+		if raw, err := json.Marshal(a.history); err == nil {
+			slog.Log(ctx, harness.LevelTrace, "llm request messages", "model", model, "messages_json", string(raw))
+		}
+		if raw, err := json.Marshal(a.tools); err == nil {
+			slog.Log(ctx, harness.LevelTrace, "llm request tools", "model", model, "tools_json", string(raw))
+		}
+	}
+
 	resp, err := a.model.SendMessageWithTools(ctx, req, a.tools)
 	if err != nil {
-		return harness.ReasoningResult{}, fmt.Errorf("llm call: %w", err)
+		slog.Error("llm call failed", "model", model, "error", err, "messages", len(a.history), "stack", string(debug.Stack()))
+		return harness.ReasoningResult{}, fmt.Errorf("llm call (%s): %w", model, err)
+	}
+
+	slog.Info("llm response", "model", resp.Model, "response_id", resp.ID, "input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens, "stop_reason", resp.StopReason)
+
+	if text := resp.Text(); text != "" {
+		slog.Debug("assistant text", "text", text)
 	}
 
 	// Append assistant response to history
@@ -88,14 +110,40 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 		Content: resp.Content,
 	})
 
+	var compressionInfo *harness.CompressionInfo
 	if a.compressor != nil {
+		estimatedSize := a.compressor.EstimateSize(a.history)
+		beforeCount := len(a.history)
 		compressed, did, compErr := a.compressor.MaybeCompress(ctx, a.history)
 		if compErr != nil {
 			slog.Warn("compression failed", "error", compErr)
 		} else if did {
-			slog.Info("context compressed", "before", len(a.history), "after", len(compressed))
+			slog.Info("context compressed", "before_msgs", beforeCount, "after_msgs", len(compressed), "estimated_chars", estimatedSize)
+			var summary string
+			if len(compressed) > 0 && len(compressed[0].Content) > 0 {
+				summary = compressed[0].Content[0].Text
+				if len(summary) > 500 {
+					slog.Debug("compression summary", "summary", summary[:500]+"...[truncated]")
+				} else {
+					slog.Debug("compression summary", "summary", summary)
+				}
+			}
+			compressionInfo = &harness.CompressionInfo{
+				MessagesBefore: beforeCount,
+				MessagesAfter:  len(compressed),
+				Summary:        summary,
+			}
 			a.history = compressed
 		}
+	}
+
+	meta := harness.ResponseMeta{
+		Model:         resp.Model,
+		ResponseID:    resp.ID,
+		InputTokens:   resp.Usage.InputTokens,
+		OutputTokens:  resp.Usage.OutputTokens,
+		StopReason:    string(resp.StopReason),
+		AssistantText: resp.Text(),
 	}
 
 	// Check for tool calls
@@ -104,14 +152,19 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 		tc := toolCalls[0]
 		return harness.ReasoningResult{
 			ToolCall: &tooldef.ToolCall{
+				ID:    tc.ToolUseID,
 				Name:  tc.ToolName,
 				Input: string(tc.ToolInput),
 			},
+			Meta:        meta,
+			Compression: compressionInfo,
 		}, nil
 	}
 
 	// Final answer
 	return harness.ReasoningResult{
 		FinalAnswer: resp.Text(),
+		Meta:        meta,
+		Compression: compressionInfo,
 	}, nil
 }

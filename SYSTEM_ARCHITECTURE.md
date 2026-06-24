@@ -61,13 +61,20 @@ internal/
 │   ├── agent.go                        Agent interface + ReasoningResult
 │   ├── agent_runner.go                 AgentRunner: FSM-driven loop, DI config
 │   ├── loop_fsm.go                     Per-runner FSM (6 states, 6 transitions)
-│   ├── harness.go                      Thin orchestrator, config types, defaults
+│   ├── harness.go                      Thin orchestrator, config types, RunSession REPL
+│   ├── defaults.go                     DefaultReminderBuilder, DefaultRunnerFactory
 │   ├── prompts/                        System prompt construction
 │   ├── skills/                         Skill discovery & lazy loading
 │   │   └── registry.go                 Discover frontmatter at startup, Load on demand
 │   ├── tools/                          Tool dispatch system
-│   │   └── registry.go                 Name→Definition map, Execute(), ProviderDefinitions()
-│   └── session.go                      REPL stdin→loop→stdout driver
+│   │   └── registry.go                 Name→Definition map, Execute(), GetDefaultToolDefs()
+│   └── rlm/                            Recursive Language Model engine
+│       ├── bootstrap.py                Embedded Python REPL (//go:embed)
+│       ├── repl.go                     Python subprocess + JSON-line IPC
+│       ├── engine.go                   RLM loop: LLM→code→REPL→feedback→repeat
+│       ├── truncate.go                 First/last-half truncation
+│       └── prompts/
+│           └── system.md.tmpl          RLM system prompt template
 ├── provider/                           LLM abstraction layer
 │   ├── llm.go                          LLM interface (6 implementations)
 │   ├── chat.go                         Provider-agnostic message types
@@ -96,6 +103,8 @@ internal/harness/tools/tooldef/         Tool implementations
 ├── tool_glob.go                        File pattern matching
 ├── tool_revert.go                      Restore file from snapshot
 ├── tool_subagent.go                    Subagent spawn tool
+├── tool_sub_lm.go                      Single LLM query tool (no agent loop)
+├── tool_rlm.go                     RLM tool (Python REPL loop wrapper)
 ├── tool_list_skills.go                 List available skills (interface: SkillLister)
 ├── tool_load_skill.go                  Load skill content (interface: SkillContentLoader)
 ├── tool_task_create.go                 Create task in graph (interface: TaskCreator)
@@ -284,7 +293,7 @@ type ToolResult struct {
 
 Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn't break on tool errors.
 
-### Tool Inventory (16 tools)
+### Tool Inventory (18 tools)
 
 | Tool | Description | Key behavior |
 |------|-------------|--------------|
@@ -296,6 +305,8 @@ Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn
 | `Glob` | File patterns | Supports `**` wildcard |
 | `Revert` | Restore file | Pops from snapshot store (one-shot) |
 | `SubagentSpawn` | Spawn subagent | Runs a sub-loop with its own config |
+| `sub_lm` | Single LLM query | No tools, no loop — returns response text. Configurable model |
+| `rlm` | Recursive Language Model | Python REPL loop with sub_lm, file access, FINAL termination |
 | `list_skills` | List skills | Returns name→description map from skill registry |
 | `load_skill` | Load skill | Lazy-loads full `SKILL.md` content by name |
 | `task_create` | Create task | Persistent task graph, validates dependencies |
@@ -380,6 +391,18 @@ type Compressor struct { llm provider.LLM; memoryFile string }
 Integrated in `Agent.DoReasoning` — runs after each assistant response. `NewWithCompressor` loads prior memory at startup, seeding history with previous session context.
 
 Compression is non-fatal: LLM errors are logged, original history preserved.
+
+## Recursive Language Model (RLM) Engine
+
+Full RLM implementation based on Zhang et al. (2025). Processes arbitrarily large inputs by loading them into a Python REPL as a variable. The model writes Python code to programmatically decompose, analyze (via `sub_lm()` calls in loops), and aggregate results.
+
+Architecture: Engine (Go) drives a loop — call root LLM → extract ```repl code blocks → send to Python subprocess → handle callbacks (sub_lm, read_file, grep_file, list_files) over JSON-line protocol on stdin/stdout → capture stdout → truncate → feed back to LLM → repeat until `FINAL()`.
+
+Two tools coexist:
+- `sub_lm` — single LLM call from normal agent loop (lightweight, no REPL)
+- `rlm` — full RLM engine with Python REPL (for programmatic recursive decomposition)
+
+Wired via `HarnessConfig.RLMRootModel`. Configurable sub-LLM model via `SubLMModel` (defaults to root model). Python 3 required on PATH.
 
 ## Provider Layer
 

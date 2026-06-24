@@ -2,6 +2,7 @@ package tooldef
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -34,32 +35,41 @@ func (t *ReadTool) Schema() Schema {
 }
 
 func (t *ReadTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
-	args := exctx.Arguments
-	if len(args) == 0 || args[0] == "" {
-		return ToolResult{Output: "file_path is required", IsError: true}, nil
+	if len(exctx.Arguments) == 0 || exctx.Arguments[0] == "" {
+		return NewToolResult("file_path is required", WithError()), nil
 	}
-	filePath := args[0]
 
+	var input struct {
+		FilePath string `json:"file_path"`
+		Limit    *int   `json:"limit"`
+		Offset   *int   `json:"offset"`
+	}
+	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &input); err != nil {
+		return NewToolResult(fmt.Sprintf("invalid input JSON: %v", err), WithError()), nil
+	}
+	if input.FilePath == "" {
+		return NewToolResult("file_path is required", WithError()), nil
+	}
+
+	filePath := input.FilePath
 	offset := 0
 	limit := defaultReadLimit
-	if len(args) > 1 && args[1] != "" {
-		n, err := strconv.Atoi(args[1])
-		if err != nil || n < 0 {
-			return ToolResult{Output: "limit must be a non-negative integer", IsError: true}, nil
+	if input.Limit != nil {
+		if *input.Limit < 0 {
+			return NewToolResult("limit must be a non-negative integer", WithError()), nil
 		}
-		limit = n
+		limit = *input.Limit
 	}
-	if len(args) > 2 && args[2] != "" {
-		n, err := strconv.Atoi(args[2])
-		if err != nil || n < 0 {
-			return ToolResult{Output: "offset must be a non-negative integer", IsError: true}, nil
+	if input.Offset != nil {
+		if *input.Offset < 0 {
+			return NewToolResult("offset must be a non-negative integer", WithError()), nil
 		}
-		offset = n
+		offset = *input.Offset
 	}
 
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		return ToolResult{Output: fmt.Sprintf("cannot read file: %v", err), IsError: true}, nil
+		return NewToolResult(fmt.Sprintf("cannot read file: %v", err), WithError()), nil
 	}
 
 	lines := strings.Split(string(data), "\n")
@@ -81,5 +91,9 @@ func (t *ReadTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRes
 		fmt.Fprintf(&sb, "%6d\t%s\n", lineNum, line)
 	}
 
-	return ToolResult{Output: sb.String()}, nil
+	return NewToolResult(sb.String(), WithMetadata(map[string]string{
+		"limit":  strconv.Itoa(limit),
+		"offset": strconv.Itoa(offset),
+		"fp":     filePath,
+	})), nil
 }

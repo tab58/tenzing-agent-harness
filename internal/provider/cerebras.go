@@ -15,7 +15,13 @@ const (
 	CerebrasModelGPTOSS120B = CerebrasModel("gpt-oss-120b")
 
 	MaxTokensCerebrasGPTOSS120B int64 = 128000
+
+	ContextWindowCerebrasGPTOSS120B = 128_000
 )
+
+var cerebrasContextWindows = map[CerebrasModel]int{
+	CerebrasModelGPTOSS120B: ContextWindowCerebrasGPTOSS120B,
+}
 
 // Cerebras implements the LLM interface using Cerebras's OpenAI-compatible API.
 type Cerebras struct {
@@ -68,9 +74,10 @@ func NewCerebrasClient(cfg CerebrasConfig, opts ...CerebrasOption) *Cerebras {
 	}
 
 	return &Cerebras{&openAICompat{
-		name:        "cerebras",
-		client:      &client,
-		model:       string(model),
-		rateLimiter: o.rateLimiter,
+		name:          "cerebras",
+		client:        &client,
+		model:         string(model),
+		contextWindow: cerebrasContextWindows[model],
+		rateLimiter:   o.rateLimiter,
 	}}
 }

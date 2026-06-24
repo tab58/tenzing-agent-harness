@@ -24,12 +24,15 @@ const (
 // openAICompat implements the LLM interface for any OpenAI-compatible chat
 // completions API. Provider types (OpenAI, Cerebras, Lightning, OpenRouter)
 // embed it and differ only in configuration.
+const contextWindowDefault = 128_000
+
 type openAICompat struct {
 	// name identifies the provider in error messages and logs.
-	name        string
-	client      *openai.Client
-	model       string
-	rateLimiter *utils.TokenBucket
+	name          string
+	client        *openai.Client
+	model         string
+	contextWindow int
+	rateLimiter   *utils.TokenBucket
 	// tokenCostLimit acquires estimated input tokens from the rate limiter
 	// instead of one unit per request.
 	tokenCostLimit bool
@@ -253,6 +256,13 @@ func (c *openAICompat) streamOnce(ctx context.Context, params openai.ChatComplet
 
 func (c *openAICompat) GetCurrentModel() string {
 	return c.model
+}
+
+func (c *openAICompat) GetContextWindowSize() int {
+	if c.contextWindow > 0 {
+		return c.contextWindow
+	}
+	return contextWindowDefault
 }
 
 // CountTokens estimates input tokens using the ~4 chars per token rule of

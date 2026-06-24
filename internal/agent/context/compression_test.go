@@ -12,6 +12,9 @@ import (
 	"tenzing-agent/internal/provider"
 )
 
+const testContextWindow = 10_000 // yields threshold of 30_000 chars (10000 * compressAtFraction)
+var testThreshold = testContextWindow * compressAtFraction
+
 type fakeLLM struct {
 	response string
 	err      error
@@ -44,7 +47,8 @@ func (f *fakeLLM) ListModels(context.Context) ([]provider.ModelInfo, error) {
 	return nil, provider.ErrNotSupported
 }
 
-func (f *fakeLLM) GetCurrentModel() string { return "fake-model" }
+func (f *fakeLLM) GetCurrentModel() string      { return "fake-model" }
+func (f *fakeLLM) GetContextWindowSize() int { return 128_000 }
 
 func makeMessages(n int, charsPer int) []provider.Message {
 	msgs := make([]provider.Message, n)
@@ -76,14 +80,14 @@ func TestEstimateSize(t *testing.T) {
 			want:     10,
 		},
 		{
-			name: "tool result block",
+			name: "tool result block weighted",
 			messages: []provider.Message{{
 				Role: provider.RoleTool,
 				Content: []provider.ContentBlock{
-					provider.NewToolResultContent("id-1", "output-text"),
+					provider.NewToolResultContent("id-1", strings.Repeat("x", 40)),
 				},
 			}},
-			want: 11,
+			want: 10, // 40 chars / toolOutputWeight(4) = 10
 		},
 		{
 			name: "tool use block",
@@ -97,7 +101,7 @@ func TestEstimateSize(t *testing.T) {
 		},
 	}
 
-	c := NewCompressor(nil, "unused")
+	c := NewCompressor(nil, "unused", 0)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := c.EstimateSize(tt.messages)
@@ -109,7 +113,7 @@ func TestEstimateSize(t *testing.T) {
 }
 
 func TestMaybeCompressBelowThreshold(t *testing.T) {
-	c := NewCompressor(&fakeLLM{}, filepath.Join(t.TempDir(), MemoryFileName))
+	c := NewCompressor(&fakeLLM{}, filepath.Join(t.TempDir(), MemoryFileName), testContextWindow)
 
 	msgs := makeMessages(10, 100)
 	result, did, err := c.MaybeCompress(context.Background(), msgs)
@@ -125,9 +129,9 @@ func TestMaybeCompressBelowThreshold(t *testing.T) {
 }
 
 func TestMaybeCompressTooFewMessages(t *testing.T) {
-	c := NewCompressor(&fakeLLM{}, filepath.Join(t.TempDir(), MemoryFileName))
+	c := NewCompressor(&fakeLLM{}, filepath.Join(t.TempDir(), MemoryFileName), testContextWindow)
 
-	msgs := makeMessages(KeepRecent, CompressThreshold/KeepRecent+1)
+	msgs := makeMessages(KeepRecent, testThreshold/KeepRecent+1)
 	result, did, err := c.MaybeCompress(context.Background(), msgs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -143,10 +147,10 @@ func TestMaybeCompressTooFewMessages(t *testing.T) {
 func TestMaybeCompressTriggered(t *testing.T) {
 	dir := t.TempDir()
 	llm := &fakeLLM{response: "summary of old conversation"}
-	c := NewCompressor(llm, filepath.Join(dir, MemoryFileName))
+	c := NewCompressor(llm, filepath.Join(dir, MemoryFileName), testContextWindow)
 
 	totalMsgs := KeepRecent + 4
-	charsPerMsg := CompressThreshold/totalMsgs + 1
+	charsPerMsg := testThreshold/totalMsgs + 1
 	msgs := makeMessages(totalMsgs, charsPerMsg)
 
 	result, did, err := c.MaybeCompress(context.Background(), msgs)
@@ -189,10 +193,10 @@ func TestMaybeCompressTriggered(t *testing.T) {
 
 func TestMaybeCompressLLMError(t *testing.T) {
 	llm := &fakeLLM{err: errors.New("api down")}
-	c := NewCompressor(llm, filepath.Join(t.TempDir(), MemoryFileName))
+	c := NewCompressor(llm, filepath.Join(t.TempDir(), MemoryFileName), testContextWindow)
 
 	totalMsgs := KeepRecent + 4
-	charsPerMsg := CompressThreshold/totalMsgs + 1
+	charsPerMsg := testThreshold/totalMsgs + 1
 	msgs := makeMessages(totalMsgs, charsPerMsg)
 
 	result, did, err := c.MaybeCompress(context.Background(), msgs)
@@ -208,7 +212,7 @@ func TestMaybeCompressLLMError(t *testing.T) {
 }
 
 func TestLoadMemoryMissing(t *testing.T) {
-	c := NewCompressor(nil, filepath.Join(t.TempDir(), "nonexistent.md"))
+	c := NewCompressor(nil, filepath.Join(t.TempDir(), "nonexistent.md"), 0)
 
 	mem, err := c.LoadMemory()
 	if err != nil {
@@ -221,7 +225,7 @@ func TestLoadMemoryMissing(t *testing.T) {
 
 func TestSaveAndLoadMemory(t *testing.T) {
 	dir := t.TempDir()
-	c := NewCompressor(nil, filepath.Join(dir, MemoryFileName))
+	c := NewCompressor(nil, filepath.Join(dir, MemoryFileName), 0)
 
 	if err := c.SaveMemory("important decisions were made"); err != nil {
 		t.Fatalf("save: %v", err)
@@ -244,7 +248,7 @@ func TestSaveAndLoadMemory(t *testing.T) {
 
 func TestSaveMemoryOverwrites(t *testing.T) {
 	dir := t.TempDir()
-	c := NewCompressor(nil, filepath.Join(dir, MemoryFileName))
+	c := NewCompressor(nil, filepath.Join(dir, MemoryFileName), 0)
 
 	c.SaveMemory("first")
 	c.SaveMemory("second")
@@ -260,7 +264,7 @@ func TestSaveMemoryOverwrites(t *testing.T) {
 
 func TestSummarizeInputTruncation(t *testing.T) {
 	llm := &fakeLLM{response: "truncated summary"}
-	c := NewCompressor(llm, filepath.Join(t.TempDir(), MemoryFileName))
+	c := NewCompressor(llm, filepath.Join(t.TempDir(), MemoryFileName), testContextWindow)
 
 	totalMsgs := KeepRecent + 2
 	charsPerMsg := maxSummarizeInput
@@ -282,7 +286,7 @@ func TestSummarizeInputTruncation(t *testing.T) {
 }
 
 func TestNewCompressorDefaultMemoryFile(t *testing.T) {
-	c := NewCompressor(nil, "")
+	c := NewCompressor(nil, "", 0)
 	if c.memoryFile != MemoryFileName {
 		t.Fatalf("expected default %q, got %q", MemoryFileName, c.memoryFile)
 	}
@@ -291,10 +295,10 @@ func TestNewCompressorDefaultMemoryFile(t *testing.T) {
 func TestCompressPreservesRecentMessages(t *testing.T) {
 	dir := t.TempDir()
 	llm := &fakeLLM{response: "summary"}
-	c := NewCompressor(llm, filepath.Join(dir, MemoryFileName))
+	c := NewCompressor(llm, filepath.Join(dir, MemoryFileName), testContextWindow)
 
 	totalMsgs := KeepRecent + 4
-	charsPerMsg := CompressThreshold/totalMsgs + 1
+	charsPerMsg := testThreshold/totalMsgs + 1
 	msgs := makeMessages(totalMsgs, charsPerMsg)
 
 	// Tag the last KeepRecent messages so we can verify they're preserved

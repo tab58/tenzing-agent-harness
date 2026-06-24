@@ -32,10 +32,10 @@ func (t *TaskNextTool) Schema() Schema {
 func (t *TaskNextTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
 	result, err := t.nexter.NextTask()
 	if err != nil {
-		return ToolResult{Output: err.Error(), IsError: true}, nil
+		return NewToolResult(err.Error(), WithError()), nil
 	}
 	if result == "" {
-		return ToolResult{Output: "(no unblocked tasks)"}, nil
+		return NewToolResult("(no unblocked tasks)"), nil
 	}
-	return ToolResult{Output: result}, nil
+	return NewToolResult(result), nil
 }

@@ -2,6 +2,7 @@ package tooldef
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -30,26 +31,31 @@ func (t *EditTool) Schema() Schema {
 }
 
 func (t *EditTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
-	args := exctx.Arguments
-	if len(args) < 3 {
-		return ToolResult{Output: "file_path, old_string, and new_string are required", IsError: true}, nil
-	}
-	filePath := args[0]
-	oldString := args[1]
-	newString := args[2]
-
-	replaceAll := false
-	if len(args) > 3 && args[3] == "true" {
-		replaceAll = true
+	if len(exctx.Arguments) == 0 || exctx.Arguments[0] == "" {
+		return NewToolResult("file_path, old_string, and new_string are required", WithError()), nil
 	}
 
-	if filePath == "" {
-		return ToolResult{Output: "file_path is required", IsError: true}, nil
+	var input struct {
+		FilePath   string `json:"file_path"`
+		OldString  string `json:"old_string"`
+		NewString  string `json:"new_string"`
+		ReplaceAll bool   `json:"replace_all"`
 	}
+	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &input); err != nil {
+		return NewToolResult(fmt.Sprintf("invalid input JSON: %v", err), WithError()), nil
+	}
+	if input.FilePath == "" || input.OldString == "" {
+		return NewToolResult("file_path and old_string are required", WithError()), nil
+	}
+
+	filePath := input.FilePath
+	oldString := input.OldString
+	newString := input.NewString
+	replaceAll := input.ReplaceAll
 
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		return ToolResult{Output: fmt.Sprintf("cannot read file: %v", err), IsError: true}, nil
+		return NewToolResult(fmt.Sprintf("cannot read file: %v", err), WithError()), nil
 	}
 
 	content := string(data)
@@ -58,13 +64,13 @@ func (t *EditTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRes
 	if !replaceAll {
 		switch count {
 		case 0:
-			return ToolResult{Output: "old_string not found", IsError: true}, nil
+			return NewToolResult("old_string not found", WithError()), nil
 		case 1:
 		default:
-			return ToolResult{Output: fmt.Sprintf("old_string not unique: %d occurrences", count), IsError: true}, nil
+			return NewToolResult(fmt.Sprintf("old_string not unique: %d occurrences", count), WithError()), nil
 		}
 	} else if count == 0 {
-		return ToolResult{Output: "old_string not found", IsError: true}, nil
+		return NewToolResult("old_string not found", WithError()), nil
 	}
 
 	var updated string
@@ -75,8 +81,8 @@ func (t *EditTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRes
 	}
 
 	if err := os.WriteFile(filePath, []byte(updated), 0644); err != nil {
-		return ToolResult{Output: fmt.Sprintf("cannot write file: %v", err), IsError: true}, nil
+		return NewToolResult(fmt.Sprintf("cannot write file: %v", err), WithError()), nil
 	}
 
-	return ToolResult{Output: "Edit applied."}, nil
+	return NewToolResult("Edit applied."), nil
 }

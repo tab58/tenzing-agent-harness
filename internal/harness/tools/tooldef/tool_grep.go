@@ -3,6 +3,7 @@ package tooldef
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -36,20 +37,30 @@ func (t *GrepTool) Schema() Schema {
 }
 
 func (t *GrepTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
-	args := exctx.Arguments
-	if len(args) == 0 || args[0] == "" {
-		return ToolResult{Output: "pattern is required", IsError: true}, nil
+	if len(exctx.Arguments) == 0 || exctx.Arguments[0] == "" {
+		return NewToolResult("pattern is required", WithError()), nil
 	}
-	pattern := args[0]
 
-	re, err := regexp.Compile(pattern)
+	var input struct {
+		Pattern string `json:"pattern"`
+		Path    string `json:"path"`
+		Include string `json:"include"`
+	}
+	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &input); err != nil {
+		return NewToolResult(fmt.Sprintf("invalid input JSON: %v", err), WithError()), nil
+	}
+	if input.Pattern == "" {
+		return NewToolResult("pattern is required", WithError()), nil
+	}
+
+	re, err := regexp.Compile(input.Pattern)
 	if err != nil {
-		return ToolResult{Output: fmt.Sprintf("invalid regexp: %v", err), IsError: true}, nil
+		return NewToolResult(fmt.Sprintf("invalid regexp: %v", err), WithError()), nil
 	}
 
 	searchRoot := exctx.WorkingDir
-	if len(args) > 1 && args[1] != "" {
-		searchRoot = args[1]
+	if input.Path != "" {
+		searchRoot = input.Path
 	}
 	if searchRoot == "" {
 		wd, wdErr := os.Getwd()
@@ -59,10 +70,7 @@ func (t *GrepTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRes
 		searchRoot = wd
 	}
 
-	includePattern := ""
-	if len(args) > 2 && args[2] != "" {
-		includePattern = args[2]
-	}
+	includePattern := input.Include
 
 	var matches []string
 	capped := false
@@ -105,17 +113,17 @@ func (t *GrepTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRes
 		return nil
 	})
 	if err != nil && err != filepath.SkipAll {
-		return ToolResult{Output: fmt.Sprintf("walk error: %v", err), IsError: true}, nil
+		return NewToolResult(fmt.Sprintf("walk error: %v", err), WithError()), nil
 	}
 
 	if len(matches) == 0 {
-		return ToolResult{Output: "No matches."}, nil
+		return NewToolResult("No matches."), nil
 	}
 	output := strings.Join(matches, "\n")
 	if capped {
 		output += fmt.Sprintf("\n[truncated at %d matches]", maxGrepMatches)
 	}
-	return ToolResult{Output: output}, nil
+	return NewToolResult(output), nil
 }
 
 func isBinary(data []byte) bool {

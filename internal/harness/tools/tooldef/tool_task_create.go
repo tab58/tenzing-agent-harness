@@ -45,18 +45,18 @@ func (t *TaskCreateTool) Execute(ctx context.Context, exctx ExecutionContext) (T
 		Priority    agentctx.TaskPriority `json:"priority"`
 	}
 	if len(exctx.Arguments) == 0 {
-		return ToolResult{Output: "missing arguments", IsError: true}, nil
+		return NewToolResult("missing arguments", WithError()), nil
 	}
 	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &args); err != nil {
-		return ToolResult{Output: fmt.Sprintf("invalid arguments: %v", err), IsError: true}, nil
+		return NewToolResult(fmt.Sprintf("invalid arguments: %v", err), WithError()), nil
 	}
 	if args.Description == "" {
-		return ToolResult{Output: "description is required", IsError: true}, nil
+		return NewToolResult("description is required", WithError()), nil
 	}
 
 	result, err := t.creator.CreateTask(args.Description, args.DependsOn, args.Priority)
 	if err != nil {
-		return ToolResult{Output: err.Error(), IsError: true}, nil
+		return NewToolResult(err.Error(), WithError()), nil
 	}
-	return ToolResult{Output: result}, nil
+	return NewToolResult(result), nil
 }

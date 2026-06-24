@@ -14,7 +14,15 @@ const (
 	LightningModelGPTOSS_120B = LightningModel("lightning-ai/gpt-oss-120b")
 
 	MaxTokensLightningGemma4_31B int64 = 245000
+
+	ContextWindowLightningGemma4_31B  = 131_000
+	ContextWindowLightningGPTOSS120B  = 128_000
 )
+
+var lightningContextWindows = map[LightningModel]int{
+	LightningModelGemma4_31B:  ContextWindowLightningGemma4_31B,
+	LightningModelGPTOSS_120B: ContextWindowLightningGPTOSS120B,
+}
 
 // Lightning implements the LLM interface using Lightning.ai's OpenAI-compatible API.
 type Lightning struct {
@@ -74,6 +82,7 @@ func NewLightningClient(cfg LightningConfig, opts ...LightningOption) *Lightning
 		name:           "lightning",
 		client:         &client,
 		model:          string(model),
+		contextWindow:  lightningContextWindows[model],
 		rateLimiter:    o.rateLimiter,
 		retryRateLimit: true,
 	}}

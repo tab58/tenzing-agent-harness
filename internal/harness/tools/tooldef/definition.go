@@ -9,9 +9,51 @@ type ToolResult struct {
 	ToolUseID string
 	Output    string
 	IsError   bool
+	Metadata  map[string]string
+}
+
+type toolResultOptions struct {
+	ToolUseID string
+	IsError   bool
+	Metadata  map[string]string
+}
+
+type ToolResultOption func(*toolResultOptions)
+
+func WithToolUseID(id string) ToolResultOption {
+	return func(o *toolResultOptions) {
+		o.ToolUseID = id
+	}
+}
+
+func WithMetadata(metadata map[string]string) ToolResultOption {
+	return func(o *toolResultOptions) {
+		o.Metadata = metadata
+	}
+}
+
+func WithError() ToolResultOption {
+	return func(o *toolResultOptions) {
+		o.IsError = true
+	}
+}
+
+func NewToolResult(output string, options ...ToolResultOption) ToolResult {
+	o := &toolResultOptions{}
+	for _, option := range options {
+		option(o)
+	}
+
+	return ToolResult{
+		Output:    output,
+		ToolUseID: o.ToolUseID,
+		IsError:   o.IsError,
+		Metadata:  o.Metadata,
+	}
 }
 
 type ToolCall struct {
+	ID    string
 	Name  string
 	Input string
 }

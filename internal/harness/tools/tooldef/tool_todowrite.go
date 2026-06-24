@@ -41,14 +41,14 @@ func (t *TodoWriteTool) Schema() Schema {
 func (t *TodoWriteTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
 	args := exctx.Arguments
 	if len(args) < 1 {
-		return ToolResult{Output: "tasks argument is required", IsError: true}, nil
+		return NewToolResult("tasks argument is required", WithError()), nil
 	}
 	var tasks []string
 	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &tasks); err != nil {
-		return ToolResult{Output: fmt.Sprintf("invalid tasks JSON: %v", err), IsError: true}, nil
+		return NewToolResult(fmt.Sprintf("invalid tasks JSON: %v", err), WithError()), nil
 	}
 	if len(tasks) == 0 {
-		return ToolResult{Output: "tasks list cannot be empty", IsError: true}, nil
+		return NewToolResult("tasks list cannot be empty", WithError()), nil
 	}
 
 	items := make([]TodoItem, len(tasks))
@@ -60,8 +60,8 @@ func (t *TodoWriteTool) Execute(ctx context.Context, exctx ExecutionContext) (To
 		}
 	}
 	if err := writeTodoItems(exctx.WorkingDir, items); err != nil {
-		return ToolResult{Output: fmt.Sprintf("failed to write todo file: %v", err), IsError: true}, nil
+		return NewToolResult(fmt.Sprintf("failed to write todo file: %v", err), WithError()), nil
 	}
 
-	return ToolResult{Output: fmt.Sprintf("Plan written: %d tasks", len(items))}, nil
+	return NewToolResult(fmt.Sprintf("Plan written: %d tasks", len(items))), nil
 }

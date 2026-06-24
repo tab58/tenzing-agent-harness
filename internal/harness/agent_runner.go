@@ -2,13 +2,20 @@ package harness
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"time"
+
 	"tenzing-agent/internal/harness/skills"
 	"tenzing-agent/internal/harness/tools"
 )
 
+const logOutputMaxLen = 2000
+
 type AgentRunner struct {
+	id             string
 	agent          Agent
 	fsm            *LoopFSM
 	toolRegistry   *tools.Registry
@@ -29,6 +36,7 @@ type AgentRunnerConfig struct {
 
 func NewAgentRunner(cfg AgentRunnerConfig) *AgentRunner {
 	return &AgentRunner{
+		id:             runnerID(),
 		agent:          cfg.Agent,
 		fsm:            createNewLoopFSM(),
 		toolRegistry:   cfg.ToolRegistry,
@@ -38,15 +46,26 @@ func NewAgentRunner(cfg AgentRunnerConfig) *AgentRunner {
 	}
 }
 
+func runnerID() string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 // RunLoop executes a single turn: user input -> agent plan/execute loop -> agent result
 func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error) {
 	inputs := []string{input}
 	var loopErr error
+	iteration := 0
+	loopStart := time.Now()
+	slog.Info("loop started", "runner", h.id, "input", input)
+	slog.Debug("system prompt", "runner", h.id, "prompt_len", len(h.systemPrompt), "prompt", h.systemPrompt)
 
 	if err := h.fsm.TransitionStates(ctx, LoopTransitionReset); err != nil {
 		return "", fmt.Errorf("fsm reset: %w", err)
 	}
 	for {
+		iteration++
 		if err := ctx.Err(); err != nil {
 			loopErr = fmt.Errorf("loop canceled: %w", err)
 			break
@@ -57,10 +76,19 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 			break
 		}
 		reminders := h.buildSystemReminders()
+		if len(reminders) > 0 {
+			slog.Debug("system reminders", "runner", h.id, "iter", iteration, "count", len(reminders), "reminders", reminders)
+		}
 		reasoningResult, err := h.agent.DoReasoning(ctx, inputs, reminders)
 		if err != nil {
 			loopErr = fmt.Errorf("reasoning error: %w", err)
 			break
+		}
+
+		if reasoningResult.ToolCall != nil {
+			slog.Debug("reasoning result", "runner", h.id, "iter", iteration, "tool", reasoningResult.ToolCall.Name, "tool_use_id", reasoningResult.ToolCall.ID, "input", reasoningResult.ToolCall.Input)
+		} else {
+			slog.Debug("reasoning result", "runner", h.id, "iter", iteration, "final_answer_len", len(reasoningResult.FinalAnswer))
 		}
 		if err := h.fsm.TransitionStates(ctx, LoopTransitionFinishReasoning); err != nil {
 			loopErr = fmt.Errorf("fsm finish reasoning: %w", err)
@@ -68,12 +96,12 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 		}
 
 		if reasoningResult.ToolCall == nil {
-			slog.Debug("tool not needed; returning final answer")
 			finalAnswer := reasoningResult.FinalAnswer
-			slog.Debug(fmt.Sprintf("final answer: %s", finalAnswer))
 			if err := h.fsm.TransitionStates(ctx, LoopTransitionStop); err != nil {
 				return "", fmt.Errorf("fsm stop: %w", err)
 			}
+			slog.Info("loop completed", "runner", h.id, "iterations", iteration, "duration", time.Since(loopStart).Round(time.Millisecond), "answer_len", len(finalAnswer))
+			slog.Debug("final answer", "runner", h.id, "answer", finalAnswer)
 			return finalAnswer, nil
 		}
 
@@ -87,7 +115,9 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 			break
 		}
 		toolCall := reasoningResult.ToolCall
+		toolStart := time.Now()
 		toolResult, err := h.toolRegistry.Execute(ctx, toolCall.Name, toolCall.Input)
+		toolDuration := time.Since(toolStart)
 		if err != nil {
 			loopErr = fmt.Errorf("tool execution error: %w", err)
 			break
@@ -96,7 +126,11 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 			loopErr = fmt.Errorf("fsm finish tool execution: %w", err)
 			break
 		}
-		slog.Debug(fmt.Sprintf("tool execution result: %s", toolResult.Output))
+		if toolResult.IsError {
+			slog.Warn("tool error", "runner", h.id, "iter", iteration, "tool", toolCall.Name, "output", truncateLog(toolResult.Output, logOutputMaxLen))
+		}
+		slog.Debug("tool result", "runner", h.id, "iter", iteration, "tool", toolCall.Name, "is_error", toolResult.IsError, "duration", toolDuration.Round(time.Millisecond), "output_len", len(toolResult.Output), "output", truncateLog(toolResult.Output, logOutputMaxLen))
+		slog.Log(ctx, LevelTrace, "tool result full", "runner", h.id, "iter", iteration, "tool", toolCall.Name, "output", toolResult.Output)
 
 		if h.hooks.OnToolCall != nil {
 			h.hooks.OnToolCall(toolCall.Name, toolCall.Input, toolResult.Output)
@@ -107,10 +141,14 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 	}
 
 	if err := h.fsm.TransitionStates(ctx, LoopTransitionReset); err != nil {
-		slog.Error(fmt.Sprintf("fsm reset after error: %v", err))
+		slog.Error("fsm reset after error", "runner", h.id, "error", err)
 	}
-	slog.Error(loopErr.Error())
+	slog.Error("loop failed", "runner", h.id, "error", loopErr, "iterations", iteration, "duration", time.Since(loopStart).Round(time.Millisecond))
 	return "", loopErr
+}
+
+func (h *AgentRunner) ID() string {
+	return h.id
 }
 
 func (h *AgentRunner) SystemPrompt() string {
@@ -122,4 +160,11 @@ func (h *AgentRunner) buildSystemReminders() []string {
 		return nil
 	}
 	return h.buildReminders()
+}
+
+func truncateLog(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "...[truncated]"
 }

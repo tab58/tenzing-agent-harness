@@ -26,8 +26,8 @@ func (t *TodoReadTool) Schema() Schema {
 func (t *TodoReadTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
 	items, err := readTodoItems(exctx.WorkingDir)
 	if err != nil {
-		return ToolResult{Output: err.Error(), IsError: true}, nil
+		return NewToolResult(err.Error(), WithError()), nil
 	}
 
-	return ToolResult{Output: formatTodoItems(items)}, nil
+	return NewToolResult(formatTodoItems(items)), nil
 }

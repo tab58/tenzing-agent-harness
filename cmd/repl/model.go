@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strings"
 
 	"tenzing-agent/internal/harness"
@@ -37,7 +38,10 @@ type model struct {
 	height       int
 	scrollOffset int
 
-	mainCfg harness.AgentRunnerConfig
+	mainCfg  harness.AgentRunnerConfig
+	modelName string
+	cwd       string
+	toolCount int
 }
 
 type historyEntry struct {
@@ -45,18 +49,28 @@ type historyEntry struct {
 	content string
 }
 
-func newModel(cfg harness.AgentRunnerConfig) model {
+func newModel(cfg harness.AgentRunnerConfig, modelName, cwd string) model {
 	return model{
-		state:   stateInput,
-		mainCfg: cfg,
-		width:   80,
-		height:  24,
+		state:     stateInput,
+		mainCfg:   cfg,
+		modelName: modelName,
+		cwd:       cwd,
+		toolCount: len(cfg.ToolRegistry.Definitions()),
+		width:     80,
+		height:    24,
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.SetWindowTitle("tenzing repl")
+	return tea.Batch(
+		tea.SetWindowTitle("tenzing repl"),
+		func() tea.Msg {
+			return headerReadyMsg{}
+		},
+	)
 }
+
+type headerReadyMsg struct{}
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -64,6 +78,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		return m, nil
+
+	case headerReadyMsg:
+		m.history = append(m.history, historyEntry{
+			role:    "header",
+			content: m.buildHeader(),
+		})
 		return m, nil
 
 	case tea.KeyMsg:
@@ -183,7 +204,20 @@ var (
 	toolStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Faint(true)
 	errorStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)
 	dimStyle       = lipgloss.NewStyle().Faint(true)
+	headerStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Bold(true)
+	headerDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 )
+
+func (m model) buildHeader() string {
+	var b strings.Builder
+	b.WriteString("tenzing agent harness\n")
+	b.WriteString(fmt.Sprintf("  model    %s\n", m.modelName))
+	b.WriteString(fmt.Sprintf("  cwd      %s\n", m.cwd))
+	b.WriteString(fmt.Sprintf("  tools    %d registered\n", m.toolCount))
+	b.WriteString(fmt.Sprintf("  platform %s/%s\n", runtime.GOOS, runtime.GOARCH))
+	b.WriteString("  exit     q / exit / ctrl+c")
+	return b.String()
+}
 
 func (m model) View() string {
 	var b strings.Builder
@@ -220,6 +254,13 @@ func (m model) renderHistory() string {
 	var b strings.Builder
 	for _, entry := range m.history {
 		switch entry.role {
+		case "header":
+			lines := strings.Split(entry.content, "\n")
+			b.WriteString(headerStyle.Render(lines[0]) + "\n")
+			for _, line := range lines[1:] {
+				b.WriteString(headerDim.Render(line) + "\n")
+			}
+			b.WriteString("\n")
 		case "user":
 			b.WriteString(userStyle.Render("❯ "+entry.content) + "\n")
 		case "assistant":

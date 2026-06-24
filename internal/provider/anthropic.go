@@ -38,7 +38,18 @@ const (
 
 	MaxTokensClaudeOpus4_6   int64 = 128000
 	MaxTokensClaudeSonnet4_6 int64 = 64000
+
+	ContextWindowClaudeOpus4_6   = 200_000
+	ContextWindowClaudeSonnet4_6 = 200_000
+	ContextWindowClaudeHaiku4_5  = 200_000
+	contextWindowAnthropicDefault = 200_000
 )
+
+var anthropicContextWindows = map[AnthropicModel]int{
+	AnthropicModelClaudeOpus4_6:   ContextWindowClaudeOpus4_6,
+	AnthropicModelClaudeSonnet4_6: ContextWindowClaudeSonnet4_6,
+	AnthropicModelClaudeHaiku4_5:  ContextWindowClaudeHaiku4_5,
+}
 
 type Anthropic struct {
 	client      *anthropic.Client
@@ -260,6 +271,13 @@ func (a *Anthropic) SendMessageWithTools(ctx context.Context, req CompletionRequ
 
 func (a *Anthropic) GetCurrentModel() string {
 	return string(a.model)
+}
+
+func (a *Anthropic) GetContextWindowSize() int {
+	if w, ok := anthropicContextWindows[a.model]; ok {
+		return w
+	}
+	return contextWindowAnthropicDefault
 }
 
 func (a *Anthropic) CountTokens(ctx context.Context, req CompletionRequest) (TokenCount, error) {
