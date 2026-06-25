@@ -46,7 +46,7 @@ func (r *Registry) Discover() map[string]Definition {
 	return result
 }
 
-func (r *Registry) List() map[string]string {
+func (r *Registry) GetSkillMap() map[string]string {
 	result := make(map[string]string, len(r.skills))
 	for _, def := range r.skills {
 		result[def.Name] = def.Description

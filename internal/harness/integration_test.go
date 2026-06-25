@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"tenzing-agent/internal/harness/skills"
 	"tenzing-agent/internal/harness/snapshot"
 	"tenzing-agent/internal/harness/taskgraph"
 	"tenzing-agent/internal/harness/todo"
@@ -261,10 +262,11 @@ func TestIntegration_ReadEditRevert_ThroughLoop(t *testing.T) {
 	registry.Register(snapshot.NewRevertTool(snapshots))
 
 	runner, err := NewAgentRunner(AgentRunnerConfig{
-		Agent:        agent,
-		ToolRegistry: registry,
-		TodoFile:     todo.NewTodoItemFile(workDir),
-		SystemPrompt: "test",
+		Agent:          agent,
+		ToolRegistry:   registry,
+		SkillsRegistry: skills.NewRegistry(),
+		TodoFile:       todo.NewTodoItemFile(workDir),
+		SystemPrompt:   "test",
 	})
 	if err != nil {
 		t.Fatalf("NewAgentRunner error: %v", err)
@@ -331,10 +333,11 @@ func TestIntegration_TaskLifecycle(t *testing.T) {
 	registry.Register(taskgraph.NewTaskListTool(tg))
 
 	runner, err := NewAgentRunner(AgentRunnerConfig{
-		Agent:        agent,
-		ToolRegistry: registry,
-		TodoFile:     todo.NewTodoItemFile(workDir),
-		SystemPrompt: "test",
+		Agent:          agent,
+		ToolRegistry:   registry,
+		SkillsRegistry: skills.NewRegistry(),
+		TodoFile:       todo.NewTodoItemFile(workDir),
+		SystemPrompt:   "test",
 	})
 	if err != nil {
 		t.Fatalf("NewAgentRunner error: %v", err)
@@ -413,10 +416,11 @@ func TestIntegration_TaskCreate_ThroughLoop(t *testing.T) {
 	registry.Register(taskgraph.NewTaskListTool(tg))
 
 	runner, err := NewAgentRunner(AgentRunnerConfig{
-		Agent:        agent,
-		ToolRegistry: registry,
-		TodoFile:     todo.NewTodoItemFile(workDir),
-		SystemPrompt: "test",
+		Agent:          agent,
+		ToolRegistry:   registry,
+		SkillsRegistry: skills.NewRegistry(),
+		TodoFile:       todo.NewTodoItemFile(workDir),
+		SystemPrompt:   "test",
 	})
 	if err != nil {
 		t.Fatalf("NewAgentRunner error: %v", err)
@@ -508,10 +512,11 @@ func TestIntegration_FinalAnswerOnly(t *testing.T) {
 
 	registry := tools.NewRegistry()
 	runner, err := NewAgentRunner(AgentRunnerConfig{
-		Agent:        agent,
-		ToolRegistry: registry,
-		TodoFile:     todo.NewTodoItemFile(workDir),
-		SystemPrompt: "test",
+		Agent:          agent,
+		ToolRegistry:   registry,
+		SkillsRegistry: skills.NewRegistry(),
+		TodoFile:       todo.NewTodoItemFile(workDir),
+		SystemPrompt:   "test",
 	})
 	if err != nil {
 		t.Fatalf("NewAgentRunner error: %v", err)
@@ -533,10 +538,11 @@ func TestIntegration_ContextCanceled(t *testing.T) {
 
 	registry := tools.NewRegistry()
 	runner, err := NewAgentRunner(AgentRunnerConfig{
-		Agent:        agent,
-		ToolRegistry: registry,
-		TodoFile:     todo.NewTodoItemFile(workDir),
-		SystemPrompt: "test",
+		Agent:          agent,
+		ToolRegistry:   registry,
+		SkillsRegistry: skills.NewRegistry(),
+		TodoFile:       todo.NewTodoItemFile(workDir),
+		SystemPrompt:   "test",
 	})
 	if err != nil {
 		t.Fatalf("NewAgentRunner error: %v", err)
@@ -559,10 +565,11 @@ func TestIntegration_UnknownTool(t *testing.T) {
 
 	registry := tools.NewRegistry()
 	runner, err := NewAgentRunner(AgentRunnerConfig{
-		Agent:        agent,
-		ToolRegistry: registry,
-		TodoFile:     todo.NewTodoItemFile(workDir),
-		SystemPrompt: "test",
+		Agent:          agent,
+		ToolRegistry:   registry,
+		SkillsRegistry: skills.NewRegistry(),
+		TodoFile:       todo.NewTodoItemFile(workDir),
+		SystemPrompt:   "test",
 	})
 	if err != nil {
 		t.Fatalf("NewAgentRunner error: %v", err)
@@ -594,10 +601,11 @@ func TestIntegration_MultipleToolCalls(t *testing.T) {
 	registry.Register(taskgraph.NewTaskListTool(tg))
 
 	runner, err := NewAgentRunner(AgentRunnerConfig{
-		Agent:        agent,
-		ToolRegistry: registry,
-		TodoFile:     todo.NewTodoItemFile(workDir),
-		SystemPrompt: "test",
+		Agent:          agent,
+		ToolRegistry:   registry,
+		SkillsRegistry: skills.NewRegistry(),
+		TodoFile:       todo.NewTodoItemFile(workDir),
+		SystemPrompt:   "test",
 	})
 	if err != nil {
 		t.Fatalf("NewAgentRunner error: %v", err)
@@ -639,10 +647,11 @@ func TestIntegration_ToolHookCalled(t *testing.T) {
 	registry.Register(taskgraph.NewTaskCreateTool(tg))
 
 	runner, err := NewAgentRunner(AgentRunnerConfig{
-		Agent:        agent,
-		ToolRegistry: registry,
-		TodoFile:     todo.NewTodoItemFile(workDir),
-		SystemPrompt: "test",
+		Agent:          agent,
+		ToolRegistry:   registry,
+		SkillsRegistry: skills.NewRegistry(),
+		TodoFile:       todo.NewTodoItemFile(workDir),
+		SystemPrompt:   "test",
 		Hooks: Hooks{
 			OnToolCall: func(name, input, output string) {
 				hookCalls = append(hookCalls, name)

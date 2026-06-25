@@ -45,9 +45,14 @@ func main() {
 
 	hooks := harness.Hooks{}
 
-	mainAgent := agent.NewWithCompressor(agent.AgentConfig{
+	mainAgent, err := agent.New(agent.AgentConfig{
 		Model: llm,
-	}, cwd)
+	})
+	if err != nil {
+		slog.Error("agent init failed", "error", err)
+		fmt.Fprintf(os.Stderr, "agent init failed: %v\n", err)
+		os.Exit(1)
+	}
 
 	agentHarness, err := harness.New(harness.HarnessConfig{
 		Cwd:              cwd,

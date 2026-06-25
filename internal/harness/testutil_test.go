@@ -34,6 +34,7 @@ func newScriptedAgent(steps ...ReasoningResult) *ScriptedAgent {
 }
 
 func (s *ScriptedAgent) UpdateToolDefinitions(_ []provider.ToolDefinition) {}
+func (s *ScriptedAgent) UpdateSkillMap(_ map[string]string)              {}
 
 func (s *ScriptedAgent) DoReasoning(_ context.Context, inputs []string, reminders []string) (ReasoningResult, error) {
 	s.mu.Lock()

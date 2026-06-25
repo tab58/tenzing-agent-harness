@@ -10,6 +10,7 @@ import (
 type stubAgent struct{}
 
 func (s *stubAgent) UpdateToolDefinitions(_ []provider.ToolDefinition) {}
+func (s *stubAgent) UpdateSkillMap(_ map[string]string)              {}
 
 func (s *stubAgent) DoReasoning(_ context.Context, _ []string, _ []string) (ReasoningResult, error) {
 	return ReasoningResult{FinalAnswer: "done"}, nil

@@ -10,7 +10,7 @@ import (
 var _ tooldef.Definition = (*ListSkillsTool)(nil)
 
 type SkillLister interface {
-	List() map[string]string
+	GetSkillMap() map[string]string
 }
 
 type ListSkillsTool struct {
@@ -35,7 +35,7 @@ func (t *ListSkillsTool) Schema() tooldef.Schema {
 }
 
 func (t *ListSkillsTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
-	skills := t.lister.List()
+	skills := t.lister.GetSkillMap()
 	if len(skills) == 0 {
 		return tooldef.NewToolResult("No skills available."), nil
 	}

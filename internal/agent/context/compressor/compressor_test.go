@@ -1,4 +1,4 @@
-package context
+package compressor
 
 import (
 	"context"
@@ -47,8 +47,15 @@ func (f *fakeLLM) ListModels(context.Context) ([]provider.ModelInfo, error) {
 	return nil, provider.ErrNotSupported
 }
 
-func (f *fakeLLM) GetCurrentModel() string      { return "fake-model" }
+func (f *fakeLLM) GetCurrentModel() string   { return "fake-model" }
 func (f *fakeLLM) GetContextWindowSize() int { return 128_000 }
+
+func newTestCompressor(t *testing.T, llm provider.LLM, contextWindow int) *Compressor {
+	t.Helper()
+	c := NewCompressor(llm, contextWindow)
+	c.memoryFile = filepath.Join(t.TempDir(), MemoryFileName)
+	return c
+}
 
 func makeMessages(n int, charsPer int) []provider.Message {
 	msgs := make([]provider.Message, n)
@@ -101,7 +108,7 @@ func TestEstimateSize(t *testing.T) {
 		},
 	}
 
-	c := NewCompressor(nil, "unused", 0)
+	c := NewCompressor(nil, 0)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := c.EstimateSize(tt.messages)
@@ -113,7 +120,7 @@ func TestEstimateSize(t *testing.T) {
 }
 
 func TestMaybeCompressBelowThreshold(t *testing.T) {
-	c := NewCompressor(&fakeLLM{}, filepath.Join(t.TempDir(), MemoryFileName), testContextWindow)
+	c := newTestCompressor(t, &fakeLLM{}, testContextWindow)
 
 	msgs := makeMessages(10, 100)
 	result, did, err := c.MaybeCompress(context.Background(), msgs)
@@ -129,7 +136,7 @@ func TestMaybeCompressBelowThreshold(t *testing.T) {
 }
 
 func TestMaybeCompressTooFewMessages(t *testing.T) {
-	c := NewCompressor(&fakeLLM{}, filepath.Join(t.TempDir(), MemoryFileName), testContextWindow)
+	c := newTestCompressor(t, &fakeLLM{}, testContextWindow)
 
 	msgs := makeMessages(KeepRecent, testThreshold/KeepRecent+1)
 	result, did, err := c.MaybeCompress(context.Background(), msgs)
@@ -145,9 +152,8 @@ func TestMaybeCompressTooFewMessages(t *testing.T) {
 }
 
 func TestMaybeCompressTriggered(t *testing.T) {
-	dir := t.TempDir()
 	llm := &fakeLLM{response: "summary of old conversation"}
-	c := NewCompressor(llm, filepath.Join(dir, MemoryFileName), testContextWindow)
+	c := newTestCompressor(t, llm, testContextWindow)
 
 	totalMsgs := KeepRecent + 4
 	charsPerMsg := testThreshold/totalMsgs + 1
@@ -178,7 +184,7 @@ func TestMaybeCompressTriggered(t *testing.T) {
 	}
 
 	// verify memory file written
-	data, err := os.ReadFile(filepath.Join(dir, MemoryFileName))
+	data, err := os.ReadFile(c.memoryFile)
 	if err != nil {
 		t.Fatalf("memory file not written: %v", err)
 	}
@@ -193,7 +199,7 @@ func TestMaybeCompressTriggered(t *testing.T) {
 
 func TestMaybeCompressLLMError(t *testing.T) {
 	llm := &fakeLLM{err: errors.New("api down")}
-	c := NewCompressor(llm, filepath.Join(t.TempDir(), MemoryFileName), testContextWindow)
+	c := newTestCompressor(t, llm, testContextWindow)
 
 	totalMsgs := KeepRecent + 4
 	charsPerMsg := testThreshold/totalMsgs + 1
@@ -211,10 +217,11 @@ func TestMaybeCompressLLMError(t *testing.T) {
 	}
 }
 
-func TestLoadMemoryMissing(t *testing.T) {
-	c := NewCompressor(nil, filepath.Join(t.TempDir(), "nonexistent.md"), 0)
+func TestLoadFromMemoryFileMissing(t *testing.T) {
+	c := NewCompressor(nil, 0)
+	c.memoryFile = filepath.Join(t.TempDir(), "nonexistent.md")
 
-	mem, err := c.LoadMemory()
+	mem, err := c.LoadFromMemoryFile()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -223,15 +230,14 @@ func TestLoadMemoryMissing(t *testing.T) {
 	}
 }
 
-func TestSaveAndLoadMemory(t *testing.T) {
-	dir := t.TempDir()
-	c := NewCompressor(nil, filepath.Join(dir, MemoryFileName), 0)
+func TestSaveAndLoadMemoryFile(t *testing.T) {
+	c := newTestCompressor(t, nil, 0)
 
-	if err := c.SaveMemory("important decisions were made"); err != nil {
+	if err := c.SaveToMemoryFile("important decisions were made"); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 
-	mem, err := c.LoadMemory()
+	mem, err := c.LoadFromMemoryFile()
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -246,14 +252,13 @@ func TestSaveAndLoadMemory(t *testing.T) {
 	}
 }
 
-func TestSaveMemoryOverwrites(t *testing.T) {
-	dir := t.TempDir()
-	c := NewCompressor(nil, filepath.Join(dir, MemoryFileName), 0)
+func TestSaveMemoryFileOverwrites(t *testing.T) {
+	c := newTestCompressor(t, nil, 0)
 
-	c.SaveMemory("first")
-	c.SaveMemory("second")
+	c.SaveToMemoryFile("first")
+	c.SaveToMemoryFile("second")
 
-	mem, _ := c.LoadMemory()
+	mem, _ := c.LoadFromMemoryFile()
 	if strings.Contains(mem, "first") {
 		t.Fatal("old memory not overwritten")
 	}
@@ -264,7 +269,7 @@ func TestSaveMemoryOverwrites(t *testing.T) {
 
 func TestSummarizeInputTruncation(t *testing.T) {
 	llm := &fakeLLM{response: "truncated summary"}
-	c := NewCompressor(llm, filepath.Join(t.TempDir(), MemoryFileName), testContextWindow)
+	c := newTestCompressor(t, llm, testContextWindow)
 
 	totalMsgs := KeepRecent + 2
 	charsPerMsg := maxSummarizeInput
@@ -286,16 +291,15 @@ func TestSummarizeInputTruncation(t *testing.T) {
 }
 
 func TestNewCompressorDefaultMemoryFile(t *testing.T) {
-	c := NewCompressor(nil, "", 0)
+	c := NewCompressor(nil, 0)
 	if c.memoryFile != MemoryFileName {
 		t.Fatalf("expected default %q, got %q", MemoryFileName, c.memoryFile)
 	}
 }
 
 func TestCompressPreservesRecentMessages(t *testing.T) {
-	dir := t.TempDir()
 	llm := &fakeLLM{response: "summary"}
-	c := NewCompressor(llm, filepath.Join(dir, MemoryFileName), testContextWindow)
+	c := newTestCompressor(t, llm, testContextWindow)
 
 	totalMsgs := KeepRecent + 4
 	charsPerMsg := testThreshold/totalMsgs + 1

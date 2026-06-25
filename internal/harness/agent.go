@@ -11,6 +11,7 @@ import (
 
 type Agent interface {
 	UpdateToolDefinitions(tooldefs []provider.ToolDefinition)
+	UpdateSkillMap(skillMap map[string]string)
 	DoReasoning(ctx context.Context, inputs []string, systemReminders []string) (ReasoningResult, error)
 }
 

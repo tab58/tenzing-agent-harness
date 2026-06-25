@@ -45,14 +45,15 @@ func NewAgentRunner(cfg AgentRunnerConfig) (*AgentRunner, error) {
 	}
 
 	return &AgentRunner{
-		id:           runnerID(),
-		agent:        cfg.Agent,
-		fsm:          createNewLoopFSM(),
-		toolRegistry: cfg.ToolRegistry,
-		hooks:        cfg.Hooks,
-		systemPrompt: cfg.SystemPrompt,
-		todoFile:     cfg.TodoFile,
-		taskGraph:    cfg.TaskGraph,
+		id:             runnerID(),
+		agent:          cfg.Agent,
+		fsm:            createNewLoopFSM(),
+		toolRegistry:   cfg.ToolRegistry,
+		skillsRegistry: cfg.SkillsRegistry,
+		hooks:          cfg.Hooks,
+		systemPrompt:   cfg.SystemPrompt,
+		todoFile:       cfg.TodoFile,
+		taskGraph:      cfg.TaskGraph,
 	}, nil
 }
 
@@ -70,6 +71,7 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 	loopStart := time.Now()
 
 	// prepare loop
+	h.agent.UpdateSkillMap(h.skillsRegistry.GetSkillMap())
 	h.agent.UpdateToolDefinitions(h.toolRegistry.ProviderDefinitions())
 
 	// execute loop

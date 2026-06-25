@@ -1,4 +1,4 @@
-package context
+package compressor
 
 import (
 	"context"
@@ -11,13 +11,13 @@ import (
 )
 
 const (
-	MemoryFileName   = ".agent_memory.md"
-	KeepRecent       = 6
+	MemoryFileName    = ".agent_memory.md"
+	KeepRecent        = 6
 	maxSummarizeInput = 20_000
 	toolOutputWeight  = 4
 	// ~4 chars per token, compress at 75% of context window
 	charsPerToken        = 4
-	compressAtFraction   = 3 // numerator; denominator is charsPerToken (i.e. 3/4 = 75%)
+	compressAtFraction   = 3      // numerator; denominator is charsPerToken (i.e. 3/4 = 75%)
 	defaultContextWindow = 10_000 // tokens, fallback when caller doesn't specify
 )
 
@@ -27,11 +27,9 @@ type Compressor struct {
 	threshold  int
 }
 
-func NewCompressor(llm provider.LLM, memoryFile string, contextWindow int) *Compressor {
-	memFile := memoryFile
-	if memFile == "" {
-		memFile = MemoryFileName
-	}
+func NewCompressor(llm provider.LLM, contextWindow int) *Compressor {
+	memFile := MemoryFileName
+
 	if contextWindow <= 0 {
 		contextWindow = defaultContextWindow
 	}
@@ -41,18 +39,6 @@ func NewCompressor(llm provider.LLM, memoryFile string, contextWindow int) *Comp
 		memoryFile: memFile,
 		threshold:  contextWindow * compressAtFraction,
 	}
-}
-
-func (c *Compressor) EstimateSize(messages []provider.Message) int {
-	size := 0
-	for _, msg := range messages {
-		for _, block := range msg.Content {
-			size += len(block.Text)
-			size += len(block.ToolOutput) / toolOutputWeight
-			size += len(block.ToolInput)
-		}
-	}
-	return size
 }
 
 // MaybeCompress checks whether the message history exceeds the threshold.
@@ -75,7 +61,7 @@ func (c *Compressor) MaybeCompress(ctx context.Context, messages []provider.Mess
 		return messages, false, fmt.Errorf("compression summarize: %w", err)
 	}
 
-	if err := c.SaveMemory(summary); err != nil {
+	if err := c.SaveToMemoryFile(summary); err != nil {
 		return messages, false, fmt.Errorf("save memory: %w", err)
 	}
 
@@ -89,7 +75,19 @@ func (c *Compressor) MaybeCompress(ctx context.Context, messages []provider.Mess
 	return compressed, true, nil
 }
 
-func (c *Compressor) LoadMemory() (string, error) {
+func (c *Compressor) EstimateSize(messages []provider.Message) int {
+	size := 0
+	for _, msg := range messages {
+		for _, block := range msg.Content {
+			size += len(block.Text)
+			size += len(block.ToolOutput) / toolOutputWeight
+			size += len(block.ToolInput)
+		}
+	}
+	return size
+}
+
+func (c *Compressor) LoadFromMemoryFile() (string, error) {
 	data, err := os.ReadFile(c.memoryFile)
 	if os.IsNotExist(err) {
 		return "", nil
@@ -100,7 +98,7 @@ func (c *Compressor) LoadMemory() (string, error) {
 	return string(data), nil
 }
 
-func (c *Compressor) SaveMemory(summary string) error {
+func (c *Compressor) SaveToMemoryFile(summary string) error {
 	content := fmt.Sprintf("# Agent Memory\nUpdated: %s\n\n%s\n",
 		time.Now().Format(time.RFC3339), summary)
 	return os.WriteFile(c.memoryFile, []byte(content), 0644)
