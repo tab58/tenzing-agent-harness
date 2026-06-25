@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"tenzing-agent/internal/harness/tools/tooldef"
 )
 
 type Definition struct {
@@ -19,13 +20,24 @@ type Registry struct {
 	dirs   []string
 }
 
-func NewRegistry(skillsDirs ...string) *Registry {
+func NewRegistry() *Registry {
 	r := &Registry{
 		skills: make(map[string]Definition),
-		dirs:   skillsDirs,
+		dirs:   make([]string, 0),
 	}
 	r.discover()
 	return r
+}
+
+func (r *Registry) RegisterSkillDir(skillDir string) {
+	r.dirs = append(r.dirs, skillDir)
+}
+
+func (r *Registry) GetTools() []tooldef.Definition {
+	return []tooldef.Definition{
+		NewLoadSkillTool(r),
+		NewListSkillsTool(r),
+	}
 }
 
 func (r *Registry) Discover() map[string]Definition {

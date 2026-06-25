@@ -1,12 +1,13 @@
-package tooldef
+package rlm
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"tenzing-agent/internal/harness/tools/tooldef"
 )
 
-var _ Definition = (*RLMTool)(nil)
+var _ tooldef.Definition = (*RLMTool)(nil)
 
 type RLMTool struct {
 	runFn func(ctx context.Context, prompt string) (string, error)
@@ -26,34 +27,34 @@ func (t *RLMTool) Description() string {
 		"sub-LLM queries in loops over chunks of text. Returns the final answer string."
 }
 
-func (t *RLMTool) Schema() Schema {
-	return Schema{
-		Properties: map[string]SchemaProperty{
-			"prompt": {Type: JsonTypeString},
+func (t *RLMTool) Schema() tooldef.Schema {
+	return tooldef.Schema{
+		Properties: map[string]tooldef.SchemaProperty{
+			"prompt": {Type: tooldef.JsonTypeString},
 		},
 		Required: []string{"prompt"},
 	}
 }
 
-func (t *RLMTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
+func (t *RLMTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
 	if len(exctx.Arguments) < 1 || exctx.Arguments[0] == "" {
-		return NewToolResult("prompt is required", WithError()), nil
+		return tooldef.NewToolResult("prompt is required", tooldef.WithError()), nil
 	}
 
 	var input struct {
 		Prompt string `json:"prompt"`
 	}
 	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &input); err != nil {
-		return NewToolResult(fmt.Sprintf("invalid input JSON: %v", err), WithError()), nil
+		return tooldef.NewToolResult(fmt.Sprintf("invalid input JSON: %v", err), tooldef.WithError()), nil
 	}
 	if input.Prompt == "" {
-		return NewToolResult("prompt is required", WithError()), nil
+		return tooldef.NewToolResult("prompt is required", tooldef.WithError()), nil
 	}
 
 	result, err := t.runFn(ctx, input.Prompt)
 	if err != nil {
-		return NewToolResult(fmt.Sprintf("rlm error: %v", err), WithError()), nil
+		return tooldef.NewToolResult(fmt.Sprintf("rlm error: %v", err), tooldef.WithError()), nil
 	}
 
-	return NewToolResult(result), nil
+	return tooldef.NewToolResult(result), nil
 }

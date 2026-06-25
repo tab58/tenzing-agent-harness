@@ -10,11 +10,8 @@ import (
 	"runtime/debug"
 
 	"tenzing-agent/internal/agent"
-	agentctx "tenzing-agent/internal/agent/context"
 	"tenzing-agent/internal/harness"
 	"tenzing-agent/internal/harness/prompts"
-	"tenzing-agent/internal/harness/skills"
-	"tenzing-agent/internal/harness/tools"
 	"tenzing-agent/internal/provider"
 )
 
@@ -47,41 +44,18 @@ func main() {
 		Model:  "glm-5.2",
 	})
 
-	taskGraph := agentctx.NewTaskGraph(cwd)
-
-	skillsRegistry := skills.NewRegistry(
-		"~/.claude/skills",
-	)
-
-	toolDefs, err := tools.GetDefaultToolDefs(skillsRegistry, taskGraph, cwd, &tools.RLMConfig{
-		RootModel: llm,
-		MaxDepth:  1,
-	})
-	if err != nil {
-		slog.Error("tool init failed", "error", err)
-		fmt.Fprintf(os.Stderr, "tool init failed: %v\n", err)
-		os.Exit(1)
-	}
-
-	toolRegistry := tools.NewRegistry(cwd, toolDefs...)
-
+	// register hooks
 	hooks := harness.Hooks{}
 
-	systemPrompt := prompts.DefaultSystemPrompt(cwd) + "\n\n" + prompts.RLMGuidance()
-
 	mainAgent := agent.NewWithCompressor(agent.AgentConfig{
-		Model:           llm,
-		ToolDefinitions: toolRegistry.ProviderDefinitions(),
+		Model: llm,
 	}, cwd)
 
 	agentHarness, err := harness.New(harness.HarnessConfig{
-		MainRunner: harness.AgentRunnerConfig{
-			Agent:          mainAgent,
-			ToolRegistry:   toolRegistry,
-			Hooks:          hooks,
-			SystemPrompt:   systemPrompt,
-			BuildReminders: harness.DefaultReminderBuilder(cwd, taskGraph),
-		},
+		Cwd:              cwd,
+		Agent:            mainAgent,
+		Hooks:            hooks,
+		MainSystemPrompt: prompts.DefaultSystemPrompt(cwd) + "\n\n" + prompts.RLMGuidance(),
 	})
 	if err != nil {
 		slog.Error("harness init failed", "error", err, "stack", string(debug.Stack()))
@@ -89,12 +63,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.Info("session started", "model", llm.GetCurrentModel(), "cwd", cwd, "tools", len(toolRegistry.Definitions()))
+	slog.Info("session started", "model", llm.GetCurrentModel(), "cwd", cwd, "tools", len(agentHarness.ToolDefinitions()))
 
 	fmt.Println("tenzing agent harness")
 	fmt.Printf("  model  %s\n", llm.GetCurrentModel())
 	fmt.Printf("  cwd    %s\n", cwd)
-	fmt.Printf("  tools  %d registered\n", len(toolRegistry.Definitions()))
+	fmt.Printf("  tools  %d registered\n", len(agentHarness.ToolDefinitions()))
 	fmt.Println()
 
 	err = agentHarness.RunSession(ctx, os.Stdin, os.Stdout)

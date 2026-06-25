@@ -12,6 +12,7 @@ import (
 	"text/template"
 	"time"
 
+	"tenzing-agent/internal/harness/tools/tooldef"
 	"tenzing-agent/internal/provider"
 )
 
@@ -80,6 +81,12 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 	}, nil
 }
 
+func (e *Engine) GetTools() []tooldef.Definition {
+	return []tooldef.Definition{
+		NewRLMTool(e.Run),
+	}
+}
+
 func (e *Engine) childEngine() *Engine {
 	return &Engine{
 		rootLLM:       e.rootLLM,
@@ -93,13 +100,13 @@ func (e *Engine) childEngine() *Engine {
 }
 
 type promptData struct {
-	PromptLength   int
-	LineCount      int
-	TruncateMax    int
-	HasSubLM       bool
-	HasRLMQuery    bool
-	CurrentDepth   int
-	MaxDepth       int
+	PromptLength int
+	LineCount    int
+	TruncateMax  int
+	HasSubLM     bool
+	HasRLMQuery  bool
+	CurrentDepth int
+	MaxDepth     int
 }
 
 func (e *Engine) Run(ctx context.Context, prompt string) (string, error) {

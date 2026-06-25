@@ -1,12 +1,13 @@
-package tooldef
+package skills
 
 import (
 	"context"
 	"fmt"
 	"strings"
+	"tenzing-agent/internal/harness/tools/tooldef"
 )
 
-var _ Definition = (*ListSkillsTool)(nil)
+var _ tooldef.Definition = (*ListSkillsTool)(nil)
 
 type SkillLister interface {
 	List() map[string]string
@@ -26,21 +27,21 @@ func (t *ListSkillsTool) Description() string {
 	return "List all available skills. Call this to see what specialized knowledge is available before starting a task."
 }
 
-func (t *ListSkillsTool) Schema() Schema {
-	return Schema{
-		Properties: map[string]SchemaProperty{},
+func (t *ListSkillsTool) Schema() tooldef.Schema {
+	return tooldef.Schema{
+		Properties: map[string]tooldef.SchemaProperty{},
 		Required:   []string{},
 	}
 }
 
-func (t *ListSkillsTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
+func (t *ListSkillsTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
 	skills := t.lister.List()
 	if len(skills) == 0 {
-		return NewToolResult("No skills available."), nil
+		return tooldef.NewToolResult("No skills available."), nil
 	}
 	var lines []string
 	for name, desc := range skills {
 		lines = append(lines, fmt.Sprintf("- %s: %s", name, desc))
 	}
-	return NewToolResult(strings.Join(lines, "\n")), nil
+	return tooldef.NewToolResult(strings.Join(lines, "\n")), nil
 }

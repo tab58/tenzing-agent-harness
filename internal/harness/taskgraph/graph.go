@@ -1,4 +1,4 @@
-package context
+package taskgraph
 
 import (
 	"crypto/rand"
@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"tenzing-agent/internal/harness/tools/tooldef"
 )
 
 const TasksFileName = ".agent_tasks.json"
@@ -42,6 +43,16 @@ func NewTaskGraph(cwd string) *TaskGraph {
 	}
 }
 
+func (g *TaskGraph) GetTools() []tooldef.Definition {
+	return []tooldef.Definition{
+		NewTaskCreateTool(g),
+		NewTaskNextTool(g),
+		NewTaskUpdateTool(g),
+		NewTaskListTool(g),
+	}
+}
+
+// CreateTask is necessary for the TaskGraph tools
 func (g *TaskGraph) CreateTask(desc string, dependsOn []string, priority TaskPriority) (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -82,6 +93,7 @@ func (g *TaskGraph) CreateTask(desc string, dependsOn []string, priority TaskPri
 	return string(data), nil
 }
 
+// NextTask is necessary for the TaskGraph tools
 func (g *TaskGraph) NextTask() (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -122,6 +134,7 @@ func (g *TaskGraph) NextTask() (string, error) {
 	return string(data), nil
 }
 
+// UpdateTask is necessary for the TaskGraph tools
 func (g *TaskGraph) UpdateTask(taskID string, status string, result string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -155,6 +168,7 @@ func (g *TaskGraph) UpdateTask(taskID string, status string, result string) erro
 	return g.save(updated)
 }
 
+// ListTasks is necessary for the TaskGraph tools
 func (g *TaskGraph) ListTasks() (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()

@@ -1,8 +1,11 @@
-package tooldef
+package taskgraph
 
-import "context"
+import (
+	"context"
+	"tenzing-agent/internal/harness/tools/tooldef"
+)
 
-var _ Definition = (*TaskNextTool)(nil)
+var _ tooldef.Definition = (*TaskNextTool)(nil)
 
 type TaskNexter interface {
 	NextTask() (string, error)
@@ -22,20 +25,20 @@ func (t *TaskNextTool) Description() string {
 	return "Get the next available task. Returns the highest-priority pending task whose dependencies are all done. Empty if nothing is unblocked."
 }
 
-func (t *TaskNextTool) Schema() Schema {
-	return Schema{
-		Properties: map[string]SchemaProperty{},
+func (t *TaskNextTool) Schema() tooldef.Schema {
+	return tooldef.Schema{
+		Properties: map[string]tooldef.SchemaProperty{},
 		Required:   []string{},
 	}
 }
 
-func (t *TaskNextTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
+func (t *TaskNextTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
 	result, err := t.nexter.NextTask()
 	if err != nil {
-		return NewToolResult(err.Error(), WithError()), nil
+		return tooldef.NewToolResult(err.Error(), tooldef.WithError()), nil
 	}
 	if result == "" {
-		return NewToolResult("(no unblocked tasks)"), nil
+		return tooldef.NewToolResult("(no unblocked tasks)"), nil
 	}
-	return NewToolResult(result), nil
+	return tooldef.NewToolResult(result), nil
 }

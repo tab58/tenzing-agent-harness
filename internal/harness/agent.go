@@ -6,9 +6,11 @@ import (
 	"strings"
 
 	"tenzing-agent/internal/harness/tools/tooldef"
+	"tenzing-agent/internal/provider"
 )
 
 type Agent interface {
+	UpdateToolDefinitions(tooldefs []provider.ToolDefinition)
 	DoReasoning(ctx context.Context, inputs []string, systemReminders []string) (ReasoningResult, error)
 }
 

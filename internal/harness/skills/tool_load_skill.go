@@ -1,12 +1,13 @@
-package tooldef
+package skills
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"tenzing-agent/internal/harness/tools/tooldef"
 )
 
-var _ Definition = (*LoadSkillTool)(nil)
+var _ tooldef.Definition = (*LoadSkillTool)(nil)
 
 type SkillContentLoader interface {
 	Load(name string) (string, error)
@@ -26,28 +27,28 @@ func (t *LoadSkillTool) Description() string {
 	return "Load full instructions for a named skill. Call list_skills first to see available skills. Do NOT guess skill names."
 }
 
-func (t *LoadSkillTool) Schema() Schema {
-	return Schema{
-		Properties: map[string]SchemaProperty{
-			"name": {Type: JsonTypeString},
+func (t *LoadSkillTool) Schema() tooldef.Schema {
+	return tooldef.Schema{
+		Properties: map[string]tooldef.SchemaProperty{
+			"name": {Type: tooldef.JsonTypeString},
 		},
 		Required: []string{"name"},
 	}
 }
 
-func (t *LoadSkillTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
+func (t *LoadSkillTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
 	var args struct {
 		Name string `json:"name"`
 	}
 	if len(exctx.Arguments) == 0 {
-		return NewToolResult("missing arguments", WithError()), nil
+		return tooldef.NewToolResult("missing arguments", tooldef.WithError()), nil
 	}
 	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &args); err != nil {
-		return NewToolResult(fmt.Sprintf("invalid arguments: %v", err), WithError()), nil
+		return tooldef.NewToolResult(fmt.Sprintf("invalid arguments: %v", err), tooldef.WithError()), nil
 	}
 	content, err := t.loader.Load(args.Name)
 	if err != nil {
-		return NewToolResult(err.Error(), WithError()), nil
+		return tooldef.NewToolResult(err.Error(), tooldef.WithError()), nil
 	}
-	return NewToolResult(content), nil
+	return tooldef.NewToolResult(content), nil
 }

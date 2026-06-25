@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"tenzing-agent/internal/harness/skills"
+	"tenzing-agent/internal/harness/taskgraph"
+	"tenzing-agent/internal/harness/todo"
 	"tenzing-agent/internal/harness/tools"
 )
 
@@ -16,34 +18,42 @@ const logOutputMaxLen = 2000
 
 type AgentRunner struct {
 	id             string
-	agent          Agent
 	fsm            *LoopFSM
 	toolRegistry   *tools.Registry
 	skillsRegistry *skills.Registry
+	todoFile       *todo.TodoFile
+	taskGraph      *taskgraph.TaskGraph
+	agent          Agent
 	hooks          Hooks
 	systemPrompt   string
-	buildReminders ReminderBuilder
 }
 
 type AgentRunnerConfig struct {
-	Agent          Agent
 	ToolRegistry   *tools.Registry
 	SkillsRegistry *skills.Registry
-	Hooks          Hooks
-	SystemPrompt   string
-	BuildReminders ReminderBuilder
+	TodoFile       *todo.TodoFile
+	TaskGraph      *taskgraph.TaskGraph
+
+	Agent        Agent
+	Hooks        Hooks
+	SystemPrompt string
 }
 
-func NewAgentRunner(cfg AgentRunnerConfig) *AgentRunner {
-	return &AgentRunner{
-		id:             runnerID(),
-		agent:          cfg.Agent,
-		fsm:            createNewLoopFSM(),
-		toolRegistry:   cfg.ToolRegistry,
-		hooks:          cfg.Hooks,
-		systemPrompt:   cfg.SystemPrompt,
-		buildReminders: cfg.BuildReminders,
+func NewAgentRunner(cfg AgentRunnerConfig) (*AgentRunner, error) {
+	if cfg.Agent == nil {
+		return nil, fmt.Errorf("no agent defined")
 	}
+
+	return &AgentRunner{
+		id:           runnerID(),
+		agent:        cfg.Agent,
+		fsm:          createNewLoopFSM(),
+		toolRegistry: cfg.ToolRegistry,
+		hooks:        cfg.Hooks,
+		systemPrompt: cfg.SystemPrompt,
+		todoFile:     cfg.TodoFile,
+		taskGraph:    cfg.TaskGraph,
+	}, nil
 }
 
 func runnerID() string {
@@ -58,9 +68,13 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 	var loopErr error
 	iteration := 0
 	loopStart := time.Now()
+
+	// prepare loop
+	h.agent.UpdateToolDefinitions(h.toolRegistry.ProviderDefinitions())
+
+	// execute loop
 	slog.Info("loop started", "runner", h.id, "input", input)
 	slog.Debug("system prompt", "runner", h.id, "prompt_len", len(h.systemPrompt), "prompt", h.systemPrompt)
-
 	if err := h.fsm.TransitionStates(ctx, LoopTransitionReset); err != nil {
 		return "", fmt.Errorf("fsm reset: %w", err)
 	}
@@ -156,10 +170,24 @@ func (h *AgentRunner) SystemPrompt() string {
 }
 
 func (h *AgentRunner) buildSystemReminders() []string {
-	if h.buildReminders == nil {
-		return nil
+	var reminders []string
+	if r := h.readTodoReminder(); r != "" {
+		reminders = append(reminders, r)
 	}
-	return h.buildReminders()
+	if h.taskGraph != nil {
+		if r := h.taskGraph.Reminder(); r != "" {
+			reminders = append(reminders, r)
+		}
+	}
+	return reminders
+}
+
+func (h *AgentRunner) readTodoReminder() string {
+	items, err := h.todoFile.ReadItems()
+	if err != nil {
+		return ""
+	}
+	return "<system-reminder>\nCurrent plan:\n" + h.todoFile.FormatItems(items) + "</system-reminder>"
 }
 
 func truncateLog(s string, max int) string {

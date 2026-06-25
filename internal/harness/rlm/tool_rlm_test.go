@@ -1,8 +1,9 @@
-package tooldef
+package rlm
 
 import (
 	"context"
 	"errors"
+	"tenzing-agent/internal/harness/tools/tooldef"
 	"testing"
 )
 
@@ -12,7 +13,7 @@ func TestRLMToolReturnsAnswer(t *testing.T) {
 	}
 	tool := NewRLMTool(runFn)
 
-	result, err := tool.Execute(context.Background(), ExecutionContext{
+	result, err := tool.Execute(context.Background(), tooldef.ExecutionContext{
 		Arguments: []string{`{"prompt":"big input"}`},
 	})
 	if err != nil {
@@ -32,7 +33,7 @@ func TestRLMToolError(t *testing.T) {
 	}
 	tool := NewRLMTool(runFn)
 
-	result, err := tool.Execute(context.Background(), ExecutionContext{
+	result, err := tool.Execute(context.Background(), tooldef.ExecutionContext{
 		Arguments: []string{`{"prompt":"test"}`},
 	})
 	if err != nil {
@@ -49,7 +50,7 @@ func TestRLMToolError(t *testing.T) {
 func TestRLMToolEmptyPrompt(t *testing.T) {
 	tool := NewRLMTool(nil)
 
-	result, err := tool.Execute(context.Background(), ExecutionContext{
+	result, err := tool.Execute(context.Background(), tooldef.ExecutionContext{
 		Arguments: []string{`{"prompt":""}`},
 	})
 	if err != nil {

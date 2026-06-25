@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"tenzing-agent/internal/harness/tools/tooldef"
+	"tenzing-agent/internal/provider"
 )
 
 // ScriptedAgent replays a sequence of ReasoningResults in order.
@@ -31,6 +32,8 @@ type capturedCall struct {
 func newScriptedAgent(steps ...ReasoningResult) *ScriptedAgent {
 	return &ScriptedAgent{steps: steps}
 }
+
+func (s *ScriptedAgent) UpdateToolDefinitions(_ []provider.ToolDefinition) {}
 
 func (s *ScriptedAgent) DoReasoning(_ context.Context, inputs []string, reminders []string) (ReasoningResult, error) {
 	s.mu.Lock()

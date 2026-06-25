@@ -7,9 +7,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	agentctx "tenzing-agent/internal/agent/context"
+	"tenzing-agent/internal/harness/snapshot"
+	"tenzing-agent/internal/harness/taskgraph"
+	"tenzing-agent/internal/harness/todo"
 	"tenzing-agent/internal/harness/tools"
-	"tenzing-agent/internal/harness/tools/tooldef"
 )
 
 // ---------------------------------------------------------------------------
@@ -24,7 +25,7 @@ func TestIntegration_ReadTool(t *testing.T) {
 	content := "line one\nline two\nline three\n"
 	filePath := seedFile(t, workDir, "sample.txt", content)
 
-	registry := tools.NewRegistry(workDir, &tooldef.ReadTool{})
+	registry := tools.NewRegistry()
 
 	result, err := registry.Execute(context.Background(), "Read", jsonInput(map[string]any{
 		"file_path": filePath,
@@ -43,7 +44,7 @@ func TestIntegration_ReadTool(t *testing.T) {
 
 func TestIntegration_ReadTool_MissingFile(t *testing.T) {
 	workDir := t.TempDir()
-	registry := tools.NewRegistry(workDir, &tooldef.ReadTool{})
+	registry := tools.NewRegistry()
 
 	result, err := registry.Execute(context.Background(), "Read", jsonInput(map[string]any{
 		"file_path": filepath.Join(workDir, "nope.txt"),
@@ -61,10 +62,13 @@ func TestIntegration_WriteAndRevert(t *testing.T) {
 	original := "original content"
 	filePath := seedFile(t, workDir, "target.txt", original)
 
-	snapshots := tooldef.NewSnapshotStore()
-	writeTool := tooldef.NewWriteTool(snapshots)
-	revertTool := tooldef.NewRevertTool(snapshots)
-	registry := tools.NewRegistry(workDir, writeTool, revertTool)
+	snapshots := snapshot.NewSnapshotStore()
+	writeTool := snapshot.NewWriteTool(snapshots)
+	revertTool := snapshot.NewRevertTool(snapshots)
+
+	registry := tools.NewRegistry()
+	registry.Register(writeTool)
+	registry.Register(revertTool)
 
 	writeResult, err := registry.Execute(context.Background(), "Write", jsonInput(map[string]any{
 		"file_path": filePath,
@@ -94,9 +98,11 @@ func TestIntegration_WriteAndRevert_NoSnapshot(t *testing.T) {
 	workDir := t.TempDir()
 	filePath := seedFile(t, workDir, "target.txt", "content")
 
-	snapshots := tooldef.NewSnapshotStore()
-	revertTool := tooldef.NewRevertTool(snapshots)
-	registry := tools.NewRegistry(workDir, revertTool)
+	snapshots := snapshot.NewSnapshotStore()
+	revertTool := snapshot.NewRevertTool(snapshots)
+
+	registry := tools.NewRegistry()
+	registry.Register(revertTool)
 
 	result, err := registry.Execute(context.Background(), "Revert", jsonInput(map[string]any{
 		"file_path": filePath,
@@ -114,7 +120,7 @@ func TestIntegration_EditTool(t *testing.T) {
 	workDir := t.TempDir()
 	filePath := seedFile(t, workDir, "editable.txt", "hello world")
 
-	registry := tools.NewRegistry(workDir, &tooldef.EditTool{})
+	registry := tools.NewRegistry()
 
 	result, err := registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
 		"file_path":  filePath,
@@ -134,7 +140,7 @@ func TestIntegration_EditTool_NotFound(t *testing.T) {
 	workDir := t.TempDir()
 	filePath := seedFile(t, workDir, "editable.txt", "hello world")
 
-	registry := tools.NewRegistry(workDir, &tooldef.EditTool{})
+	registry := tools.NewRegistry()
 
 	result, err := registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
 		"file_path":  filePath,
@@ -153,7 +159,7 @@ func TestIntegration_EditTool_NotUnique(t *testing.T) {
 	workDir := t.TempDir()
 	filePath := seedFile(t, workDir, "editable.txt", "aaa bbb aaa")
 
-	registry := tools.NewRegistry(workDir, &tooldef.EditTool{})
+	registry := tools.NewRegistry()
 
 	result, err := registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
 		"file_path":  filePath,
@@ -173,7 +179,7 @@ func TestIntegration_EditTool_ReplaceAll(t *testing.T) {
 	workDir := t.TempDir()
 	filePath := seedFile(t, workDir, "editable.txt", "aaa bbb aaa")
 
-	registry := tools.NewRegistry(workDir, &tooldef.EditTool{})
+	registry := tools.NewRegistry()
 
 	result, err := registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
 		"file_path":   filePath,
@@ -195,10 +201,13 @@ func TestIntegration_WriteEditRevert_FullCycle(t *testing.T) {
 	original := "func main() {\n\tfmt.Println(\"hello\")\n}\n"
 	filePath := seedFile(t, workDir, "main.go", original)
 
-	snapshots := tooldef.NewSnapshotStore()
-	writeTool := tooldef.NewWriteTool(snapshots)
-	revertTool := tooldef.NewRevertTool(snapshots)
-	registry := tools.NewRegistry(workDir, writeTool, &tooldef.EditTool{}, revertTool)
+	snapshots := snapshot.NewSnapshotStore()
+	writeTool := snapshot.NewWriteTool(snapshots)
+	revertTool := snapshot.NewRevertTool(snapshots)
+
+	registry := tools.NewRegistry()
+	registry.Register(writeTool)
+	registry.Register(revertTool)
 
 	// Step 1: Write overwrites and snapshots
 	res, err := registry.Execute(context.Background(), "Write", jsonInput(map[string]any{
@@ -237,7 +246,7 @@ func TestIntegration_ReadEditRevert_ThroughLoop(t *testing.T) {
 	original := "hello world\n"
 	filePath := seedFile(t, workDir, "loopfile.txt", original)
 
-	snapshots := tooldef.NewSnapshotStore()
+	snapshots := snapshot.NewSnapshotStore()
 
 	agent := newScriptedAgent(
 		toolStep("Read", jsonInput(map[string]any{"file_path": filePath})),
@@ -247,18 +256,19 @@ func TestIntegration_ReadEditRevert_ThroughLoop(t *testing.T) {
 		finalStep("reverted"),
 	)
 
-	registry := tools.NewRegistry(workDir,
-		&tooldef.ReadTool{},
-		&tooldef.EditTool{},
-		tooldef.NewWriteTool(snapshots),
-		tooldef.NewRevertTool(snapshots),
-	)
+	registry := tools.NewRegistry()
+	registry.Register(snapshot.NewWriteTool(snapshots))
+	registry.Register(snapshot.NewRevertTool(snapshots))
 
-	runner := NewAgentRunner(AgentRunnerConfig{
+	runner, err := NewAgentRunner(AgentRunnerConfig{
 		Agent:        agent,
 		ToolRegistry: registry,
+		TodoFile:     todo.NewTodoItemFile(workDir),
 		SystemPrompt: "test",
 	})
+	if err != nil {
+		t.Fatalf("NewAgentRunner error: %v", err)
+	}
 
 	answer, err := runner.RunLoop(context.Background(), "read, edit, then revert")
 	if err != nil {
@@ -283,24 +293,24 @@ func TestIntegration_ReadEditRevert_ThroughLoop(t *testing.T) {
 
 func TestIntegration_TaskLifecycle(t *testing.T) {
 	workDir := t.TempDir()
-	taskGraph := agentctx.NewTaskGraph(workDir)
+	tg := taskgraph.NewTaskGraph(workDir)
 
 	// We'll create tasks outside the loop to get known IDs,
 	// then drive the loop for update + list.
-	task1JSON, err := taskGraph.CreateTask("define handler", nil, agentctx.TaskPriorityHigh)
+	task1JSON, err := tg.CreateTask("define handler", nil, taskgraph.TaskPriorityHigh)
 	if err != nil {
 		t.Fatalf("create task 1: %v", err)
 	}
-	var task1 agentctx.Task
+	var task1 taskgraph.Task
 	if err := json.Unmarshal([]byte(task1JSON), &task1); err != nil {
 		t.Fatalf("parse task 1: %v", err)
 	}
 
-	task2JSON, err := taskGraph.CreateTask("register route", []string{task1.ID}, agentctx.TaskPriorityMedium)
+	task2JSON, err := tg.CreateTask("register route", []string{task1.ID}, taskgraph.TaskPriorityMedium)
 	if err != nil {
 		t.Fatalf("create task 2: %v", err)
 	}
-	var task2 agentctx.Task
+	var task2 taskgraph.Task
 	if err := json.Unmarshal([]byte(task2JSON), &task2); err != nil {
 		t.Fatalf("parse task 2: %v", err)
 	}
@@ -316,16 +326,19 @@ func TestIntegration_TaskLifecycle(t *testing.T) {
 		finalStep("tasks shown"),
 	)
 
-	registry := tools.NewRegistry(workDir,
-		tooldef.NewTaskUpdateTool(taskGraph),
-		tooldef.NewTaskListTool(taskGraph),
-	)
+	registry := tools.NewRegistry()
+	registry.Register(taskgraph.NewTaskUpdateTool(tg))
+	registry.Register(taskgraph.NewTaskListTool(tg))
 
-	runner := NewAgentRunner(AgentRunnerConfig{
+	runner, err := NewAgentRunner(AgentRunnerConfig{
 		Agent:        agent,
 		ToolRegistry: registry,
+		TodoFile:     todo.NewTodoItemFile(workDir),
 		SystemPrompt: "test",
 	})
+	if err != nil {
+		t.Fatalf("NewAgentRunner error: %v", err)
+	}
 
 	answer, err := runner.RunLoop(context.Background(), "show me the tasks")
 	if err != nil {
@@ -336,12 +349,12 @@ func TestIntegration_TaskLifecycle(t *testing.T) {
 	}
 
 	// Verify task graph state
-	tasksJSON, err := taskGraph.ListTasks()
+	tasksJSON, err := tg.ListTasks()
 	if err != nil {
 		t.Fatalf("ListTasks error: %v", err)
 	}
 
-	var tasks []agentctx.Task
+	var tasks []taskgraph.Task
 	if err := json.Unmarshal([]byte(tasksJSON), &tasks); err != nil {
 		t.Fatalf("parse tasks: %v", err)
 	}
@@ -350,7 +363,7 @@ func TestIntegration_TaskLifecycle(t *testing.T) {
 		t.Fatalf("expected 2 tasks, got %d", len(tasks))
 	}
 
-	taskMap := make(map[string]agentctx.Task)
+	taskMap := make(map[string]taskgraph.Task)
 	for _, task := range tasks {
 		taskMap[task.ID] = task
 	}
@@ -376,7 +389,7 @@ func TestIntegration_TaskLifecycle(t *testing.T) {
 	assertCallCount(t, agent, 3)
 
 	// Verify task file persisted to disk
-	taskFile := filepath.Join(workDir, agentctx.TasksFileName)
+	taskFile := filepath.Join(workDir, taskgraph.TasksFileName)
 	if _, err := os.Stat(taskFile); os.IsNotExist(err) {
 		t.Fatal("task file should exist on disk")
 	}
@@ -384,7 +397,7 @@ func TestIntegration_TaskLifecycle(t *testing.T) {
 
 func TestIntegration_TaskCreate_ThroughLoop(t *testing.T) {
 	workDir := t.TempDir()
-	taskGraph := agentctx.NewTaskGraph(workDir)
+	tg := taskgraph.NewTaskGraph(workDir)
 
 	agent := newScriptedAgent(
 		toolStep("task_create", jsonInput(map[string]any{
@@ -395,16 +408,19 @@ func TestIntegration_TaskCreate_ThroughLoop(t *testing.T) {
 		finalStep("done"),
 	)
 
-	registry := tools.NewRegistry(workDir,
-		tooldef.NewTaskCreateTool(taskGraph),
-		tooldef.NewTaskListTool(taskGraph),
-	)
+	registry := tools.NewRegistry()
+	registry.Register(taskgraph.NewTaskCreateTool(tg))
+	registry.Register(taskgraph.NewTaskListTool(tg))
 
-	runner := NewAgentRunner(AgentRunnerConfig{
+	runner, err := NewAgentRunner(AgentRunnerConfig{
 		Agent:        agent,
 		ToolRegistry: registry,
+		TodoFile:     todo.NewTodoItemFile(workDir),
 		SystemPrompt: "test",
 	})
+	if err != nil {
+		t.Fatalf("NewAgentRunner error: %v", err)
+	}
 
 	answer, err := runner.RunLoop(context.Background(), "create a task")
 	if err != nil {
@@ -414,12 +430,12 @@ func TestIntegration_TaskCreate_ThroughLoop(t *testing.T) {
 		t.Errorf("answer = %q, want %q", answer, "done")
 	}
 
-	tasksJSON, err := taskGraph.ListTasks()
+	tasksJSON, err := tg.ListTasks()
 	if err != nil {
 		t.Fatalf("ListTasks error: %v", err)
 	}
 
-	var tasks []agentctx.Task
+	var tasks []taskgraph.Task
 	if err := json.Unmarshal([]byte(tasksJSON), &tasks); err != nil {
 		t.Fatalf("parse tasks: %v", err)
 	}
@@ -430,8 +446,8 @@ func TestIntegration_TaskCreate_ThroughLoop(t *testing.T) {
 	if tasks[0].Description != "write tests" {
 		t.Errorf("task description = %q, want %q", tasks[0].Description, "write tests")
 	}
-	if tasks[0].Priority != agentctx.TaskPriorityHigh {
-		t.Errorf("task priority = %q, want %q", tasks[0].Priority, agentctx.TaskPriorityHigh)
+	if tasks[0].Priority != taskgraph.TaskPriorityHigh {
+		t.Errorf("task priority = %q, want %q", tasks[0].Priority, taskgraph.TaskPriorityHigh)
 	}
 	if tasks[0].Status != "pending" {
 		t.Errorf("task status = %q, want %q", tasks[0].Status, "pending")
@@ -440,39 +456,39 @@ func TestIntegration_TaskCreate_ThroughLoop(t *testing.T) {
 
 func TestIntegration_TaskDependency_BlocksNext(t *testing.T) {
 	workDir := t.TempDir()
-	taskGraph := agentctx.NewTaskGraph(workDir)
+	tg := taskgraph.NewTaskGraph(workDir)
 
 	// Create two tasks, second depends on first
-	t1JSON, err := taskGraph.CreateTask("step 1", nil, agentctx.TaskPriorityHigh)
+	t1JSON, err := tg.CreateTask("step 1", nil, taskgraph.TaskPriorityHigh)
 	if err != nil {
 		t.Fatalf("create task 1: %v", err)
 	}
-	var t1 agentctx.Task
+	var t1 taskgraph.Task
 	json.Unmarshal([]byte(t1JSON), &t1)
 
-	_, err = taskGraph.CreateTask("step 2", []string{t1.ID}, agentctx.TaskPriorityHigh)
+	_, err = tg.CreateTask("step 2", []string{t1.ID}, taskgraph.TaskPriorityHigh)
 	if err != nil {
 		t.Fatalf("create task 2: %v", err)
 	}
 
 	// NextTask should return task 1 (task 2 blocked by dependency)
-	nextJSON, err := taskGraph.NextTask()
+	nextJSON, err := tg.NextTask()
 	if err != nil {
 		t.Fatalf("NextTask error: %v", err)
 	}
-	var next agentctx.Task
+	var next taskgraph.Task
 	json.Unmarshal([]byte(nextJSON), &next)
 	if next.ID != t1.ID {
 		t.Errorf("next task = %s, want %s", next.ID, t1.ID)
 	}
 
 	// Complete task 1
-	if err := taskGraph.UpdateTask(t1.ID, "done", ""); err != nil {
+	if err := tg.UpdateTask(t1.ID, "done", ""); err != nil {
 		t.Fatalf("update task 1: %v", err)
 	}
 
 	// Now NextTask should return task 2
-	nextJSON, err = taskGraph.NextTask()
+	nextJSON, err = tg.NextTask()
 	if err != nil {
 		t.Fatalf("NextTask error: %v", err)
 	}
@@ -490,12 +506,16 @@ func TestIntegration_FinalAnswerOnly(t *testing.T) {
 	workDir := t.TempDir()
 	agent := newScriptedAgent(finalStep("direct answer"))
 
-	registry := tools.NewRegistry(workDir)
-	runner := NewAgentRunner(AgentRunnerConfig{
+	registry := tools.NewRegistry()
+	runner, err := NewAgentRunner(AgentRunnerConfig{
 		Agent:        agent,
 		ToolRegistry: registry,
+		TodoFile:     todo.NewTodoItemFile(workDir),
 		SystemPrompt: "test",
 	})
+	if err != nil {
+		t.Fatalf("NewAgentRunner error: %v", err)
+	}
 
 	answer, err := runner.RunLoop(context.Background(), "hi")
 	if err != nil {
@@ -511,17 +531,21 @@ func TestIntegration_ContextCanceled(t *testing.T) {
 	workDir := t.TempDir()
 	agent := newScriptedAgent(finalStep("should not reach"))
 
-	registry := tools.NewRegistry(workDir)
-	runner := NewAgentRunner(AgentRunnerConfig{
+	registry := tools.NewRegistry()
+	runner, err := NewAgentRunner(AgentRunnerConfig{
 		Agent:        agent,
 		ToolRegistry: registry,
+		TodoFile:     todo.NewTodoItemFile(workDir),
 		SystemPrompt: "test",
 	})
+	if err != nil {
+		t.Fatalf("NewAgentRunner error: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := runner.RunLoop(ctx, "hi")
+	_, err = runner.RunLoop(ctx, "hi")
 	if err == nil {
 		t.Fatal("expected error from canceled context")
 	}
@@ -533,14 +557,20 @@ func TestIntegration_UnknownTool(t *testing.T) {
 		toolStep("nonexistent_tool", "{}"),
 	)
 
-	registry := tools.NewRegistry(workDir)
-	runner := NewAgentRunner(AgentRunnerConfig{
+	registry := tools.NewRegistry()
+	runner, err := NewAgentRunner(AgentRunnerConfig{
 		Agent:        agent,
 		ToolRegistry: registry,
+		TodoFile:     todo.NewTodoItemFile(workDir),
 		SystemPrompt: "test",
 	})
+	if err != nil {
+		t.Fatalf("NewAgentRunner error: %v", err)
+	}
 
-	_, err := runner.RunLoop(context.Background(), "do something")
+	// Unknown tool returns a tool-level error result, agent gets it as input
+	// ScriptedAgent has no more steps after the tool call, so it errors
+	_, err = runner.RunLoop(context.Background(), "do something")
 	if err == nil {
 		t.Fatal("expected error for unknown tool")
 	}
@@ -548,7 +578,7 @@ func TestIntegration_UnknownTool(t *testing.T) {
 
 func TestIntegration_MultipleToolCalls(t *testing.T) {
 	workDir := t.TempDir()
-	taskGraph := agentctx.NewTaskGraph(workDir)
+	tg := taskgraph.NewTaskGraph(workDir)
 
 	// Three tool calls then final answer
 	agent := newScriptedAgent(
@@ -559,16 +589,19 @@ func TestIntegration_MultipleToolCalls(t *testing.T) {
 		finalStep("created 3 tasks"),
 	)
 
-	registry := tools.NewRegistry(workDir,
-		tooldef.NewTaskCreateTool(taskGraph),
-		tooldef.NewTaskListTool(taskGraph),
-	)
+	registry := tools.NewRegistry()
+	registry.Register(taskgraph.NewTaskCreateTool(tg))
+	registry.Register(taskgraph.NewTaskListTool(tg))
 
-	runner := NewAgentRunner(AgentRunnerConfig{
+	runner, err := NewAgentRunner(AgentRunnerConfig{
 		Agent:        agent,
 		ToolRegistry: registry,
+		TodoFile:     todo.NewTodoItemFile(workDir),
 		SystemPrompt: "test",
 	})
+	if err != nil {
+		t.Fatalf("NewAgentRunner error: %v", err)
+	}
 
 	answer, err := runner.RunLoop(context.Background(), "create 3 tasks")
 	if err != nil {
@@ -578,11 +611,11 @@ func TestIntegration_MultipleToolCalls(t *testing.T) {
 		t.Errorf("answer = %q, want %q", answer, "created 3 tasks")
 	}
 
-	tasksJSON, err := taskGraph.ListTasks()
+	tasksJSON, err := tg.ListTasks()
 	if err != nil {
 		t.Fatalf("ListTasks error: %v", err)
 	}
-	var tasks []agentctx.Task
+	var tasks []taskgraph.Task
 	json.Unmarshal([]byte(tasksJSON), &tasks)
 	if len(tasks) != 3 {
 		t.Fatalf("expected 3 tasks, got %d", len(tasks))
@@ -594,7 +627,7 @@ func TestIntegration_MultipleToolCalls(t *testing.T) {
 
 func TestIntegration_ToolHookCalled(t *testing.T) {
 	workDir := t.TempDir()
-	taskGraph := agentctx.NewTaskGraph(workDir)
+	tg := taskgraph.NewTaskGraph(workDir)
 
 	agent := newScriptedAgent(
 		toolStep("task_create", jsonInput(map[string]any{"description": "hooked task"})),
@@ -602,10 +635,13 @@ func TestIntegration_ToolHookCalled(t *testing.T) {
 	)
 
 	var hookCalls []string
-	registry := tools.NewRegistry(workDir, tooldef.NewTaskCreateTool(taskGraph))
-	runner := NewAgentRunner(AgentRunnerConfig{
+	registry := tools.NewRegistry()
+	registry.Register(taskgraph.NewTaskCreateTool(tg))
+
+	runner, err := NewAgentRunner(AgentRunnerConfig{
 		Agent:        agent,
 		ToolRegistry: registry,
+		TodoFile:     todo.NewTodoItemFile(workDir),
 		SystemPrompt: "test",
 		Hooks: Hooks{
 			OnToolCall: func(name, input, output string) {
@@ -613,8 +649,11 @@ func TestIntegration_ToolHookCalled(t *testing.T) {
 			},
 		},
 	})
+	if err != nil {
+		t.Fatalf("NewAgentRunner error: %v", err)
+	}
 
-	_, err := runner.RunLoop(context.Background(), "create task")
+	_, err = runner.RunLoop(context.Background(), "create task")
 	if err != nil {
 		t.Fatalf("RunLoop error: %v", err)
 	}

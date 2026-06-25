@@ -12,19 +12,21 @@ import (
 	"tenzing-agent/internal/provider"
 )
 
+var _ harness.Agent = (*Agent)(nil)
+
 type Agent struct {
-	model        provider.LLM
-	tools        []provider.ToolDefinition
+	model provider.LLM
+	tools []provider.ToolDefinition
+
 	history      []provider.Message
 	systemPrompt string
 	compressor   *agentctx.Compressor
 }
 
 type AgentConfig struct {
-	Model           provider.LLM
-	ToolDefinitions []provider.ToolDefinition
-	SystemPrompt    string
-	Skills          map[string]string // name -> description, injected into system prompt
+	Model        provider.LLM
+	SystemPrompt string
+	Skills       map[string]string // name -> description, injected into system prompt
 }
 
 func New(cfg AgentConfig) *Agent {
@@ -39,7 +41,7 @@ func New(cfg AgentConfig) *Agent {
 
 	return &Agent{
 		model:        cfg.Model,
-		tools:        cfg.ToolDefinitions,
+		tools:        []provider.ToolDefinition{},
 		systemPrompt: systemPrompt,
 		history:      make([]provider.Message, 0),
 	}
@@ -57,6 +59,10 @@ func NewWithCompressor(cfg AgentConfig, cwd string) *Agent {
 	}
 
 	return a
+}
+
+func (a *Agent) UpdateToolDefinitions(tooldefs []provider.ToolDefinition) {
+	a.tools = tooldefs
 }
 
 func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminders []string) (harness.ReasoningResult, error) {

@@ -38,10 +38,10 @@ type model struct {
 	height       int
 	scrollOffset int
 
-	mainCfg  harness.AgentRunnerConfig
-	modelName string
-	cwd       string
-	toolCount int
+	agentHarness *harness.Harness
+	modelName    string
+	cwd          string
+	toolCount    int
 }
 
 type historyEntry struct {
@@ -49,15 +49,15 @@ type historyEntry struct {
 	content string
 }
 
-func newModel(cfg harness.AgentRunnerConfig, modelName, cwd string) model {
+func newModel(h *harness.Harness, modelName, cwd string) model {
 	return model{
-		state:     stateInput,
-		mainCfg:   cfg,
-		modelName: modelName,
-		cwd:       cwd,
-		toolCount: len(cfg.ToolRegistry.Definitions()),
-		width:     80,
-		height:    24,
+		state:        stateInput,
+		agentHarness: h,
+		modelName:    modelName,
+		cwd:          cwd,
+		toolCount:    len(h.ToolDefinitions()),
+		width:        80,
+		height:       24,
 	}
 }
 
@@ -164,23 +164,12 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) runAgent(query string) tea.Cmd {
-	mainCfg := m.mainCfg
+	h := m.agentHarness
 
 	return func() tea.Msg {
-		if mainCfg.Agent == nil {
-			return agentResultMsg{err: fmt.Errorf("no agent configured — implement harness.Agent and pass to newModel")}
-		}
-
-		h, err := harness.New(harness.HarnessConfig{
-			MainRunner: mainCfg,
-		})
-		if err != nil {
-			return agentResultMsg{err: err}
-		}
-
 		ctx := context.Background()
 		var buf strings.Builder
-		err = h.RunSession(ctx, strings.NewReader(query+"\n"), &buf)
+		err := h.RunSession(ctx, strings.NewReader(query+"\n"), &buf)
 		answer := strings.TrimSpace(buf.String())
 		return agentResultMsg{answer: answer, err: err}
 	}

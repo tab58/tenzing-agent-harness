@@ -7,82 +7,36 @@ import (
 	"log/slog"
 	"strings"
 
-	agentctx "tenzing-agent/internal/agent/context"
-	"tenzing-agent/internal/harness/rlm"
-	"tenzing-agent/internal/harness/skills"
 	"tenzing-agent/internal/harness/tools/tooldef"
 	"tenzing-agent/internal/provider"
 )
 
-type RLMConfig struct {
-	RootModel provider.LLM
-	SubModel  provider.LLM // nil = use RootModel
-	MaxDepth  int          // 0=REPL only, 1=llm_query, 2+=rlm_query
+type ToolProvider interface {
+	GetTools() []tooldef.Definition
 }
 
-func GetDefaultToolDefs(skillRegistry *skills.Registry, taskGraph *agentctx.TaskGraph, workingDir string, rlmCfg *RLMConfig) ([]tooldef.Definition, error) {
-	snapshotStore := tooldef.NewSnapshotStore()
-	defs := []tooldef.Definition{
-		// basic tools
+type Registry struct {
+	tools map[string]tooldef.Definition
+	// workingDir string
+}
+
+// func NewRegistry(workingDir string) *Registry {
+func NewRegistry() *Registry {
+	r := &Registry{
+		tools: make(map[string]tooldef.Definition),
+		// workingDir: workingDir,
+	}
+
+	// basic tools
+	builtins := []tooldef.Definition{
 		&tooldef.BashTool{},
 		&tooldef.ReadTool{},
 		&tooldef.EditTool{},
 		&tooldef.GrepTool{},
 		&tooldef.GlobTool{},
-
-		// snapshot-required
-		tooldef.NewWriteTool(snapshotStore),
-		tooldef.NewRevertTool(snapshotStore),
-
-		// todo planner tools
-		tooldef.NewTodoReadTool(),
-		tooldef.NewTodoWriteTool(),
-		tooldef.NewTodoUpdateTool(),
-
-		// skills tools
-		tooldef.NewLoadSkillTool(skillRegistry),
-		tooldef.NewListSkillsTool(skillRegistry),
-
-		// task graph tools
-		tooldef.NewTaskCreateTool(taskGraph),
-		tooldef.NewTaskNextTool(taskGraph),
-		tooldef.NewTaskUpdateTool(taskGraph),
-		tooldef.NewTaskListTool(taskGraph),
 	}
 
-	// set up the RLM
-	if rlmCfg != nil {
-		subModel := rlmCfg.SubModel
-		if subModel == nil {
-			subModel = rlmCfg.RootModel
-		}
-		engine, err := rlm.NewEngine(rlm.EngineConfig{
-			RootLLM:    rlmCfg.RootModel,
-			SubLLM:     subModel,
-			MaxDepth:   rlmCfg.MaxDepth,
-			WorkingDir: workingDir,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("create rlm engine: %w", err)
-		}
-		defs = append(defs, tooldef.NewRLMTool(engine.Run))
-	}
-
-	return defs, nil
-}
-
-type Registry struct {
-	tools      map[string]tooldef.Definition
-	workingDir string
-}
-
-func NewRegistry(workingDir string, tools ...tooldef.Definition) *Registry {
-	r := &Registry{
-		tools:      make(map[string]tooldef.Definition),
-		workingDir: workingDir,
-	}
-
-	for _, def := range tools {
+	for _, def := range builtins {
 		r.Register(def)
 	}
 
@@ -98,13 +52,23 @@ func (r *Registry) Register(def tooldef.Definition) error {
 	return nil
 }
 
+func (r *Registry) RegisterFromProvider(provider ToolProvider) error {
+	tools := provider.GetTools()
+	for _, def := range tools {
+		if err := r.Register(def); err != nil {
+			return fmt.Errorf("unable to register tool: %w", err)
+		}
+	}
+	return nil
+}
+
 // CopyWithout copies the tools in the Registry without certain ones
 func (r *Registry) CopyWithout(names ...string) *Registry {
 	exclude := make(map[string]struct{}, len(names))
 	for _, n := range names {
 		exclude[strings.ToLower(n)] = struct{}{}
 	}
-	filtered := NewRegistry(r.workingDir)
+	filtered := NewRegistry()
 	for name, def := range r.tools {
 		if _, skip := exclude[name]; !skip {
 			filtered.tools[name] = def
@@ -135,9 +99,9 @@ func (r *Registry) ProviderDefinitions() []provider.ToolDefinition {
 	return providerDefs
 }
 
-func (r *Registry) WorkingDir() string {
-	return r.workingDir
-}
+// func (r *Registry) WorkingDir() string {
+// 	return r.workingDir
+// }
 
 func (r *Registry) Execute(ctx context.Context, name string, input string) (tooldef.ToolResult, error) {
 	toolDef, ok := r.tools[strings.ToLower(name)]
@@ -153,8 +117,8 @@ func (r *Registry) Execute(ctx context.Context, name string, input string) (tool
 		}, nil
 	}
 	exctx := tooldef.ExecutionContext{
-		Arguments:  []string{input},
-		WorkingDir: r.workingDir,
+		Arguments: []string{input},
+		// WorkingDir: r.workingDir,
 	}
 	result, err := toolDef.Execute(ctx, exctx)
 	if err != nil {
