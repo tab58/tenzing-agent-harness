@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"tenzing-agent/internal/harness/runner"
 	"tenzing-agent/internal/harness/tools/tooldef"
 	"tenzing-agent/internal/provider"
 )
@@ -19,7 +20,7 @@ import (
 // Captures all inputs for assertion.
 type ScriptedAgent struct {
 	mu        sync.Mutex
-	steps     []ReasoningResult
+	steps     []runner.ReasoningResult
 	callIndex int
 	captured  []capturedCall
 }
@@ -29,14 +30,14 @@ type capturedCall struct {
 	Reminders []string
 }
 
-func newScriptedAgent(steps ...ReasoningResult) *ScriptedAgent {
+func newScriptedAgent(steps ...runner.ReasoningResult) *ScriptedAgent {
 	return &ScriptedAgent{steps: steps}
 }
 
 func (s *ScriptedAgent) UpdateToolDefinitions(_ []provider.ToolDefinition) {}
 func (s *ScriptedAgent) UpdateSkillMap(_ map[string]string)              {}
 
-func (s *ScriptedAgent) DoReasoning(_ context.Context, inputs []string, reminders []string) (ReasoningResult, error) {
+func (s *ScriptedAgent) DoReasoning(_ context.Context, inputs []string, reminders []string) (runner.ReasoningResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -46,7 +47,7 @@ func (s *ScriptedAgent) DoReasoning(_ context.Context, inputs []string, reminder
 	})
 
 	if s.callIndex >= len(s.steps) {
-		return ReasoningResult{}, fmt.Errorf("ScriptedAgent: no more steps (called %d times, only %d steps)", s.callIndex+1, len(s.steps))
+		return runner.ReasoningResult{}, fmt.Errorf("ScriptedAgent: no more steps (called %d times, only %d steps)", s.callIndex+1, len(s.steps))
 	}
 
 	result := s.steps[s.callIndex]
@@ -70,14 +71,14 @@ func (s *ScriptedAgent) capturedCalls() []capturedCall {
 
 // step builders
 
-func toolStep(name, input string) ReasoningResult {
-	return ReasoningResult{
+func toolStep(name, input string) runner.ReasoningResult {
+	return runner.ReasoningResult{
 		ToolCall: &tooldef.ToolCall{Name: name, Input: input},
 	}
 }
 
-func finalStep(answer string) ReasoningResult {
-	return ReasoningResult{FinalAnswer: answer}
+func finalStep(answer string) runner.ReasoningResult {
+	return runner.ReasoningResult{FinalAnswer: answer}
 }
 
 func jsonInput(fields map[string]any) string {

@@ -9,8 +9,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"tenzing-agent/internal/provider"
 )
 
 func skipIfNoPython(t *testing.T) {
@@ -20,7 +18,7 @@ func skipIfNoPython(t *testing.T) {
 	}
 }
 
-type fakeLLM struct {
+type fakeQuerier struct {
 	response    string
 	err         error
 	lastPrompt  string
@@ -28,56 +26,28 @@ type fakeLLM struct {
 	callCount   int
 }
 
-func (f *fakeLLM) SendSyncMessage(_ context.Context, req provider.CompletionRequest) (provider.CompletionResponse, error) {
-	f.callCount++
-	if len(req.Messages) > 0 {
-		f.lastPrompt = req.Messages[0].Content[0].Text
+func (q *fakeQuerier) Query(_ context.Context, prompt string, maxTokens int64) (string, error) {
+	q.callCount++
+	q.lastPrompt = prompt
+	q.lastMaxToks = maxTokens
+	if q.err != nil {
+		return "", q.err
 	}
-	f.lastMaxToks = req.MaxTokens
-	if f.err != nil {
-		return provider.CompletionResponse{}, f.err
-	}
-	return provider.CompletionResponse{
-		Content: []provider.ContentBlock{provider.NewTextContent(f.response)},
-	}, nil
+	return q.response, nil
 }
 
-func (f *fakeLLM) SendStreamingMessage(context.Context, provider.CompletionRequest, chan<- provider.StreamEvent) error {
-	return provider.ErrNotSupported
-}
-
-func (f *fakeLLM) SendMessageWithTools(_ context.Context, _ provider.CompletionRequest, _ []provider.ToolDefinition) (provider.CompletionResponse, error) {
-	return provider.CompletionResponse{}, provider.ErrNotSupported
-}
-
-func (f *fakeLLM) CountTokens(context.Context, provider.CompletionRequest) (provider.TokenCount, error) {
-	return provider.TokenCount{}, provider.ErrNotSupported
-}
-
-func (f *fakeLLM) ListModels(context.Context) ([]provider.ModelInfo, error) {
-	return nil, provider.ErrNotSupported
-}
-
-func (f *fakeLLM) GetCurrentModel() string      { return "fake-model" }
-func (f *fakeLLM) GetContextWindowSize() int { return 128_000 }
-
-type multiResponseLLM struct {
-	fakeLLM
+type multiResponseQuerier struct {
 	responses []string
 	idx       int
 }
 
-func (m *multiResponseLLM) SendSyncMessage(_ context.Context, req provider.CompletionRequest) (provider.CompletionResponse, error) {
-	if m.idx >= len(m.responses) {
-		return provider.CompletionResponse{
-			Content: []provider.ContentBlock{provider.NewTextContent("exhausted")},
-		}, nil
+func (q *multiResponseQuerier) Query(_ context.Context, _ string, _ int64) (string, error) {
+	if q.idx >= len(q.responses) {
+		return "exhausted", nil
 	}
-	resp := m.responses[m.idx]
-	m.idx++
-	return provider.CompletionResponse{
-		Content: []provider.ContentBlock{provider.NewTextContent(resp)},
-	}, nil
+	resp := q.responses[q.idx]
+	q.idx++
+	return resp, nil
 }
 
 func TestREPLPrint(t *testing.T) {
@@ -126,8 +96,8 @@ func TestREPLPromptVariable(t *testing.T) {
 
 func TestREPLSubLM(t *testing.T) {
 	skipIfNoPython(t)
-	llm := &fakeLLM{response: "the answer is 42"}
-	r, err := NewREPL(llm, t.TempDir(), nil)
+	q := &fakeQuerier{response: "the answer is 42"}
+	r, err := NewREPL(q, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -140,15 +110,15 @@ func TestREPLSubLM(t *testing.T) {
 	if strings.TrimSpace(stdout) != "the answer is 42" {
 		t.Fatalf("stdout = %q, want %q", stdout, "the answer is 42")
 	}
-	if llm.lastPrompt != "what is the answer?" {
-		t.Fatalf("prompt = %q, want %q", llm.lastPrompt, "what is the answer?")
+	if q.lastPrompt != "what is the answer?" {
+		t.Fatalf("prompt = %q, want %q", q.lastPrompt, "what is the answer?")
 	}
 }
 
 func TestREPLSubLMInLoop(t *testing.T) {
 	skipIfNoPython(t)
-	multi := &multiResponseLLM{responses: []string{"summary-a", "summary-b", "summary-c"}}
-	r, err := NewREPL(multi, t.TempDir(), nil)
+	q := &multiResponseQuerier{responses: []string{"summary-a", "summary-b", "summary-c"}}
+	r, err := NewREPL(q, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -169,8 +139,8 @@ print("|".join(results))`)
 
 func TestREPLSubLMError(t *testing.T) {
 	skipIfNoPython(t)
-	llm := &fakeLLM{err: fmt.Errorf("api down")}
-	r, err := NewREPL(llm, t.TempDir(), nil)
+	q := &fakeQuerier{err: fmt.Errorf("api down")}
+	r, err := NewREPL(q, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}

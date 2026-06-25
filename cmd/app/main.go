@@ -12,6 +12,7 @@ import (
 	"tenzing-agent/internal/agent"
 	"tenzing-agent/internal/harness"
 	"tenzing-agent/internal/harness/prompts"
+	"tenzing-agent/internal/harness/runner"
 	"tenzing-agent/internal/provider"
 )
 
@@ -29,7 +30,7 @@ func main() {
 		panic(err)
 	}
 	defer logFile.Close()
-	slog.SetDefault(slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: harness.LevelTrace})))
+	slog.SetDefault(slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: runner.LevelTrace})))
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -45,7 +46,7 @@ func main() {
 	})
 
 	// register hooks
-	hooks := harness.Hooks{}
+	hooks := runner.Hooks{}
 
 	mainAgent, err := agent.New(agent.AgentConfig{
 		Model: llm,

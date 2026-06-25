@@ -95,11 +95,12 @@ The FSM is per-runner instance — subagents and concurrent loops don't share st
 | Provider implementations | `internal/provider/*.go`                              |
 | Provider utilities       | `internal/provider/utils/*.go`                        |
 | Prompt templates         | `internal/harness/prompts/*.gotmpl`                   |
-| RLM engine               | `internal/harness/rlm/`                               |
+| RLM engine               | `internal/harness/rlm/` (Fetcher, Querier, Engine)    |
 | Context management       | `internal/agent/context/` (compression, task graph)   |
 | TUI REPL                 | `cmd/repl/`                                           |
 | Test files               | Same directory as source, `*_test.go`                 |
 | Shared test helpers      | `**/testutil_test.go`                                 |
+| Sub-agent system         | `internal/harness/subagent/`                          |
 | Embedded assets          | Adjacent to consumer (e.g. `rlm/bootstrap.py`)       |
 
 ## Testing

@@ -1,4 +1,4 @@
-package harness
+package runner
 
 import (
 	"context"
@@ -31,18 +31,12 @@ const (
 	LoopStateToolExecutionStarted  LoopState = "tool_execution_started"
 	LoopStateToolExecutionFinished LoopState = "tool_execution_finished"
 
-	// Moves from start -> reasoning_started.
-	LoopTransitionStartReasoning LoopTransition = "start_reasoning"
-	// Moves from reasoning_started -> reasoning_finished.
-	LoopTransitionFinishReasoning LoopTransition = "finish_reasoning"
-	// Moves from reasoning_finished -> tool_execution_started.
+	LoopTransitionStartReasoning     LoopTransition = "start_reasoning"
+	LoopTransitionFinishReasoning    LoopTransition = "finish_reasoning"
 	LoopTransitionStartToolExecution LoopTransition = "start_tool_execution"
-	// Moves from tool_execution_started -> tool_execution_finished.
 	LoopTransitionFinishToolExecution LoopTransition = "finish_tool_execution"
-	// Moves from reasoning_finished -> stop.
-	LoopTransitionStop LoopTransition = "stop"
-	// Moves from any state -> start.
-	LoopTransitionReset LoopTransition = "reset"
+	LoopTransitionStop               LoopTransition = "stop"
+	LoopTransitionReset              LoopTransition = "reset"
 )
 
 type LoopFSM struct {

@@ -58,7 +58,7 @@ func TestEngineSimpleFinal(t *testing.T) {
 	}}
 
 	engine, err := NewEngine(EngineConfig{
-		RootLLM:    rootLLM,
+		NewFetcher: NewLLMFetcherFactory(rootLLM),
 		WorkingDir: t.TempDir(),
 	})
 	if err != nil {
@@ -83,7 +83,7 @@ func TestEngineCodeExecution(t *testing.T) {
 	}}
 
 	engine, err := NewEngine(EngineConfig{
-		RootLLM:    rootLLM,
+		NewFetcher: NewLLMFetcherFactory(rootLLM),
 		WorkingDir: t.TempDir(),
 	})
 	if err != nil {
@@ -117,11 +117,11 @@ func TestEngineSubLMFromPython(t *testing.T) {
 	rootLLM := &scriptedLLM{responses: []string{
 		"```repl\nresult = sub_lm(\"summarize this\")\nFINAL(result)\n```",
 	}}
-	subLLM := &fakeLLM{response: "a concise summary"}
+	querier := &fakeQuerier{response: "a concise summary"}
 
 	engine, err := NewEngine(EngineConfig{
-		RootLLM:    rootLLM,
-		SubLLM:     subLLM,
+		NewFetcher: NewLLMFetcherFactory(rootLLM),
+		Querier:    querier,
 		WorkingDir: t.TempDir(),
 	})
 	if err != nil {
@@ -147,7 +147,7 @@ func TestEngineMaxIterations(t *testing.T) {
 	}}
 
 	engine, err := NewEngine(EngineConfig{
-		RootLLM:       rootLLM,
+		NewFetcher:    NewLLMFetcherFactory(rootLLM),
 		WorkingDir:    t.TempDir(),
 		MaxIterations: 3,
 	})
@@ -173,7 +173,7 @@ func TestEngineNudgeOnNoCode(t *testing.T) {
 	}}
 
 	engine, err := NewEngine(EngineConfig{
-		RootLLM:    rootLLM,
+		NewFetcher: NewLLMFetcherFactory(rootLLM),
 		WorkingDir: t.TempDir(),
 	})
 	if err != nil {
@@ -201,7 +201,7 @@ func TestEnginePromptNotInContext(t *testing.T) {
 	}}
 
 	engine, err := NewEngine(EngineConfig{
-		RootLLM:    rootLLM,
+		NewFetcher: NewLLMFetcherFactory(rootLLM),
 		WorkingDir: t.TempDir(),
 	})
 	if err != nil {

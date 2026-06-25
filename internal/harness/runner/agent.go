@@ -1,4 +1,4 @@
-package harness
+package runner
 
 import (
 	"context"
@@ -14,6 +14,9 @@ type Agent interface {
 	UpdateSkillMap(skillMap map[string]string)
 	DoReasoning(ctx context.Context, inputs []string, systemReminders []string) (ReasoningResult, error)
 }
+
+// AgentBuilder creates an Agent given an LLM and system prompt.
+type AgentBuilder func(llm provider.LLM, systemPrompt string) (Agent, error)
 
 type ResponseMeta struct {
 	Model         string

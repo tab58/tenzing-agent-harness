@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -13,7 +12,6 @@ import (
 	"time"
 
 	"tenzing-agent/internal/harness/tools/tooldef"
-	"tenzing-agent/internal/provider"
 )
 
 const levelTrace = slog.Level(-8)
@@ -32,17 +30,17 @@ var (
 )
 
 type EngineConfig struct {
-	RootLLM       provider.LLM
-	SubLLM        provider.LLM
+	NewFetcher    FetcherFactory
+	Querier       Querier
 	WorkingDir    string
 	MaxIterations int
 	TruncateMax   int
-	MaxDepth      int // 0=no sub-calls, 1=llm_query only, 2+=rlm_query available
+	MaxDepth      int
 }
 
 type Engine struct {
-	rootLLM       provider.LLM
-	subLLM        provider.LLM
+	newFetcher    FetcherFactory
+	querier       Querier
 	workingDir    string
 	maxIterations int
 	truncateMax   int
@@ -51,12 +49,8 @@ type Engine struct {
 }
 
 func NewEngine(cfg EngineConfig) (*Engine, error) {
-	if cfg.RootLLM == nil {
-		return nil, fmt.Errorf("root LLM is required")
-	}
-	subLLM := cfg.SubLLM
-	if subLLM == nil {
-		subLLM = cfg.RootLLM
+	if cfg.NewFetcher == nil {
+		return nil, fmt.Errorf("fetcher factory is required")
 	}
 	maxIter := cfg.MaxIterations
 	if maxIter <= 0 {
@@ -71,8 +65,8 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		maxDepth = 0
 	}
 	return &Engine{
-		rootLLM:       cfg.RootLLM,
-		subLLM:        subLLM,
+		newFetcher:    cfg.NewFetcher,
+		querier:       cfg.Querier,
 		workingDir:    cfg.WorkingDir,
 		maxIterations: maxIter,
 		truncateMax:   truncMax,
@@ -89,8 +83,8 @@ func (e *Engine) GetTools() []tooldef.Definition {
 
 func (e *Engine) childEngine() *Engine {
 	return &Engine{
-		rootLLM:       e.rootLLM,
-		subLLM:        e.subLLM,
+		newFetcher:    e.newFetcher,
+		querier:       e.querier,
 		workingDir:    e.workingDir,
 		maxIterations: e.maxIterations,
 		truncateMax:   e.truncateMax,
@@ -118,7 +112,7 @@ func (e *Engine) Run(ctx context.Context, prompt string) (string, error) {
 		}
 	}
 
-	repl, err := NewREPL(e.subLLM, e.workingDir, rlmQueryFn)
+	repl, err := NewREPL(e.querier, e.workingDir, rlmQueryFn)
 	if err != nil {
 		return "", fmt.Errorf("create repl: %w", err)
 	}
@@ -133,61 +127,43 @@ func (e *Engine) Run(ctx context.Context, prompt string) (string, error) {
 		return "", fmt.Errorf("build system prompt: %w", err)
 	}
 
-	history := []provider.Message{
-		provider.NewUserMessage("Process the input loaded in the `prompt` variable and provide your answer."),
+	fetcher, err := e.newFetcher(systemPrompt)
+	if err != nil {
+		return "", fmt.Errorf("create fetcher: %w", err)
 	}
 
 	rlmStart := time.Now()
-	slog.Info("[RLM] started", "prompt_len", len(prompt), "max_iterations", e.maxIterations, "depth", e.currentDepth, "max_depth", e.maxDepth)
+	d := e.currentDepth
+	slog.Info("[RLM] started", "prompt_len", len(prompt), "max_iterations", e.maxIterations, "depth", d, "max_depth", e.maxDepth)
+
+	userContent := "Process the input loaded in the `prompt` variable and provide your answer."
 
 	for i := 0; i < e.maxIterations; i++ {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
 
-		model := e.rootLLM.GetCurrentModel()
-
-		d := e.currentDepth
-
-		if slog.Default().Enabled(ctx, levelTrace) {
-			slog.Log(ctx, levelTrace, "[RLM] request system prompt", "depth", d, "iter", i+1, "model", model, "system", systemPrompt)
-			if raw, err := json.Marshal(history); err == nil {
-				slog.Log(ctx, levelTrace, "[RLM] request messages", "depth", d, "iter", i+1, "model", model, "messages_json", string(raw))
-			}
-		}
-
-		resp, err := e.rootLLM.SendSyncMessage(ctx, provider.CompletionRequest{
-			Model:     model,
-			System:    systemPrompt,
-			Messages:  history,
-			MaxTokens: provider.MaxTokensStdResponse,
-		})
+		resp, err := fetcher.Send(ctx, userContent)
 		if err != nil {
-			return "", fmt.Errorf("root LLM error on turn %d: %w", i+1, err)
+			return "", fmt.Errorf("fetcher error on turn %d: %w", i+1, err)
 		}
 
-		slog.Debug("[RLM] iteration", "depth", d, "iter", i+1, "model", model, "input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens)
+		slog.Debug("[RLM] iteration", "depth", d, "iter", i+1, "model", resp.Model, "input_tokens", resp.InputTokens, "output_tokens", resp.OutputTokens)
+		slog.Debug("[RLM] assistant text", "depth", d, "iter", i+1, "text", resp.Text)
 
-		response := resp.Text()
-		slog.Debug("[RLM] assistant text", "depth", d, "iter", i+1, "text", response)
-
-		if answer, ok := detectFinalInText(response); ok {
+		if answer, ok := detectFinalInText(resp.Text); ok {
 			slog.Info("[RLM] completed", "depth", d, "iter", i+1, "duration", time.Since(rlmStart).Round(time.Millisecond), "answer_len", len(answer), "reason", "final_in_text")
 			return answer, nil
 		}
 
-		codeBlocks := extractCodeBlocks(response)
+		codeBlocks := extractCodeBlocks(resp.Text)
 		if len(codeBlocks) == 0 {
-			codeBlocks = extractCodeBlocksFallback(response)
+			codeBlocks = extractCodeBlocksFallback(resp.Text)
 		}
 
 		if len(codeBlocks) == 0 {
 			slog.Debug("[RLM] nudge", "depth", d, "iter", i+1, "reason", "no_code_blocks")
-			nudge := "[No code block detected. Write ```repl code to process the prompt, or use FINAL(answer) to return your answer.]"
-			history = append(history,
-				provider.NewAssistantMessage(response),
-				provider.NewUserMessage(nudge),
-			)
+			userContent = "[No code block detected. Write ```repl code to process the prompt, or use FINAL(answer) to return your answer.]"
 			continue
 		}
 
@@ -209,11 +185,7 @@ func (e *Engine) Run(ctx context.Context, prompt string) (string, error) {
 
 		slog.Debug("[RLM] repl output", "depth", d, "iter", i+1, "code_blocks", len(codeBlocks), "output_len", allOutput.Len())
 
-		feedback := Truncate(allOutput.String(), e.truncateMax)
-		history = append(history,
-			provider.NewAssistantMessage(response),
-			provider.NewUserMessage("REPL output:\n"+feedback),
-		)
+		userContent = "REPL output:\n" + Truncate(allOutput.String(), e.truncateMax)
 	}
 
 	slog.Error("[RLM] failed", "depth", e.currentDepth, "reason", "max_iterations", "max", e.maxIterations, "duration", time.Since(rlmStart).Round(time.Millisecond))

@@ -1,4 +1,4 @@
-package harness
+package runner
 
 import (
 	"context"
@@ -15,6 +15,10 @@ import (
 )
 
 const logOutputMaxLen = 2000
+
+type Hooks struct {
+	OnToolCall func(name string, input string, output string)
+}
 
 type AgentRunner struct {
 	id             string

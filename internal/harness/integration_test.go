@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"tenzing-agent/internal/harness/runner"
 	"tenzing-agent/internal/harness/skills"
 	"tenzing-agent/internal/harness/snapshot"
 	"tenzing-agent/internal/harness/taskgraph"
@@ -261,7 +262,7 @@ func TestIntegration_ReadEditRevert_ThroughLoop(t *testing.T) {
 	registry.Register(snapshot.NewWriteTool(snapshots))
 	registry.Register(snapshot.NewRevertTool(snapshots))
 
-	runner, err := NewAgentRunner(AgentRunnerConfig{
+	runner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
 		Agent:          agent,
 		ToolRegistry:   registry,
 		SkillsRegistry: skills.NewRegistry(),
@@ -332,7 +333,7 @@ func TestIntegration_TaskLifecycle(t *testing.T) {
 	registry.Register(taskgraph.NewTaskUpdateTool(tg))
 	registry.Register(taskgraph.NewTaskListTool(tg))
 
-	runner, err := NewAgentRunner(AgentRunnerConfig{
+	runner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
 		Agent:          agent,
 		ToolRegistry:   registry,
 		SkillsRegistry: skills.NewRegistry(),
@@ -415,7 +416,7 @@ func TestIntegration_TaskCreate_ThroughLoop(t *testing.T) {
 	registry.Register(taskgraph.NewTaskCreateTool(tg))
 	registry.Register(taskgraph.NewTaskListTool(tg))
 
-	runner, err := NewAgentRunner(AgentRunnerConfig{
+	runner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
 		Agent:          agent,
 		ToolRegistry:   registry,
 		SkillsRegistry: skills.NewRegistry(),
@@ -511,7 +512,7 @@ func TestIntegration_FinalAnswerOnly(t *testing.T) {
 	agent := newScriptedAgent(finalStep("direct answer"))
 
 	registry := tools.NewRegistry()
-	runner, err := NewAgentRunner(AgentRunnerConfig{
+	runner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
 		Agent:          agent,
 		ToolRegistry:   registry,
 		SkillsRegistry: skills.NewRegistry(),
@@ -537,7 +538,7 @@ func TestIntegration_ContextCanceled(t *testing.T) {
 	agent := newScriptedAgent(finalStep("should not reach"))
 
 	registry := tools.NewRegistry()
-	runner, err := NewAgentRunner(AgentRunnerConfig{
+	runner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
 		Agent:          agent,
 		ToolRegistry:   registry,
 		SkillsRegistry: skills.NewRegistry(),
@@ -564,7 +565,7 @@ func TestIntegration_UnknownTool(t *testing.T) {
 	)
 
 	registry := tools.NewRegistry()
-	runner, err := NewAgentRunner(AgentRunnerConfig{
+	runner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
 		Agent:          agent,
 		ToolRegistry:   registry,
 		SkillsRegistry: skills.NewRegistry(),
@@ -600,7 +601,7 @@ func TestIntegration_MultipleToolCalls(t *testing.T) {
 	registry.Register(taskgraph.NewTaskCreateTool(tg))
 	registry.Register(taskgraph.NewTaskListTool(tg))
 
-	runner, err := NewAgentRunner(AgentRunnerConfig{
+	runner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
 		Agent:          agent,
 		ToolRegistry:   registry,
 		SkillsRegistry: skills.NewRegistry(),
@@ -646,13 +647,13 @@ func TestIntegration_ToolHookCalled(t *testing.T) {
 	registry := tools.NewRegistry()
 	registry.Register(taskgraph.NewTaskCreateTool(tg))
 
-	runner, err := NewAgentRunner(AgentRunnerConfig{
+	runner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
 		Agent:          agent,
 		ToolRegistry:   registry,
 		SkillsRegistry: skills.NewRegistry(),
 		TodoFile:       todo.NewTodoItemFile(workDir),
 		SystemPrompt:   "test",
-		Hooks: Hooks{
+		Hooks: runner.Hooks{
 			OnToolCall: func(name, input, output string) {
 				hookCalls = append(hookCalls, name)
 			},

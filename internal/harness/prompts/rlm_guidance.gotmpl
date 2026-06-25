@@ -1,10 +1,30 @@
-When working with large inputs that exceed what you can process in a single pass,
-use the `rlm` tool to delegate. The RLM loads the input into a Python REPL as a
-variable, then you write code to programmatically decompose, analyze (via llm_query
-calls), and aggregate results.
+## Delegation
 
-Strategy:
-1. PROBE: Examine the input structure (length, format, sections)
-2. DECOMPOSE: Split into manageable chunks (by section, function, paragraph)
-3. PROCESS: Use llm_query() inside the REPL to analyze each chunk
-4. AGGREGATE: Combine sub-results and call FINAL() with the answer
+You have two delegation tools. Choose based on the nature of the task:
+
+### spawn_agent — delegate operational tasks
+Use when the task requires ACTIONS: editing files, running commands,
+investigating failures, writing code, multi-step workflows. The sub-agent
+gets its own reasoning loop with full tool access (bash, read, edit, grep,
+glob, rlm). It runs to completion and returns its final answer.
+
+Examples:
+- "Refactor the auth module to use JWT tokens"
+- "Write unit tests for the parser package"
+- "Find and fix why the build fails on CI"
+
+### rlm — delegate analytical tasks over large inputs
+Use when the task requires UNDERSTANDING: processing large text that
+exceeds what you can handle in a single pass, dense analysis requiring
+systematic decomposition, multi-hop reasoning over many documents. The
+input is loaded into a Python REPL as a variable and processed via
+programmatic sub-LM calls.
+
+Examples:
+- "What are all the API endpoints and their auth requirements?"
+- "Analyze these 500 test failures and categorize them"
+- "Find every place in the codebase that handles user PII"
+
+### Do it yourself
+If the task is small enough to do directly (a single file edit, one grep,
+a quick bash command), just do it. Don't delegate trivial work.

@@ -8,12 +8,12 @@ import (
 	"runtime/debug"
 
 	agentctx "tenzing-agent/internal/agent/context"
-	"tenzing-agent/internal/harness"
+	"tenzing-agent/internal/harness/runner"
 	"tenzing-agent/internal/harness/tools/tooldef"
 	"tenzing-agent/internal/provider"
 )
 
-var _ harness.Agent = (*Agent)(nil)
+var _ runner.Agent = (*Agent)(nil)
 
 type Agent struct {
 	model        provider.LLM
@@ -71,13 +71,13 @@ func (a *Agent) UpdateToolDefinitions(tooldefs []provider.ToolDefinition) {
 	a.tools = tooldefs
 }
 
-func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminders []string) (harness.ReasoningResult, error) {
+func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminders []string) (runner.ReasoningResult, error) {
 	userMsgs := make([]provider.Message, len(inputs))
 	for i, input := range inputs {
 		userMsgs[i] = provider.NewUserMessage(input)
 	}
 	if _, err := a.history.AppendMessages(ctx, userMsgs...); err != nil {
-		return harness.ReasoningResult{}, fmt.Errorf("append user inputs: %w", err)
+		return runner.ReasoningResult{}, fmt.Errorf("append user inputs: %w", err)
 	}
 
 	system := a.systemPrompt
@@ -97,20 +97,20 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 
 	slog.Debug("llm request", "model", model, "messages", a.history.Len(), "tools", len(a.tools))
 
-	if slog.Default().Enabled(ctx, harness.LevelTrace) {
-		slog.Log(ctx, harness.LevelTrace, "llm request system prompt", "model", model, "system", system)
+	if slog.Default().Enabled(ctx, runner.LevelTrace) {
+		slog.Log(ctx, runner.LevelTrace, "llm request system prompt", "model", model, "system", system)
 		if raw, err := json.Marshal(messages); err == nil {
-			slog.Log(ctx, harness.LevelTrace, "llm request messages", "model", model, "messages_json", string(raw))
+			slog.Log(ctx, runner.LevelTrace, "llm request messages", "model", model, "messages_json", string(raw))
 		}
 		if raw, err := json.Marshal(a.tools); err == nil {
-			slog.Log(ctx, harness.LevelTrace, "llm request tools", "model", model, "tools_json", string(raw))
+			slog.Log(ctx, runner.LevelTrace, "llm request tools", "model", model, "tools_json", string(raw))
 		}
 	}
 
 	resp, err := a.model.SendMessageWithTools(ctx, req, a.tools)
 	if err != nil {
 		slog.Error("llm call failed", "model", model, "error", err, "messages", a.history.Len(), "stack", string(debug.Stack()))
-		return harness.ReasoningResult{}, fmt.Errorf("llm call (%s): %w", model, err)
+		return runner.ReasoningResult{}, fmt.Errorf("llm call (%s): %w", model, err)
 	}
 
 	slog.Info("llm response", "model", resp.Model, "response_id", resp.ID, "input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens, "stop_reason", resp.StopReason)
@@ -129,17 +129,17 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 		slog.Warn("compression failed", "error", err)
 	}
 
-	var compressionInfo *harness.CompressionInfo
+	var compressionInfo *runner.CompressionInfo
 	if compressed {
 		afterCount := a.history.Len()
 		slog.Info("context compressed", "before_msgs", beforeCount+1, "after_msgs", afterCount)
-		compressionInfo = &harness.CompressionInfo{
+		compressionInfo = &runner.CompressionInfo{
 			MessagesBefore: beforeCount + 1,
 			MessagesAfter:  afterCount,
 		}
 	}
 
-	meta := harness.ResponseMeta{
+	meta := runner.ResponseMeta{
 		Model:         resp.Model,
 		ResponseID:    resp.ID,
 		InputTokens:   resp.Usage.InputTokens,
@@ -151,7 +151,7 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 	toolCalls := resp.ToolCalls()
 	if len(toolCalls) > 0 {
 		tc := toolCalls[0]
-		return harness.ReasoningResult{
+		return runner.ReasoningResult{
 			ToolCall: &tooldef.ToolCall{
 				ID:    tc.ToolUseID,
 				Name:  tc.ToolName,
@@ -162,7 +162,7 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 		}, nil
 	}
 
-	return harness.ReasoningResult{
+	return runner.ReasoningResult{
 		FinalAnswer: resp.Text(),
 		Meta:        meta,
 		Compression: compressionInfo,

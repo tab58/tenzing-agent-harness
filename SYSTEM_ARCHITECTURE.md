@@ -62,6 +62,7 @@ internal/
 │   ├── agent_runner.go                 AgentRunner: FSM-driven loop, DI config
 │   ├── loop_fsm.go                     Per-runner FSM (6 states, 6 transitions)
 │   ├── harness.go                      Thin orchestrator, config types, RunSession REPL
+│   ├── subagent_factory.go             SubAgentFactory — builds child AgentRunner+Agent
 │   ├── defaults.go                     DefaultReminderBuilder, DefaultMainConfig
 │   ├── prompts/                        System prompt construction
 │   ├── skills/                         Skill discovery & lazy loading
@@ -70,11 +71,15 @@ internal/
 │   │   └── registry.go                 Name→Definition map, Execute(), GetDefaultToolDefs()
 │   └── rlm/                            Recursive Language Model engine
 │       ├── bootstrap.py                Embedded Python REPL (//go:embed)
+│       ├── fetcher.go                  Fetcher interface + llmFetcher (LLM + context compression)
+│       ├── querier.go                  Querier interface + llmQuerier (stateless one-shot LLM calls)
 │       ├── repl.go                     Python subprocess + JSON-line IPC
-│       ├── engine.go                   RLM loop: LLM→code→REPL→feedback→repeat
+│       ├── engine.go                   RLM loop: Fetcher→code→REPL→feedback→repeat
 │       ├── truncate.go                 First/last-half truncation
 │       └── prompts/
 │           └── system.md.tmpl          RLM system prompt template
+│   ├── subagent/                       Sub-agent delegation
+│   │   └── tool_spawn_agent.go         spawn_agent tool + AgentFactory interface
 ├── provider/                           LLM abstraction layer
 │   ├── llm.go                          LLM interface (6 implementations)
 │   ├── chat.go                         Provider-agnostic message types
@@ -222,14 +227,18 @@ type Harness struct {
 }
 
 type HarnessConfig struct {
-    MainRunner AgentRunnerConfig
-    RLM        *RLMConfig // nil = rlm tool not registered
+    MainRunner        AgentRunnerConfig
+    RLM               *RLMConfig      // nil = rlm tool not registered
+    SubAgentLLM       provider.LLM    // nil = use RLMSubLLM
+    SubAgentMaxDepth  int             // 0 = disabled, default 2
+    SubAgentMaxIter   int             // default 30 per child
+    SubAgentBuilder   AgentBuilder    // required if SubAgentMaxDepth > 0
 }
 
 type RLMConfig struct {
-    RootModel provider.LLM // LLM for the root RLM reasoning loop
-    SubModel  provider.LLM // LLM for llm_query calls inside REPL; nil = use RootModel
-    MaxDepth  int          // 0=REPL only, 1=llm_query, 2+=rlm_query recursive
+    NewFetcher FetcherFactory // creates per-run Fetcher (LLM + context compression)
+    Querier    Querier        // stateless one-shot LLM calls from REPL; nil = sub_lm unavailable
+    MaxDepth   int            // 0=REPL only, 1=llm_query, 2+=rlm_query recursive
 }
 
 type Hooks struct {
@@ -293,7 +302,7 @@ type ToolResult struct {
 
 Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn't break on tool errors.
 
-### Tool Inventory (18 tools)
+### Tool Inventory (19 tools)
 
 | Tool | Description | Key behavior |
 |------|-------------|--------------|
@@ -305,6 +314,7 @@ Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn
 | `Glob` | File patterns | Supports `**` wildcard |
 | `Revert` | Restore file | Pops from snapshot store (one-shot) |
 | `rlm` | Recursive Language Model | Python REPL loop with llm_query, rlm_query (recursive), file access, FINAL termination |
+| `spawn_agent` | Delegate operational task | Spawns child AgentRunner with full tools, blocks until complete, returns final answer |
 | `list_skills` | List skills | Returns name→description map from skill registry |
 | `load_skill` | Load skill | Lazy-loads full `SKILL.md` content by name |
 | `task_create` | Create task | Persistent task graph, validates dependencies |
@@ -394,14 +404,32 @@ Compression is non-fatal: LLM errors are logged, original history preserved.
 
 Full RLM implementation based on Zhang et al. (2025). Processes arbitrarily large inputs by loading them into a Python REPL as a variable. The model writes Python code to programmatically decompose, analyze (via `llm_query()` calls in loops), and aggregate results. Supports recursive depth: `rlm_query()` spawns child RLM loops at depth>1, falling back to `llm_query()` at max depth.
 
-Architecture: Engine (Go) drives a loop — call root LLM → extract ```repl code blocks → send to Python subprocess → handle callbacks (llm_query, rlm_query, read_file, grep_file, list_files) over JSON-line protocol on stdin/stdout → capture stdout → truncate → feed back to LLM → repeat until `FINAL()`.
+Architecture: Engine (Go) drives a loop — create per-run Fetcher (LLM + context compression) → send user content → extract ```repl code blocks → send to Python subprocess → handle callbacks (llm_query via Querier, rlm_query, read_file, grep_file, list_files) over JSON-line protocol on stdin/stdout → capture stdout → truncate → feed back via Fetcher → repeat until `FINAL()`.
 
-Single tool: `rlm` — the sole delegation mechanism. All sub-agent communication flows through the REPL. Depth parameter controls recursion:
+Two interfaces separate the roles:
+- **Fetcher** — drives the reasoning loop with managed conversation history and context compression. Created per-run via `FetcherFactory`. Default impl (`llmFetcher`) wraps `provider.LLM` + `agentctx.Context`.
+- **Querier** — handles stateless one-shot LLM calls from the Python REPL (`sub_lm()`). Default impl (`llmQuerier`) wraps a bare `provider.LLM`.
+
+Single tool: `rlm` — analytical delegation via the REPL. Depth parameter controls recursion:
 - depth=0: REPL only, no sub-LLM calls
 - depth=1: `llm_query()` available (default)
 - depth=2+: `rlm_query()` available, spawning child RLM loops
 
-Wired via `HarnessConfig.RLM`. Configurable sub-LLM model via `RLMConfig.SubModel` (defaults to RootModel). Python 3 required on PATH.
+Wired via `HarnessConfig.RLMLLM`. Python 3 required on PATH.
+
+## Sub-Agent Architecture
+
+Recursive delegation via full autonomous sub-agents. The main agent delegates operational tasks (file editing, commands, investigations) to child agents that run their own AgentRunner loop. Children can themselves spawn sub-agents up to a configurable max depth.
+
+Architecture: `spawn_agent` tool → `AgentFactory` interface (in `subagent/`) → `SubAgentFactory` (in `harness/`) builds child AgentRunner + Agent per spawn. Coexists with RLM — `spawn_agent` for operational tasks, `rlm` for analytical tasks over large inputs.
+
+Depth control: factory tracks `currentDepth`. At `maxDepth`, child gets all tools except `spawn_agent`. Default max depth is 2 (main → child → grandchild).
+
+Tool isolation: each child gets fresh tool instances via `tools.NewRegistry()`. No tool instance is shared between parent and child. `pathLocks` (package-level `sync.Map`) is the one intentional exception — serializes file writes across all agents in-process.
+
+Children don't get: `TodoFile`, `TaskGraph`, `SkillsRegistry`, or `Hooks`. Planning is the parent's job.
+
+Wired via `HarnessConfig.SubAgentMaxDepth` (0 = disabled) and `HarnessConfig.SubAgentMaxIter` (default 30 per child). Requires `HarnessConfig.SubAgentBuilder` — an `AgentBuilder` function injected by the caller to avoid import cycles between `harness` and `agent` packages.
 
 ## Provider Layer
 

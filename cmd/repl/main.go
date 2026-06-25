@@ -10,6 +10,7 @@ import (
 	"tenzing-agent/internal/agent"
 	"tenzing-agent/internal/harness"
 	"tenzing-agent/internal/harness/prompts"
+	"tenzing-agent/internal/harness/runner"
 	"tenzing-agent/internal/provider"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -28,7 +29,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer logFile.Close()
-	slog.SetDefault(slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: harness.LevelTrace})))
+	slog.SetDefault(slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: runner.LevelTrace})))
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -43,7 +44,7 @@ func main() {
 		Model:  "glm-5.2",
 	})
 
-	hooks := harness.Hooks{}
+	hooks := runner.Hooks{}
 
 	mainAgent, err := agent.New(agent.AgentConfig{
 		Model: llm,

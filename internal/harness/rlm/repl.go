@@ -14,7 +14,6 @@ import (
 	"runtime"
 	"strings"
 
-	"tenzing-agent/internal/provider"
 )
 
 const darwinSandboxProfile = `(version 1)` +
@@ -40,7 +39,7 @@ type REPL struct {
 	stdin      *json.Encoder
 	scanner    *bufio.Scanner
 	workingDir string
-	subLLM     provider.LLM
+	querier    Querier
 	rlmQueryFn RLMQueryFunc
 }
 
@@ -77,7 +76,7 @@ func newPythonCmd(script, workingDir string) *exec.Cmd {
 	return cmd
 }
 
-func NewREPL(subLLM provider.LLM, workingDir string, rlmQueryFn RLMQueryFunc) (*REPL, error) {
+func NewREPL(querier Querier, workingDir string, rlmQueryFn RLMQueryFunc) (*REPL, error) {
 	cmd := newPythonCmd(bootstrapScript, workingDir)
 	cmd.Stderr = os.Stderr
 
@@ -99,7 +98,7 @@ func NewREPL(subLLM provider.LLM, workingDir string, rlmQueryFn RLMQueryFunc) (*
 		stdin:      json.NewEncoder(stdinPipe),
 		scanner:    bufio.NewScanner(stdoutPipe),
 		workingDir: workingDir,
-		subLLM:     subLLM,
+		querier:    querier,
 		rlmQueryFn: rlmQueryFn,
 	}
 
@@ -202,25 +201,15 @@ func (r *REPL) callbackRLMQuery(ctx context.Context, args map[string]any) (strin
 }
 
 func (r *REPL) callbackSubLM(ctx context.Context, args map[string]any) (string, error) {
-	if r.subLLM == nil {
-		return "", fmt.Errorf("sub_lm not available: no LLM configured")
+	if r.querier == nil {
+		return "", fmt.Errorf("sub_lm not available: no querier configured")
 	}
 	prompt, _ := args["prompt"].(string)
 	maxTokens := int64(4096)
 	if mt, ok := args["max_tokens"].(float64); ok {
 		maxTokens = int64(mt)
 	}
-
-	resp, err := r.subLLM.SendSyncMessage(ctx, provider.CompletionRequest{
-		Model:     r.subLLM.GetCurrentModel(),
-		System:    "Answer concisely and accurately.",
-		Messages:  []provider.Message{provider.NewUserMessage(prompt)},
-		MaxTokens: maxTokens,
-	})
-	if err != nil {
-		return "", err
-	}
-	return resp.Text(), nil
+	return r.querier.Query(ctx, prompt, maxTokens)
 }
 
 func (r *REPL) callbackReadFile(args map[string]any) (string, error) {
