@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -331,6 +332,85 @@ func TestREPLPythonError(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "[Python Error]") {
 		t.Fatalf("stdout = %q, want [Python Error]", stdout)
+	}
+}
+
+func TestREPLBlocksImport(t *testing.T) {
+	skipIfNoPython(t)
+	r, err := NewREPL(nil, t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewREPL: %v", err)
+	}
+	defer r.Close()
+
+	tests := []struct {
+		name string
+		code string
+	}{
+		{"import_os", `import os`},
+		{"open_file", `open("/tmp/test_rlm_sandbox", "w")`},
+		{"eval", `eval("1+1")`},
+		{"exec", `exec("x=1")`},
+		{"__import__", `__import__("os")`},
+		{"compile", `compile("1+1", "<>", "eval")`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stdout, done, _, err := r.Execute(context.Background(), tt.code)
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if done {
+				t.Fatal("blocked code should not set done")
+			}
+			if !strings.Contains(stdout, "[Python Error]") {
+				t.Fatalf("expected error for %q, got stdout = %q", tt.code, stdout)
+			}
+		})
+	}
+}
+
+func TestREPLOSSandboxBlocksFileCreate(t *testing.T) {
+	skipIfNoPython(t)
+	if runtime.GOOS != "darwin" {
+		t.Skip("OS-level sandbox test only runs on macOS")
+	}
+
+	r, err := NewREPL(nil, t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewREPL: %v", err)
+	}
+	defer r.Close()
+
+	// Escape builtins restriction via object traversal, then try to create a file.
+	// sandbox-exec denies file-write-create even when Python builtins are bypassed.
+	code := `
+import_fn = [c for c in ().__class__.__bases__[0].__subclasses__()
+             if 'BuiltinImporter' in str(c)]
+if import_fn:
+    bi = import_fn[0]
+    os_mod = bi.load_module('os')
+    try:
+        fd = os_mod.open("/tmp/_rlm_sandbox_test", os_mod.O_WRONLY | os_mod.O_CREAT, 0o644)
+        os_mod.close(fd)
+        print("FAIL: file created")
+    except OSError as e:
+        print("BLOCKED: " + str(e))
+else:
+    print("SKIP: no BuiltinImporter found")
+`
+	stdout, _, _, err := r.Execute(context.Background(), code)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	stdout = strings.TrimSpace(stdout)
+	if strings.Contains(stdout, "FAIL") {
+		os.Remove("/tmp/_rlm_sandbox_test")
+		t.Fatal("OS sandbox did not block file creation")
+	}
+	if !strings.Contains(stdout, "BLOCKED") && !strings.Contains(stdout, "SKIP") {
+		t.Fatalf("unexpected output: %q", stdout)
 	}
 }
 

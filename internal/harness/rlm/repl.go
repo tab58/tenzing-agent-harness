@@ -6,14 +6,27 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"tenzing-agent/internal/provider"
 )
+
+const darwinSandboxProfile = `(version 1)` +
+	`(deny default)` +
+	`(allow file-read*)` +
+	`(allow file-write-data)` +
+	`(allow process-exec*)` +
+	`(allow process-fork)` +
+	`(allow sysctl-read)` +
+	`(allow mach-lookup)` +
+	`(allow signal)` +
+	`(allow ipc-posix-shm-read*)`
 
 //go:embed bootstrap.py
 var bootstrapScript string
@@ -48,9 +61,24 @@ type message struct {
 	Result string `json:"result,omitempty"`
 }
 
-func NewREPL(subLLM provider.LLM, workingDir string, rlmQueryFn RLMQueryFunc) (*REPL, error) {
-	cmd := exec.Command("python3", "-u", "-c", bootstrapScript)
+func newPythonCmd(script, workingDir string) *exec.Cmd {
+	if runtime.GOOS == "darwin" {
+		if _, err := exec.LookPath("sandbox-exec"); err == nil {
+			slog.Debug("[RLM] macOS sandbox-exec enabled")
+			cmd := exec.Command("sandbox-exec", "-p", darwinSandboxProfile,
+				"python3", "-u", "-B", "-c", script)
+			cmd.Dir = workingDir
+			return cmd
+		}
+		slog.Warn("[RLM] sandbox-exec not found, running without macOS sandbox")
+	}
+	cmd := exec.Command("python3", "-u", "-B", "-c", script)
 	cmd.Dir = workingDir
+	return cmd
+}
+
+func NewREPL(subLLM provider.LLM, workingDir string, rlmQueryFn RLMQueryFunc) (*REPL, error) {
+	cmd := newPythonCmd(bootstrapScript, workingDir)
 	cmd.Stderr = os.Stderr
 
 	stdinPipe, err := cmd.StdinPipe()

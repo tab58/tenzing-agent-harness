@@ -112,6 +112,113 @@ def _final_var(var_name):
     _done = True
 
 
+def _apply_os_sandbox():
+    """Best-effort OS-level sandbox. Failures logged to stderr, not fatal."""
+    try:
+        if sys.platform == "linux":
+            _sandbox_linux()
+    except Exception as e:
+        print(f"[sandbox] setup failed: {e}", file=sys.stderr)
+
+
+def _sandbox_linux():
+    import ctypes
+    import ctypes.util
+    import os
+    import struct
+
+    libc = ctypes.CDLL(
+        ctypes.util.find_library("c") or "libc.so.6", use_errno=True
+    )
+
+    PR_SET_NO_NEW_PRIVS = 38
+    RULE_PATH_BENEATH = 1
+
+    FS_EXECUTE   = 1 << 0
+    FS_WRITE     = 1 << 1
+    FS_READ_FILE = 1 << 2
+    FS_READ_DIR  = 1 << 3
+    FS_REMOVE_DIR  = 1 << 4
+    FS_REMOVE_FILE = 1 << 5
+    FS_MAKE_CHAR   = 1 << 6
+    FS_MAKE_DIR    = 1 << 7
+    FS_MAKE_REG    = 1 << 8
+    FS_MAKE_SOCK   = 1 << 9
+    FS_MAKE_FIFO   = 1 << 10
+    FS_MAKE_BLOCK  = 1 << 11
+    FS_MAKE_SYM    = 1 << 12
+
+    ALL_FS = (FS_EXECUTE | FS_WRITE | FS_READ_FILE | FS_READ_DIR |
+              FS_REMOVE_DIR | FS_REMOVE_FILE | FS_MAKE_CHAR | FS_MAKE_DIR |
+              FS_MAKE_REG | FS_MAKE_SOCK | FS_MAKE_FIFO | FS_MAKE_BLOCK |
+              FS_MAKE_SYM)
+    READ_ONLY = FS_EXECUTE | FS_READ_FILE | FS_READ_DIR
+
+    NR_CREATE   = 444
+    NR_ADD_RULE = 445
+    NR_RESTRICT = 446
+
+    libc.syscall.restype = ctypes.c_long
+
+    if libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
+        print("[sandbox] prctl(NO_NEW_PRIVS) failed", file=sys.stderr)
+        return
+
+    attr = struct.pack("=Q", ALL_FS)
+    attr_buf = ctypes.create_string_buffer(attr)
+    fd = libc.syscall(
+        ctypes.c_long(NR_CREATE),
+        ctypes.byref(attr_buf),
+        ctypes.c_size_t(len(attr)),
+        ctypes.c_uint32(0),
+    )
+    if fd < 0:
+        print("[sandbox] Landlock not supported on this kernel", file=sys.stderr)
+        return
+
+    root_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        rule = struct.pack("=Qi", READ_ONLY, root_fd)
+        rule_buf = ctypes.create_string_buffer(rule)
+        ret = libc.syscall(
+            ctypes.c_long(NR_ADD_RULE),
+            ctypes.c_int(fd),
+            ctypes.c_int(RULE_PATH_BENEATH),
+            ctypes.byref(rule_buf),
+            ctypes.c_uint32(0),
+        )
+        if ret < 0:
+            os.close(fd)
+            print(f"[sandbox] landlock_add_rule failed: errno={ctypes.get_errno()}",
+                  file=sys.stderr)
+            return
+    finally:
+        os.close(root_fd)
+
+    ret = libc.syscall(
+        ctypes.c_long(NR_RESTRICT),
+        ctypes.c_int(fd),
+        ctypes.c_uint32(0),
+    )
+    os.close(fd)
+
+    if ret == 0:
+        print("[sandbox] Linux Landlock active", file=sys.stderr)
+    else:
+        print(f"[sandbox] landlock_restrict_self failed: errno={ctypes.get_errno()}",
+              file=sys.stderr)
+
+
+_apply_os_sandbox()
+
+_blocked_builtins = frozenset({
+    "open", "__import__", "exec", "eval", "compile",
+    "breakpoint", "exit", "quit", "input",
+})
+_safe_builtins = {k: v for k, v in __builtins__.__dict__.items()
+                  if k not in _blocked_builtins}
+
+_namespace["__builtins__"] = _safe_builtins
 _namespace["print"] = _print
 _namespace["llm_query"] = _sub_lm
 _namespace["sub_lm"] = _sub_lm  # backwards compat alias
