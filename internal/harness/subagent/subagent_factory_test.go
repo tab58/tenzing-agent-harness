@@ -30,8 +30,9 @@ func (s *stubLLM) GetContextWindowSize() int { return 4096 }
 
 type stubAgent struct{}
 
-func (s *stubAgent) UpdateToolDefinitions(_ []provider.ToolDefinition) {}
-func (s *stubAgent) UpdateSkillMap(_ map[string]string)                {}
+func (s *stubAgent) UpdateToolDefinitions(_ []provider.ToolDefinition)                              {}
+func (s *stubAgent) UpdateSkillMap(_ map[string]string)                                             {}
+func (s *stubAgent) UpdateOffloadFn(_ func(context.Context, string) (string, error)) {}
 
 func (s *stubAgent) DoReasoning(_ context.Context, _ []string, _ []string) (runner.ReasoningResult, error) {
 	return runner.ReasoningResult{FinalAnswer: "done"}, nil

@@ -34,8 +34,9 @@ func newScriptedAgent(steps ...runner.ReasoningResult) *ScriptedAgent {
 	return &ScriptedAgent{steps: steps}
 }
 
-func (s *ScriptedAgent) UpdateToolDefinitions(_ []provider.ToolDefinition) {}
-func (s *ScriptedAgent) UpdateSkillMap(_ map[string]string)              {}
+func (s *ScriptedAgent) UpdateToolDefinitions(_ []provider.ToolDefinition)                    {}
+func (s *ScriptedAgent) UpdateSkillMap(_ map[string]string)                                   {}
+func (s *ScriptedAgent) UpdateOffloadFn(_ func(context.Context, string) (string, error)) {}
 
 func (s *ScriptedAgent) DoReasoning(_ context.Context, inputs []string, reminders []string) (runner.ReasoningResult, error) {
 	s.mu.Lock()

@@ -20,11 +20,8 @@ type Agent struct {
 	systemPrompt string
 	history      *agentctx.Context
 
-	// the skill map definitions that get updated from the AgentRunner
 	skillMap map[string]string
-
-	// the tool definitions that gets updated from the AgentRunner
-	tools []provider.ToolDefinition
+	tools    []provider.ToolDefinition
 }
 
 type AgentConfig struct {
@@ -67,11 +64,34 @@ func (a *Agent) UpdateSkillMap(skillMap map[string]string) {
 	a.skillMap = skillMap
 }
 
+func (a *Agent) UpdateOffloadFn(fn func(ctx context.Context, input string) (string, error)) {
+	a.history.UpdateOffloadFn(fn)
+}
+
 func (a *Agent) UpdateToolDefinitions(tooldefs []provider.ToolDefinition) {
 	a.tools = tooldefs
 }
 
+// replaceInput replaces the string at index "idx" for "inputs" array
+func replaceInput(inputs []string, idx int, replacement string) []string {
+	out := make([]string, len(inputs))
+	copy(out, inputs)
+	out[idx] = replacement
+	return out
+}
+
 func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminders []string) (runner.ReasoningResult, error) {
+	// if the inputs + context will blow the context limits, see if we can move to RLM
+	result, idx, err := a.history.ClassifyOverflow(ctx, inputs)
+	if err != nil {
+		slog.Warn("[offload] failed, using original input", "error", err)
+	}
+	if result != "" {
+		slog.Info("[offload] complete", "original_len", len(inputs[idx]), "result_len", len(result))
+		inputs = replaceInput(inputs, idx, "[RLM processed result]\n\n"+result)
+	}
+
+	// convert inputs arg to user messages and add to context
 	userMsgs := make([]provider.Message, len(inputs))
 	for i, input := range inputs {
 		userMsgs[i] = provider.NewUserMessage(input)
@@ -80,11 +100,13 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 		return runner.ReasoningResult{}, fmt.Errorf("append user inputs: %w", err)
 	}
 
+	// add system reminders to system prompt
 	system := a.systemPrompt
 	for _, r := range systemReminders {
 		system += "\n\n" + r
 	}
 
+	// create LLM request
 	messages := a.history.Messages()
 	model := a.model.GetCurrentModel()
 	req := provider.CompletionRequest{
@@ -96,7 +118,6 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 	}
 
 	slog.Debug("llm request", "model", model, "messages", a.history.Len(), "tools", len(a.tools))
-
 	if slog.Default().Enabled(ctx, runner.LevelTrace) {
 		slog.Log(ctx, runner.LevelTrace, "llm request system prompt", "model", model, "system", system)
 		if raw, err := json.Marshal(messages); err == nil {
@@ -107,6 +128,7 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 		}
 	}
 
+	// get the LLM response
 	resp, err := a.model.SendMessageWithTools(ctx, req, a.tools)
 	if err != nil {
 		slog.Error("llm call failed", "model", model, "error", err, "messages", a.history.Len(), "stack", string(debug.Stack()))
@@ -114,11 +136,11 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 	}
 
 	slog.Info("llm response", "model", resp.Model, "response_id", resp.ID, "input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens, "stop_reason", resp.StopReason)
-
 	if text := resp.Text(); text != "" {
 		slog.Debug("assistant text", "text", text)
 	}
 
+	// add response as assistant message and add to context
 	assistantMsg := provider.Message{
 		Role:    provider.RoleAssistant,
 		Content: resp.Content,
@@ -129,6 +151,7 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 		slog.Warn("compression failed", "error", err)
 	}
 
+	// check if context was compressed
 	var compressionInfo *runner.CompressionInfo
 	if compressed {
 		afterCount := a.history.Len()
@@ -139,6 +162,7 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 		}
 	}
 
+	// get the response details for logging
 	meta := runner.ResponseMeta{
 		Model:         resp.Model,
 		ResponseID:    resp.ID,
@@ -148,6 +172,7 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 		AssistantText: resp.Text(),
 	}
 
+	// if the action to take is a tool call, get it
 	toolCalls := resp.ToolCalls()
 	if len(toolCalls) > 0 {
 		tc := toolCalls[0]
@@ -162,6 +187,7 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 		}, nil
 	}
 
+	// if there are no tool calls, then just return the response
 	return runner.ReasoningResult{
 		FinalAnswer: resp.Text(),
 		Meta:        meta,

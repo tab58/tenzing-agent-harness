@@ -38,6 +38,8 @@ Three layers, strict dependency direction: **Harness → AgentRunner → Agent**
 
 **Never import upward.** Tools don't import harness. Agent doesn't import runner. If you need cross-layer communication, use an interface injected via config.
 
+RLM offloading: when a single input exceeds half the compression threshold, `DoReasoning` routes it through an injected `OffloadFn` before appending to history. The function is `rlm.Engine.Run`, injected at the `cmd/` layer to respect layer boundaries.
+
 ## Adding Tools
 
 1. Create `internal/harness/tools/tooldef/tool_<name>.go`
@@ -97,6 +99,7 @@ The FSM is per-runner instance — subagents and concurrent loops don't share st
 | Prompt templates         | `internal/harness/prompts/*.gotmpl`                   |
 | RLM engine               | `internal/harness/rlm/` (Fetcher, Querier, Engine)    |
 | Context management       | `internal/agent/context/` (compression, task graph)   |
+| Context overflow router  | `internal/agent/context/compressor/router.go`         |
 | TUI REPL                 | `cmd/repl/`                                           |
 | Test files               | Same directory as source, `*_test.go`                 |
 | Shared test helpers      | `**/testutil_test.go`                                 |

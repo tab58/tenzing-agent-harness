@@ -60,6 +60,7 @@ func main() {
 		Agent:            mainAgent,
 		Hooks:            hooks,
 		MainSystemPrompt: prompts.DefaultSystemPrompt(cwd) + "\n\n" + prompts.RLMGuidance(),
+		RLMModel:         llm,
 	})
 	if err != nil {
 		slog.Error("harness init failed", "error", err, "stack", string(debug.Stack()))

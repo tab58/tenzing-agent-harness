@@ -45,7 +45,6 @@ func main() {
 		Model:  "glm-5.2",
 	})
 
-	// register hooks
 	hooks := runner.Hooks{}
 
 	mainAgent, err := agent.New(agent.AgentConfig{
@@ -62,6 +61,7 @@ func main() {
 		Agent:            mainAgent,
 		Hooks:            hooks,
 		MainSystemPrompt: prompts.DefaultSystemPrompt(cwd) + "\n\n" + prompts.RLMGuidance(),
+		RLMModel:         llm,
 	})
 	if err != nil {
 		slog.Error("harness init failed", "error", err, "stack", string(debug.Stack()))

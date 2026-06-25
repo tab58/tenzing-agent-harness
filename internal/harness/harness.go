@@ -37,7 +37,7 @@ type HarnessConfig struct {
 	MainSystemPrompt string
 	ExtraTools       []tooldef.Definition
 	ExtraSkillDirs   []string
-	RLMLLM           provider.LLM
+	RLMModel         provider.LLM
 	SubAgentLLM      provider.LLM
 	SubAgentMaxDepth int
 	SubAgentMaxIter  int
@@ -70,8 +70,8 @@ func New(cfg HarnessConfig) (*Harness, error) {
 	}
 
 	rlmEngine, err := rlm.NewEngine(rlm.EngineConfig{
-		NewFetcher: rlm.NewLLMFetcherFactory(cfg.RLMLLM),
-		Querier:    rlm.NewLLMQuerier(cfg.RLMLLM),
+		NewFetcher: rlm.NewLLMFetcherFactory(cfg.RLMModel),
+		Querier:    rlm.NewLLMQuerier(cfg.RLMModel),
 		MaxDepth:   1,
 		WorkingDir: cwd,
 	})
@@ -88,11 +88,11 @@ func New(cfg HarnessConfig) (*Harness, error) {
 	if cfg.SubAgentMaxDepth > 0 && cfg.SubAgentBuilder != nil {
 		subAgentLLM := cfg.SubAgentLLM
 		if subAgentLLM == nil {
-			subAgentLLM = cfg.RLMLLM
+			subAgentLLM = cfg.RLMModel
 		}
 		factory := subagent.NewSubAgentFactory(subagent.SubAgentFactoryConfig{
 			AgentLLM:      subAgentLLM,
-			RLMModel:      cfg.RLMLLM,
+			RLMModel:      cfg.RLMModel,
 			AgentBuilder:  cfg.SubAgentBuilder,
 			MaxDepth:      cfg.SubAgentMaxDepth,
 			MaxIterations: cfg.SubAgentMaxIter,
@@ -112,6 +112,7 @@ func New(cfg HarnessConfig) (*Harness, error) {
 		return nil, fmt.Errorf("agent must be defined for harness")
 	}
 	agent.UpdateToolDefinitions(toolRegistry.ProviderDefinitions())
+	agent.UpdateOffloadFn(rlmEngine.Run)
 
 	mainAgentRunner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
 		ToolRegistry:   toolRegistry,

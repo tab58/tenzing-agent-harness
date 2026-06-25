@@ -12,6 +12,7 @@ import (
 type Agent interface {
 	UpdateToolDefinitions(tooldefs []provider.ToolDefinition)
 	UpdateSkillMap(skillMap map[string]string)
+	UpdateOffloadFn(fn func(ctx context.Context, input string) (string, error))
 	DoReasoning(ctx context.Context, inputs []string, systemReminders []string) (ReasoningResult, error)
 }
 

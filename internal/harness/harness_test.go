@@ -10,8 +10,9 @@ import (
 
 type stubAgent struct{}
 
-func (s *stubAgent) UpdateToolDefinitions(_ []provider.ToolDefinition) {}
-func (s *stubAgent) UpdateSkillMap(_ map[string]string)              {}
+func (s *stubAgent) UpdateToolDefinitions(_ []provider.ToolDefinition)                              {}
+func (s *stubAgent) UpdateSkillMap(_ map[string]string)                                             {}
+func (s *stubAgent) UpdateOffloadFn(_ func(context.Context, string) (string, error)) {}
 
 func (s *stubAgent) DoReasoning(_ context.Context, _ []string, _ []string) (runner.ReasoningResult, error) {
 	return runner.ReasoningResult{FinalAnswer: "done"}, nil
@@ -34,13 +35,13 @@ func (s *stubLLM) CountTokens(_ context.Context, _ provider.CompletionRequest) (
 func (s *stubLLM) ListModels(_ context.Context) ([]provider.ModelInfo, error) {
 	return nil, nil
 }
-func (s *stubLLM) GetCurrentModel() string    { return "stub" }
+func (s *stubLLM) GetCurrentModel() string   { return "stub" }
 func (s *stubLLM) GetContextWindowSize() int { return 4096 }
 
 func TestHarnessCreatesRunner(t *testing.T) {
 	_, err := New(HarnessConfig{
 		Agent:            &stubAgent{},
-		RLMLLM:        &stubLLM{},
+		RLMModel:         &stubLLM{},
 		MainSystemPrompt: "test prompt",
 	})
 	if err != nil {
@@ -51,7 +52,7 @@ func TestHarnessCreatesRunner(t *testing.T) {
 func TestHarnessRegistersSpawnAgentWhenEnabled(t *testing.T) {
 	h, err := New(HarnessConfig{
 		Agent:            &stubAgent{},
-		RLMLLM:        &stubLLM{},
+		RLMModel:         &stubLLM{},
 		SubAgentMaxDepth: 2,
 		SubAgentBuilder: func(llm provider.LLM, sp string) (runner.Agent, error) {
 			return &stubAgent{}, nil
@@ -77,7 +78,7 @@ func TestHarnessRegistersSpawnAgentWhenEnabled(t *testing.T) {
 func TestHarnessNoSpawnAgentWhenDisabled(t *testing.T) {
 	h, err := New(HarnessConfig{
 		Agent:            &stubAgent{},
-		RLMLLM:        &stubLLM{},
+		RLMModel:         &stubLLM{},
 		MainSystemPrompt: "test",
 	})
 	if err != nil {

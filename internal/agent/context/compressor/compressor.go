@@ -75,6 +75,8 @@ func (c *Compressor) MaybeCompress(ctx context.Context, messages []provider.Mess
 	return compressed, true, nil
 }
 
+func (c *Compressor) Threshold() int { return c.threshold }
+
 func (c *Compressor) EstimateSize(messages []provider.Message) int {
 	size := 0
 	for _, msg := range messages {
