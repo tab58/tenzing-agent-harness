@@ -22,6 +22,7 @@ type Hooks struct {
 	OnMeta          func(meta ResponseMeta)
 	OnTextDelta     func(text string)
 	OnThinkingDelta func(text string)
+	OnToolProgress  func(tool string, phase string, detail string)
 }
 
 type AgentRunner struct {

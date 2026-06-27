@@ -44,26 +44,33 @@ func main() {
 		Model:  "glm-5.2",
 	})
 
-	var prog *tea.Program
+	msgQueue := make(chan tea.Msg, 256)
+
+	send := func(msg tea.Msg) {
+		msgQueue <- msg
+	}
 
 	hooks := runner.Hooks{
 		OnToolStart: func(name, input string) {
-			prog.Send(toolStartMsg{name: name, input: input})
+			send(toolStartMsg{name: name, input: input})
 		},
 		OnToolCall: func(name, input, output string) {
-			prog.Send(toolCallMsg{name: name, input: input, output: output})
+			send(toolCallMsg{name: name, input: input, output: output})
 		},
 		OnTextDelta: func(text string) {
-			prog.Send(textDeltaMsg{text: text})
+			send(textDeltaMsg{text: text})
 		},
 		OnThinkingDelta: func(text string) {
-			prog.Send(thinkingDeltaMsg{text: text})
+			send(thinkingDeltaMsg{text: text})
 		},
 		OnMeta: func(meta runner.ResponseMeta) {
-			prog.Send(metaMsg{
+			send(metaMsg{
 				inputTokens:  meta.InputTokens,
 				outputTokens: meta.OutputTokens,
 			})
+		},
+		OnToolProgress: func(tool, phase, detail string) {
+			send(toolProgressMsg{tool: tool, phase: phase, detail: detail})
 		},
 	}
 
@@ -89,9 +96,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	m := newModel(agentHarness, llm.GetCurrentModel(), cwd)
-	prog = tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
-	if _, err := prog.Run(); err != nil {
+	m := newModel(agentHarness, llm.GetCurrentModel(), cwd, msgQueue)
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

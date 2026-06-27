@@ -64,6 +64,12 @@ type thinkingDeltaMsg struct {
 	text string
 }
 
+type toolProgressMsg struct {
+	tool   string
+	phase  string
+	detail string
+}
+
 type headerReadyMsg struct{}
 
 // --- Model ---
@@ -98,11 +104,12 @@ type model struct {
 	modelName    string
 	cwd          string
 	toolCount    int
+	eventCh      <-chan tea.Msg
 
 	lastCtrlC time.Time
 }
 
-func newModel(h *harness.Harness, modelName, cwd string) model {
+func newModel(h *harness.Harness, modelName, cwd string, eventCh <-chan tea.Msg) model {
 	ta := textarea.New()
 	ta.SetHeight(textareaHeight)
 	ta.SetPromptFunc(2, func(lineIdx int) string {
@@ -139,9 +146,16 @@ func newModel(h *harness.Harness, modelName, cwd string) model {
 		modelName:    modelName,
 		cwd:          cwd,
 		toolCount:    len(h.ToolDefinitions()),
+		eventCh:      eventCh,
 		width:        80,
 		height:       24,
 		historyIdx:   -1,
+	}
+}
+
+func waitForEvent(ch <-chan tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		return <-ch
 	}
 }
 
@@ -150,6 +164,7 @@ func (m model) Init() tea.Cmd {
 		tea.SetWindowTitle("tenzing repl"),
 		textarea.Blink,
 		func() tea.Msg { return headerReadyMsg{} },
+		waitForEvent(m.eventCh),
 	)
 }
 
@@ -183,39 +198,66 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case toolStartMsg:
 		m.statusText = "⚙ " + msg.name
+		m.finalizeStreaming()
 		m.history = append(m.history, historyEntry{
 			role:    "tool_start",
-			content: msg.name,
+			content: msg.name + " " + truncate(msg.input, 120),
 		})
 		m.refreshViewport()
-		return m, nil
+		return m, waitForEvent(m.eventCh)
 
 	case toolCallMsg:
 		m.statusText = "Thinking…"
-		m.history = append(m.history, historyEntry{
-			role:    "tool",
-			content: fmt.Sprintf("%s %s", msg.name, truncate(msg.output, 200)),
-		})
+		for i := len(m.history) - 1; i >= 0; i-- {
+			if m.history[i].role == "tool_start" {
+				m.history[i] = historyEntry{
+					role:    "tool",
+					content: formatToolOutput(msg.name, msg.input, msg.output),
+				}
+				break
+			}
+		}
 		m.refreshViewport()
-		return m, nil
+		return m, waitForEvent(m.eventCh)
+
+	case toolProgressMsg:
+		label := msg.phase
+		switch msg.phase {
+		case "repl_exec":
+			label = "python"
+		case "repl_result":
+			label = "output"
+		case "llm_call":
+			label = "llm"
+		}
+		m.statusText = "⚙ " + msg.tool + " → " + label
+		detail := strings.TrimSpace(msg.detail)
+		if detail != "" {
+			m.history = append(m.history, historyEntry{
+				role:    "tool_progress",
+				content: formatProgressEntry(label, detail),
+			})
+			m.refreshViewport()
+		}
+		return m, waitForEvent(m.eventCh)
 
 	case metaMsg:
 		m.totalInputTokens += msg.inputTokens
 		m.totalOutputTokens += msg.outputTokens
-		return m, nil
+		return m, waitForEvent(m.eventCh)
 
 	case thinkingDeltaMsg:
 		m.statusText = "Thinking…"
 		m.streamingThinking += msg.text
 		m.updateThinkingEntry()
-		return m, nil
+		return m, waitForEvent(m.eventCh)
 
 	case textDeltaMsg:
 		m.statusText = "Streaming…"
 		m.finalizeThinking()
 		m.streamingContent += msg.text
 		m.updateStreamingEntry()
-		return m, nil
+		return m, waitForEvent(m.eventCh)
 
 	case agentResultMsg:
 		m.state = stateInput
@@ -254,6 +296,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 
 	case tea.MouseMsg:
+		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)
 		return m, cmd
 	}
@@ -287,6 +330,18 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlL:
 		if m.state == stateInput {
 			return m.clearHistory()
+		}
+		return m, nil
+
+	case tea.KeyCtrlP:
+		if m.state == stateInput {
+			m.navigateHistoryUp()
+		}
+		return m, nil
+
+	case tea.KeyCtrlN:
+		if m.state == stateInput {
+			m.navigateHistoryDown()
 		}
 		return m, nil
 
@@ -326,35 +381,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, tea.Batch(m.runAgent(ctx, query), m.spinner.Tick)
 
-	case tea.KeyUp:
-		if m.state == stateInput {
-			if m.input.Line() == 0 {
-				m.navigateHistoryUp()
-				return m, nil
-			}
-			var cmd tea.Cmd
-			m.input, cmd = m.input.Update(msg)
-			return m, cmd
-		}
-		var cmd tea.Cmd
-		m.viewport, cmd = m.viewport.Update(msg)
-		return m, cmd
-
-	case tea.KeyDown:
-		if m.state == stateInput {
-			if m.input.Line() >= m.input.LineCount()-1 {
-				m.navigateHistoryDown()
-				return m, nil
-			}
-			var cmd tea.Cmd
-			m.input, cmd = m.input.Update(msg)
-			return m, cmd
-		}
-		var cmd tea.Cmd
-		m.viewport, cmd = m.viewport.Update(msg)
-		return m, cmd
-
-	case tea.KeyPgUp, tea.KeyPgDown:
+	case tea.KeyUp, tea.KeyDown, tea.KeyPgUp, tea.KeyPgDown:
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)
 		return m, cmd
@@ -445,9 +472,11 @@ const slashCommandHelp = `commands:
   /help, /h     show this help
   /tokens, /t   show token usage
   /exit         exit the REPL
+  ctrl+p/n      history prev/next
   ctrl+l        clear chat history
   ctrl+c        cancel running / exit
-  ctrl+d        exit (empty input)`
+  ctrl+d        exit (empty input)
+  shift+click   select text`
 
 func (m model) runAgent(ctx context.Context, query string) tea.Cmd {
 	h := m.agentHarness
@@ -483,6 +512,17 @@ func (m *model) updateThinkingEntry() {
 	m.refreshViewport()
 }
 
+func (m *model) finalizeStreaming() {
+	if m.streamingContent == "" {
+		return
+	}
+	last := len(m.history) - 1
+	if last >= 0 && m.history[last].role == "streaming" {
+		m.history[last] = historyEntry{role: "assistant", content: m.streamingContent}
+	}
+	m.streamingContent = ""
+}
+
 func (m *model) finalizeThinking() {
 	if m.streamingThinking == "" {
 		return
@@ -495,7 +535,7 @@ func (m *model) finalizeThinking() {
 }
 
 func (m *model) refreshViewport() {
-	atBottom := m.viewport.AtBottom()
+	atBottom := m.viewport.AtBottom() || m.state == stateRunning
 	m.viewport.SetContent(m.renderHistory())
 	if atBottom {
 		m.viewport.GotoBottom()
@@ -597,7 +637,13 @@ func (m model) renderHistory() string {
 		case "tool_start":
 			b.WriteString(toolStartStyle.Render("  ⚙ "+entry.content) + "\n")
 		case "tool":
-			b.WriteString(toolStyle.Width(w).Render("  ✓ "+entry.content) + "\n")
+			for _, line := range strings.Split(entry.content, "\n") {
+				b.WriteString(toolStyle.Render("  "+line) + "\n")
+			}
+		case "tool_progress":
+			for _, line := range strings.Split(entry.content, "\n") {
+				b.WriteString(toolStyle.Render("    "+line) + "\n")
+			}
 		case "error":
 			b.WriteString(errorStyle.Width(w).Render("✗ "+entry.content) + "\n")
 		case "system":
@@ -607,15 +653,24 @@ func (m model) renderHistory() string {
 	return b.String()
 }
 
+var (
+	mdRenderer      *glamour.TermRenderer
+	mdRendererWidth int
+)
+
 func renderMarkdown(content string, width int) string {
-	r, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
-		glamour.WithWordWrap(width),
-	)
-	if err != nil {
-		return content
+	if mdRenderer == nil || mdRendererWidth != width {
+		r, err := glamour.NewTermRenderer(
+			glamour.WithAutoStyle(),
+			glamour.WithWordWrap(width),
+		)
+		if err != nil {
+			return content
+		}
+		mdRenderer = r
+		mdRendererWidth = width
 	}
-	rendered, err := r.Render(content)
+	rendered, err := mdRenderer.Render(content)
 	if err != nil {
 		return content
 	}
@@ -638,4 +693,55 @@ func truncate(s string, maxLen int) string {
 		return s[:maxLen] + "…"
 	}
 	return s
+}
+
+const maxToolOutputLines = 10
+
+func formatToolOutput(name, input, output string) string {
+	header := "✓ " + name + " " + truncate(input, 120)
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return header
+	}
+	lines := strings.Split(output, "\n")
+	truncated := false
+	if len(lines) > maxToolOutputLines {
+		lines = lines[:maxToolOutputLines]
+		truncated = true
+	}
+	var b strings.Builder
+	b.WriteString(header)
+	b.WriteString("\n")
+	for _, line := range lines {
+		b.WriteString("    ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	if truncated {
+		b.WriteString("    …")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+const maxProgressLines = 10
+
+func formatProgressEntry(label, detail string) string {
+	lines := strings.Split(detail, "\n")
+	truncated := false
+	if len(lines) > maxProgressLines {
+		lines = lines[:maxProgressLines]
+		truncated = true
+	}
+	var b strings.Builder
+	b.WriteString("▸ " + label)
+	b.WriteString("\n")
+	for _, line := range lines {
+		b.WriteString("  ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	if truncated {
+		b.WriteString("  …")
+	}
+	return strings.TrimRight(b.String(), "\n")
 }

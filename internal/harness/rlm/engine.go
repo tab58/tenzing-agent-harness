@@ -29,6 +29,16 @@ var (
 	finalRe             = regexp.MustCompile(`FINAL\(([^)]+)\)`)
 )
 
+type ProgressEvent struct {
+	Iteration  int
+	Phase      string // "repl_exec", "repl_result", "llm_call", "callback"
+	CodeBlock  string
+	Output     string
+	Depth      int
+	TokensIn   int64
+	TokensOut  int64
+}
+
 type EngineConfig struct {
 	NewFetcher    FetcherFactory
 	Querier       Querier
@@ -36,6 +46,7 @@ type EngineConfig struct {
 	MaxIterations int
 	TruncateMax   int
 	MaxDepth      int
+	OnProgress    func(ProgressEvent)
 }
 
 type Engine struct {
@@ -46,6 +57,7 @@ type Engine struct {
 	truncateMax   int
 	maxDepth      int
 	currentDepth  int
+	onProgress    func(ProgressEvent)
 }
 
 func NewEngine(cfg EngineConfig) (*Engine, error) {
@@ -72,12 +84,19 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		truncateMax:   truncMax,
 		maxDepth:      maxDepth,
 		currentDepth:  0,
+		onProgress:    cfg.OnProgress,
 	}, nil
 }
 
 func (e *Engine) GetTools() []tooldef.Definition {
 	return []tooldef.Definition{
 		NewRLMTool(e.Run),
+	}
+}
+
+func (e *Engine) emitProgress(ev ProgressEvent) {
+	if e.onProgress != nil {
+		e.onProgress(ev)
 	}
 }
 
@@ -90,6 +109,7 @@ func (e *Engine) childEngine() *Engine {
 		truncateMax:   e.truncateMax,
 		maxDepth:      e.maxDepth,
 		currentDepth:  e.currentDepth + 1,
+		onProgress:    e.onProgress,
 	}
 }
 
@@ -143,6 +163,7 @@ func (e *Engine) Run(ctx context.Context, prompt string) (string, error) {
 			return "", ctx.Err()
 		}
 
+		e.emitProgress(ProgressEvent{Iteration: i + 1, Phase: "llm_call", Depth: d})
 		resp, err := fetcher.Send(ctx, userContent)
 		if err != nil {
 			return "", fmt.Errorf("fetcher error on turn %d: %w", i+1, err)
@@ -150,6 +171,7 @@ func (e *Engine) Run(ctx context.Context, prompt string) (string, error) {
 
 		slog.Debug("[RLM] iteration", "depth", d, "iter", i+1, "model", resp.Model, "input_tokens", resp.InputTokens, "output_tokens", resp.OutputTokens)
 		slog.Debug("[RLM] assistant text", "depth", d, "iter", i+1, "text", resp.Text)
+		e.emitProgress(ProgressEvent{Iteration: i + 1, Phase: "llm_call", Depth: d, TokensIn: resp.InputTokens, TokensOut: resp.OutputTokens})
 
 		if answer, ok := detectFinalInText(resp.Text); ok {
 			slog.Info("[RLM] completed", "depth", d, "iter", i+1, "duration", time.Since(rlmStart).Round(time.Millisecond), "answer_len", len(answer), "reason", "final_in_text")
@@ -170,11 +192,13 @@ func (e *Engine) Run(ctx context.Context, prompt string) (string, error) {
 		var allOutput strings.Builder
 		for j, code := range codeBlocks {
 			slog.Debug("[RLM] repl execute", "depth", d, "iter", i+1, "block", j+1, "code", code)
+			e.emitProgress(ProgressEvent{Iteration: i + 1, Phase: "repl_exec", Depth: d, CodeBlock: code})
 			stdout, done, final, err := repl.Execute(ctx, code)
 			if err != nil {
 				return "", fmt.Errorf("repl execute: %w", err)
 			}
 			slog.Debug("[RLM] repl result", "depth", d, "iter", i+1, "block", j+1, "stdout_len", len(stdout), "done", done)
+			e.emitProgress(ProgressEvent{Iteration: i + 1, Phase: "repl_result", Depth: d, Output: stdout})
 			slog.Log(ctx, levelTrace, "[RLM] repl stdout", "depth", d, "iter", i+1, "block", j+1, "stdout", stdout)
 			allOutput.WriteString(stdout)
 			if done {

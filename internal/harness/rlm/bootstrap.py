@@ -7,6 +7,7 @@ persistent namespace. Callbacks to Go for sub_lm, read_file, grep_file, list_fil
 import json
 import sys
 import re
+import time
 import traceback
 
 _namespace = {}
@@ -14,6 +15,11 @@ _stdout_capture = []
 _done = False
 _final_answer = None
 _last_output = ""
+_exec_count = 0
+
+
+def _log(event, **kv):
+    _send({"type": "debug", "event": event, **{k: v for k, v in kv.items() if v is not None}})
 
 
 def _send(msg):
@@ -33,15 +39,19 @@ def _print(*args):
 
 
 def _sub_lm(prompt, max_tokens=4096):
+    _log("callback_start", func="sub_lm", prompt_len=len(str(prompt)), max_tokens=max_tokens)
+    t0 = time.monotonic()
     _send({"type": "callback", "func": "sub_lm",
            "args": {"prompt": str(prompt), "max_tokens": int(max_tokens)}})
     resp = _recv()
+    _log("callback_done", func="sub_lm", elapsed_ms=round((time.monotonic() - t0) * 1000), error=resp.get("error"), result_len=len(resp.get("result", "")))
     if resp.get("error"):
         raise RuntimeError(resp["error"])
     return resp["result"]
 
 
 def _read_file(path, start_line=None, end_line=None):
+    _log("callback_start", func="read_file", path=str(path), start_line=start_line, end_line=end_line)
     args = {"path": str(path)}
     if start_line is not None:
         args["start_line"] = int(start_line)
@@ -49,26 +59,28 @@ def _read_file(path, start_line=None, end_line=None):
         args["end_line"] = int(end_line)
     _send({"type": "callback", "func": "read_file", "args": args})
     resp = _recv()
+    _log("callback_done", func="read_file", error=resp.get("error"), result_len=len(resp.get("result", "")))
     if resp.get("error"):
         raise RuntimeError(resp["error"])
     return resp["result"]
 
 
 def _grep_file(pattern, path=None):
-    args = {"pattern": str(pattern)}
-    if path is not None:
-        args["path"] = str(path)
-    _send({"type": "callback", "func": "grep_file", "args": args})
+    _log("callback_start", func="grep_file", pattern=str(pattern), path=path)
+    _send({"type": "callback", "func": "grep_file", "args": {"pattern": str(pattern), **({"path": str(path)} if path else {})}})
     resp = _recv()
+    _log("callback_done", func="grep_file", error=resp.get("error"), result_len=len(resp.get("result", "")))
     if resp.get("error"):
         raise RuntimeError(resp["error"])
     return resp["result"]
 
 
 def _list_files(pattern):
+    _log("callback_start", func="list_files", pattern=str(pattern))
     _send({"type": "callback", "func": "list_files",
            "args": {"pattern": str(pattern)}})
     resp = _recv()
+    _log("callback_done", func="list_files", error=resp.get("error"), result_len=len(resp.get("result", "")))
     if resp.get("error"):
         raise RuntimeError(resp["error"])
     return resp["result"]
@@ -76,9 +88,12 @@ def _list_files(pattern):
 
 def _rlm_query(context, query):
     """Spawn a child RLM to recursively process context with a query."""
+    _log("callback_start", func="rlm_query", context_len=len(str(context)), query_len=len(str(query)))
+    t0 = time.monotonic()
     _send({"type": "callback", "func": "rlm_query",
            "args": {"prompt": f"Context:\n{str(context)}\n\nQuery: {str(query)}"}})
     resp = _recv()
+    _log("callback_done", func="rlm_query", elapsed_ms=round((time.monotonic() - t0) * 1000), error=resp.get("error"), result_len=len(resp.get("result", "")))
     if resp.get("error"):
         raise RuntimeError(resp["error"])
     return resp["result"]
@@ -231,6 +246,8 @@ _namespace["FINAL_VAR"] = _final_var
 _namespace["json"] = json
 _namespace["re"] = re
 
+_log("repl_ready", python=sys.version.split()[0])
+
 while True:
     msg = _recv()
 
@@ -242,22 +259,34 @@ while True:
         continue
 
     if msg["type"] == "set_var":
+        _log("set_var", name=msg["name"], value_len=len(str(msg["value"])))
         _namespace[msg["name"]] = msg["value"]
         _send({"type": "result", "stdout": "", "done": False})
         continue
 
     if msg["type"] == "exec":
+        _exec_count += 1
         _stdout_capture.clear()
         _done = False
         _final_answer = None
 
-        try:
-            exec(msg["code"], _namespace)
-        except Exception:
-            _stdout_capture.append(f"[Python Error] {traceback.format_exc()}")
+        code = msg["code"]
+        _log("exec_start", n=_exec_count, code_len=len(code), code_preview=code[:200])
+        t0 = time.monotonic()
 
+        try:
+            exec(code, _namespace)
+        except Exception:
+            tb = traceback.format_exc()
+            _log("exec_error", n=_exec_count, traceback=tb)
+            _stdout_capture.append(f"[Python Error] {tb}")
+
+        elapsed_ms = round((time.monotonic() - t0) * 1000)
         stdout = "".join(_stdout_capture)
         _last_output = stdout
+
+        user_vars = [k for k in _namespace if not k.startswith("_") and k != "__builtins__"]
+        _log("exec_done", n=_exec_count, elapsed_ms=elapsed_ms, stdout_len=len(stdout), done=_done, has_final=_final_answer is not None, namespace_vars=user_vars)
 
         _send({
             "type": "result",

@@ -54,8 +54,9 @@ type message struct {
 	Final  string `json:"final,omitempty"`
 	Error  string `json:"error,omitempty"`
 
-	Func string         `json:"func,omitempty"`
-	Args map[string]any `json:"args,omitempty"`
+	Func  string         `json:"func,omitempty"`
+	Args  map[string]any `json:"args,omitempty"`
+	Event string         `json:"event,omitempty"`
 
 	Result string `json:"result,omitempty"`
 }
@@ -155,6 +156,9 @@ func (r *REPL) readUntilResult(ctx context.Context) (string, bool, string, error
 		switch msg.Type {
 		case "result":
 			return msg.Stdout, msg.Done, msg.Final, nil
+
+		case "debug":
+			slog.Debug("[RLM:py] "+msg.Event, "data", line)
 
 		case "callback":
 			result, cbErr := r.handleCallback(ctx, msg.Func, msg.Args)

@@ -69,11 +69,23 @@ func New(cfg HarnessConfig) (*Harness, error) {
 		skillsRegistry.RegisterSkillDir(skillDir)
 	}
 
+	var rlmProgressFn func(rlm.ProgressEvent)
+	if cfg.Hooks.OnToolProgress != nil {
+		hook := cfg.Hooks.OnToolProgress
+		rlmProgressFn = func(ev rlm.ProgressEvent) {
+			detail := ev.Output
+			if ev.Phase == "repl_exec" {
+				detail = ev.CodeBlock
+			}
+			hook("rlm", ev.Phase, detail)
+		}
+	}
 	rlmEngine, err := rlm.NewEngine(rlm.EngineConfig{
 		NewFetcher: rlm.NewLLMFetcherFactory(cfg.RLMModel),
 		Querier:    rlm.NewLLMQuerier(cfg.RLMModel),
 		MaxDepth:   1,
 		WorkingDir: cwd,
+		OnProgress: rlmProgressFn,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize RLM engine: %w", err)
