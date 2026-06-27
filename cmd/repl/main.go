@@ -44,7 +44,22 @@ func main() {
 		Model:  "glm-5.2",
 	})
 
-	hooks := runner.Hooks{}
+	var prog *tea.Program
+
+	hooks := runner.Hooks{
+		OnToolStart: func(name, input string) {
+			prog.Send(toolStartMsg{name: name, input: input})
+		},
+		OnToolCall: func(name, input, output string) {
+			prog.Send(toolCallMsg{name: name, input: input, output: output})
+		},
+		OnMeta: func(meta runner.ResponseMeta) {
+			prog.Send(metaMsg{
+				inputTokens:  meta.InputTokens,
+				outputTokens: meta.OutputTokens,
+			})
+		},
+	}
 
 	mainAgent, err := agent.New(agent.AgentConfig{
 		Model: llm,
@@ -69,8 +84,8 @@ func main() {
 	}
 
 	m := newModel(agentHarness, llm.GetCurrentModel(), cwd)
-	p := tea.NewProgram(m, tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
+	prog = tea.NewProgram(m, tea.WithAltScreen())
+	if _, err := prog.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

@@ -17,7 +17,9 @@ import (
 const logOutputMaxLen = 2000
 
 type Hooks struct {
-	OnToolCall func(name string, input string, output string)
+	OnToolCall  func(name string, input string, output string)
+	OnToolStart func(name string, input string)
+	OnMeta      func(meta ResponseMeta)
 }
 
 type AgentRunner struct {
@@ -104,6 +106,9 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 			loopErr = fmt.Errorf("reasoning error: %w", err)
 			break
 		}
+		if h.hooks.OnMeta != nil {
+			h.hooks.OnMeta(reasoningResult.Meta)
+		}
 
 		if reasoningResult.ToolCall != nil {
 			slog.Debug("reasoning result", "runner", h.id, "iter", iteration, "tool", reasoningResult.ToolCall.Name, "tool_use_id", reasoningResult.ToolCall.ID, "input", reasoningResult.ToolCall.Input)
@@ -135,6 +140,9 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 			break
 		}
 		toolCall := reasoningResult.ToolCall
+		if h.hooks.OnToolStart != nil {
+			h.hooks.OnToolStart(toolCall.Name, toolCall.Input)
+		}
 		toolStart := time.Now()
 		toolResult, err := h.toolRegistry.Execute(ctx, toolCall.Name, toolCall.Input)
 		toolDuration := time.Since(toolStart)

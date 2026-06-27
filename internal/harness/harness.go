@@ -144,6 +144,10 @@ func (h *Harness) SystemPrompt() string {
 	return h.mainAgentRunner.SystemPrompt()
 }
 
+func (h *Harness) RunTurn(ctx context.Context, query string) (string, error) {
+	return h.mainAgentRunner.RunLoop(ctx, query)
+}
+
 func (h *Harness) RunSession(ctx context.Context, in io.Reader, out io.Writer) error {
 	scanner := bufio.NewScanner(in)
 

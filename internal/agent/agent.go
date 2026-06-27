@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"strings"
 
 	agentctx "tenzing-agent/internal/agent/context"
 	"tenzing-agent/internal/harness/runner"
@@ -49,15 +50,16 @@ func New(cfg AgentConfig) (*Agent, error) {
 }
 
 func buildAgentSystemPrompt(prompt string, skillMap map[string]string) string {
-	systemPrompt := prompt
+	var systemPrompt strings.Builder
+	systemPrompt.WriteString(prompt)
 	if len(skillMap) > 0 {
-		systemPrompt += "\n\nAvailable skills (call load_skill to get full instructions):"
+		systemPrompt.WriteString("\n\nAvailable skills (call load_skill to get full instructions):")
 		for name, desc := range skillMap {
-			systemPrompt += fmt.Sprintf("\n- %s: %s", name, desc)
+			fmt.Fprintf(&systemPrompt, "\n- %s: %s", name, desc)
 		}
-		systemPrompt += "\nWhen a task requires specialised knowledge, call load_skill(name) to get full instructions before starting. Do NOT guess."
+		systemPrompt.WriteString("\nWhen a task requires specialised knowledge, call load_skill(name) to get full instructions before starting. Do NOT guess.")
 	}
-	return systemPrompt
+	return systemPrompt.String()
 }
 
 func (a *Agent) UpdateSkillMap(skillMap map[string]string) {
