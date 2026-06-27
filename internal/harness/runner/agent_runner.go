@@ -17,9 +17,11 @@ import (
 const logOutputMaxLen = 2000
 
 type Hooks struct {
-	OnToolCall  func(name string, input string, output string)
-	OnToolStart func(name string, input string)
-	OnMeta      func(meta ResponseMeta)
+	OnToolCall      func(name string, input string, output string)
+	OnToolStart     func(name string, input string)
+	OnMeta          func(meta ResponseMeta)
+	OnTextDelta     func(text string)
+	OnThinkingDelta func(text string)
 }
 
 type AgentRunner struct {
@@ -100,6 +102,16 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 		reminders := h.buildSystemReminders()
 		if len(reminders) > 0 {
 			slog.Debug("system reminders", "runner", h.id, "iter", iteration, "count", len(reminders), "reminders", reminders)
+		}
+		if h.hooks.OnTextDelta != nil {
+			h.agent.UpdateStreamCallback(h.hooks.OnTextDelta)
+		} else {
+			h.agent.UpdateStreamCallback(nil)
+		}
+		if h.hooks.OnThinkingDelta != nil {
+			h.agent.UpdateThinkingCallback(h.hooks.OnThinkingDelta)
+		} else {
+			h.agent.UpdateThinkingCallback(nil)
 		}
 		reasoningResult, err := h.agent.DoReasoning(ctx, inputs, reminders)
 		if err != nil {

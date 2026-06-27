@@ -191,10 +191,11 @@ func (r CompletionResponse) ToolCalls() []ContentBlock {
 type StreamEventType string
 
 const (
-	StreamEventStart StreamEventType = "start"
-	StreamEventDelta StreamEventType = "delta"
-	StreamEventStop  StreamEventType = "stop"
-	StreamEventError StreamEventType = "error"
+	StreamEventStart    StreamEventType = "start"
+	StreamEventDelta    StreamEventType = "delta"
+	StreamEventThinking StreamEventType = "thinking"
+	StreamEventStop     StreamEventType = "stop"
+	StreamEventError    StreamEventType = "error"
 )
 
 // StreamEvent represents a single event in a streaming completion response.

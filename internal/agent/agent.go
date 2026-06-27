@@ -21,8 +21,10 @@ type Agent struct {
 	systemPrompt string
 	history      *agentctx.Context
 
-	skillMap map[string]string
-	tools    []provider.ToolDefinition
+	skillMap         map[string]string
+	tools            []provider.ToolDefinition
+	streamCallback   func(text string)
+	thinkingCallback func(text string)
 }
 
 type AgentConfig struct {
@@ -70,6 +72,14 @@ func (a *Agent) UpdateOffloadFn(fn func(ctx context.Context, input string) (stri
 	a.history.UpdateOffloadFn(fn)
 }
 
+func (a *Agent) UpdateStreamCallback(fn func(text string)) {
+	a.streamCallback = fn
+}
+
+func (a *Agent) UpdateThinkingCallback(fn func(text string)) {
+	a.thinkingCallback = fn
+}
+
 func (a *Agent) UpdateToolDefinitions(tooldefs []provider.ToolDefinition) {
 	a.tools = tooldefs
 }
@@ -80,6 +90,42 @@ func replaceInput(inputs []string, idx int, replacement string) []string {
 	copy(out, inputs)
 	out[idx] = replacement
 	return out
+}
+
+func (a *Agent) doStreamingReasoning(ctx context.Context, req provider.CompletionRequest) (provider.CompletionResponse, error) {
+	req.Tools = a.tools
+	events := make(chan provider.StreamEvent)
+
+	var streamErr error
+	done := make(chan struct{})
+	go func() {
+		streamErr = a.model.SendStreamingMessage(ctx, req, events)
+		close(done)
+	}()
+
+	var resp provider.CompletionResponse
+	for event := range events {
+		switch event.Type {
+		case provider.StreamEventDelta:
+			a.streamCallback(event.Text)
+		case provider.StreamEventThinking:
+			if a.thinkingCallback != nil {
+				a.thinkingCallback(event.Text)
+			}
+		case provider.StreamEventStop:
+			if event.Response != nil {
+				resp = *event.Response
+			}
+		case provider.StreamEventError:
+			return provider.CompletionResponse{}, event.Err
+		}
+	}
+
+	<-done
+	if streamErr != nil {
+		return provider.CompletionResponse{}, streamErr
+	}
+	return resp, nil
 }
 
 func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminders []string) (runner.ReasoningResult, error) {
@@ -131,7 +177,12 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 	}
 
 	// get the LLM response
-	resp, err := a.model.SendMessageWithTools(ctx, req, a.tools)
+	var resp provider.CompletionResponse
+	if a.streamCallback != nil {
+		resp, err = a.doStreamingReasoning(ctx, req)
+	} else {
+		resp, err = a.model.SendMessageWithTools(ctx, req, a.tools)
+	}
 	if err != nil {
 		slog.Error("llm call failed", "model", model, "error", err, "messages", a.history.Len(), "stack", string(debug.Stack()))
 		return runner.ReasoningResult{}, fmt.Errorf("llm call (%s): %w", model, err)

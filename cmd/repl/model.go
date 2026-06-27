@@ -7,11 +7,13 @@ import (
 	"log/slog"
 	"runtime"
 	"strings"
+	"time"
 
 	"tenzing-agent/internal/harness"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
@@ -26,7 +28,8 @@ const (
 )
 
 const (
-	inputAreaHeight = 2
+	textareaHeight  = 3
+	inputAreaHeight = textareaHeight + 2 // textarea + separator + status line
 	maxQueryHistory = 100
 )
 
@@ -53,6 +56,14 @@ type metaMsg struct {
 	outputTokens int64
 }
 
+type textDeltaMsg struct {
+	text string
+}
+
+type thinkingDeltaMsg struct {
+	text string
+}
+
 type headerReadyMsg struct{}
 
 // --- Model ---
@@ -64,7 +75,7 @@ type historyEntry struct {
 
 type model struct {
 	state    state
-	input    textinput.Model
+	input    textarea.Model
 	viewport viewport.Model
 	spinner  spinner.Model
 	history  []historyEntry
@@ -78,20 +89,40 @@ type model struct {
 	totalInputTokens  int64
 	totalOutputTokens int64
 
+	streamingContent  string
+	streamingThinking string
+	statusText        string
+
 	agentHarness *harness.Harness
 	cancelFn     context.CancelFunc
 	modelName    string
 	cwd          string
 	toolCount    int
+
+	lastCtrlC time.Time
 }
 
 func newModel(h *harness.Harness, modelName, cwd string) model {
-	ti := textinput.New()
-	ti.Prompt = "> "
-	ti.Focus()
-	ti.CharLimit = 0
-	ti.PromptStyle = promptStyle
-	ti.Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	ta := textarea.New()
+	ta.SetHeight(textareaHeight)
+	ta.SetPromptFunc(2, func(lineIdx int) string {
+		if lineIdx == 0 {
+			return "> "
+		}
+		return "  "
+	})
+	ta.SetWidth(80)
+	ta.CharLimit = 0
+	ta.ShowLineNumbers = false
+	ta.FocusedStyle.Prompt = promptStyle
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.FocusedStyle.Base = lipgloss.NewStyle()
+	ta.BlurredStyle.Prompt = promptStyle.Faint(true)
+	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	ta.BlurredStyle.Base = lipgloss.NewStyle()
+	ta.EndOfBufferCharacter = ' '
+	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("alt+enter"))
+	ta.Focus()
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -101,7 +132,7 @@ func newModel(h *harness.Harness, modelName, cwd string) model {
 
 	return model{
 		state:        stateInput,
-		input:        ti,
+		input:        ta,
 		viewport:     vp,
 		spinner:      sp,
 		agentHarness: h,
@@ -117,7 +148,7 @@ func newModel(h *harness.Harness, modelName, cwd string) model {
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		tea.SetWindowTitle("tenzing repl"),
-		textinput.Blink,
+		textarea.Blink,
 		func() tea.Msg { return headerReadyMsg{} },
 	)
 }
@@ -131,7 +162,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.viewport.Width = msg.Width
 		m.viewport.Height = max(msg.Height-inputAreaHeight, 1)
-		m.input.Width = max(msg.Width-4, 10)
+		m.input.SetWidth(max(msg.Width, 10))
 		m.refreshViewport()
 		return m, nil
 
@@ -151,6 +182,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case toolStartMsg:
+		m.statusText = "⚙ " + msg.name
 		m.history = append(m.history, historyEntry{
 			role:    "tool_start",
 			content: msg.name,
@@ -159,6 +191,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case toolCallMsg:
+		m.statusText = "Thinking…"
 		m.history = append(m.history, historyEntry{
 			role:    "tool",
 			content: fmt.Sprintf("%s %s", msg.name, truncate(msg.output, 200)),
@@ -171,9 +204,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.totalOutputTokens += msg.outputTokens
 		return m, nil
 
+	case thinkingDeltaMsg:
+		m.statusText = "Thinking…"
+		m.streamingThinking += msg.text
+		m.updateThinkingEntry()
+		return m, nil
+
+	case textDeltaMsg:
+		m.statusText = "Streaming…"
+		m.finalizeThinking()
+		m.streamingContent += msg.text
+		m.updateStreamingEntry()
+		return m, nil
+
 	case agentResultMsg:
 		m.state = stateInput
 		m.cancelFn = nil
+		m.statusText = ""
+		m.finalizeThinking()
+		// Finalize any streaming entry
+		if m.streamingContent != "" {
+			last := len(m.history) - 1
+			if last >= 0 && m.history[last].role == "streaming" {
+				m.history[last] = historyEntry{role: "assistant", content: m.streamingContent}
+			}
+			m.streamingContent = ""
+		}
 		if msg.err != nil {
 			if errors.Is(msg.err, context.Canceled) {
 				m.history = append(m.history, historyEntry{role: "system", content: "interrupted"})
@@ -181,14 +237,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.history = append(m.history, historyEntry{role: "error", content: msg.err.Error()})
 			}
 		} else if msg.answer != "" {
-			m.history = append(m.history, historyEntry{role: "assistant", content: msg.answer})
+			// Only add if we didn't already have streamed content converted above
+			alreadyStreamed := false
+			if last := len(m.history) - 1; last >= 0 && m.history[last].role == "assistant" {
+				alreadyStreamed = true
+			}
+			if !alreadyStreamed {
+				m.history = append(m.history, historyEntry{role: "assistant", content: msg.answer})
+			}
 		}
 		m.refreshViewport()
 		m.input.Focus()
-		return m, textinput.Blink
+		return m, textarea.Blink
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+
+	case tea.MouseMsg:
+		m.viewport, cmd = m.viewport.Update(msg)
+		return m, cmd
 	}
 
 	return m, nil
@@ -197,11 +264,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyCtrlC:
+		now := time.Now()
+		if now.Sub(m.lastCtrlC) < time.Second {
+			return m, tea.Quit
+		}
+		m.lastCtrlC = now
 		if m.state == stateRunning && m.cancelFn != nil {
 			m.cancelFn()
 			return m, nil
 		}
-		return m, tea.Quit
+		m.input.Reset()
+		return m, nil
 
 	case tea.KeyCtrlD:
 		if m.state == stateInput && m.input.Value() == "" {
@@ -242,18 +315,26 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		m.history = append(m.history, historyEntry{role: "user", content: query})
 		m.state = stateRunning
+		m.statusText = "Thinking…"
 		m.input.Blur()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		m.cancelFn = cancel
 
+		m.streamingContent = ""
+		m.streamingThinking = ""
 		m.refreshViewport()
 		return m, tea.Batch(m.runAgent(ctx, query), m.spinner.Tick)
 
 	case tea.KeyUp:
 		if m.state == stateInput {
-			m.navigateHistoryUp()
-			return m, nil
+			if m.input.Line() == 0 {
+				m.navigateHistoryUp()
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
 		}
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)
@@ -261,8 +342,13 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyDown:
 		if m.state == stateInput {
-			m.navigateHistoryDown()
-			return m, nil
+			if m.input.Line() >= m.input.LineCount()-1 {
+				m.navigateHistoryDown()
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
 		}
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)
@@ -298,7 +384,7 @@ func (m *model) navigateHistoryUp() {
 		return
 	}
 	m.input.SetValue(m.queryHistory[m.historyIdx])
-	m.input.SetCursor(len(m.queryHistory[m.historyIdx]))
+	m.input.CursorEnd()
 }
 
 func (m *model) navigateHistoryDown() {
@@ -308,11 +394,11 @@ func (m *model) navigateHistoryDown() {
 	if m.historyIdx > 0 {
 		m.historyIdx--
 		m.input.SetValue(m.queryHistory[m.historyIdx])
-		m.input.SetCursor(len(m.queryHistory[m.historyIdx]))
+		m.input.CursorEnd()
 	} else {
 		m.historyIdx = -1
 		m.input.SetValue(m.savedInput)
-		m.input.SetCursor(len(m.savedInput))
+		m.input.CursorEnd()
 	}
 }
 
@@ -377,9 +463,43 @@ func (m model) runAgent(ctx context.Context, query string) tea.Cmd {
 	}
 }
 
+func (m *model) updateStreamingEntry() {
+	last := len(m.history) - 1
+	if last >= 0 && m.history[last].role == "streaming" {
+		m.history[last] = historyEntry{role: "streaming", content: m.streamingContent}
+	} else {
+		m.history = append(m.history, historyEntry{role: "streaming", content: m.streamingContent})
+	}
+	m.refreshViewport()
+}
+
+func (m *model) updateThinkingEntry() {
+	last := len(m.history) - 1
+	if last >= 0 && m.history[last].role == "thinking" {
+		m.history[last] = historyEntry{role: "thinking", content: m.streamingThinking}
+	} else {
+		m.history = append(m.history, historyEntry{role: "thinking", content: m.streamingThinking})
+	}
+	m.refreshViewport()
+}
+
+func (m *model) finalizeThinking() {
+	if m.streamingThinking == "" {
+		return
+	}
+	last := len(m.history) - 1
+	if last >= 0 && m.history[last].role == "thinking" {
+		m.history[last] = historyEntry{role: "thinking_done", content: m.streamingThinking}
+	}
+	m.streamingThinking = ""
+}
+
 func (m *model) refreshViewport() {
+	atBottom := m.viewport.AtBottom()
 	m.viewport.SetContent(m.renderHistory())
-	m.viewport.GotoBottom()
+	if atBottom {
+		m.viewport.GotoBottom()
+	}
 }
 
 // --- View ---
@@ -389,9 +509,12 @@ var (
 	userStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Bold(true)
 	toolStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Faint(true)
 	toolStartStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	errorStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)
-	systemStyle    = lipgloss.NewStyle().Faint(true)
-	separatorStyle = lipgloss.NewStyle().Faint(true)
+	assistantStyle  = lipgloss.NewStyle()
+	thinkingStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	errorStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)
+	systemStyle     = lipgloss.NewStyle().Faint(true)
+	statusLineStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
+	separatorStyle  = lipgloss.NewStyle().Faint(true)
 	headerStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Bold(true)
 	headerDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 )
@@ -415,11 +538,11 @@ func (m model) View() string {
 	b.WriteString(m.renderSeparator())
 	b.WriteString("\n")
 
-	if m.state == stateRunning {
-		b.WriteString(fmt.Sprintf("  %s working...", m.spinner.View()))
-	} else {
-		b.WriteString(m.input.View())
+	if m.statusText != "" {
+		b.WriteString(statusLineStyle.Render(fmt.Sprintf("  %s %s", m.spinner.View(), m.statusText)))
 	}
+	b.WriteString("\n")
+	b.WriteString(m.input.View())
 
 	return b.String()
 }
@@ -465,6 +588,12 @@ func (m model) renderHistory() string {
 		case "assistant":
 			b.WriteString(renderMarkdown(entry.content, w))
 			b.WriteString("\n")
+		case "streaming":
+			b.WriteString(assistantStyle.Width(w).Render(entry.content) + "\n")
+		case "thinking":
+			b.WriteString(thinkingStyle.Width(w).Render("💭 "+entry.content) + "\n")
+		case "thinking_done":
+			b.WriteString(thinkingStyle.Width(w).Render("💭 "+entry.content) + "\n")
 		case "tool_start":
 			b.WriteString(toolStartStyle.Render("  ⚙ "+entry.content) + "\n")
 		case "tool":

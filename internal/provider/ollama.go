@@ -219,6 +219,7 @@ func (o *Ollama) SendStreamingMessage(ctx context.Context, req CompletionRequest
 
 	var started bool
 	var accumulatedToolCalls []ollamaToolCall
+	thinkParser := newThinkBlockParser(events)
 	decoder := json.NewDecoder(resp.Body)
 	for decoder.More() {
 		var chunk ollamaChatResponse
@@ -233,10 +234,7 @@ func (o *Ollama) SendStreamingMessage(ctx context.Context, req CompletionRequest
 		}
 
 		if chunk.Message.Content != "" {
-			events <- StreamEvent{
-				Type: StreamEventDelta,
-				Text: chunk.Message.Content,
-			}
+			thinkParser.Feed(chunk.Message.Content)
 		}
 
 		if len(chunk.Message.ToolCalls) > 0 {
@@ -253,6 +251,7 @@ func (o *Ollama) SendStreamingMessage(ctx context.Context, req CompletionRequest
 			o.logf("ollama: done chunk content=%q tool_calls=%d done_reason=%s eval_count=%d",
 				chunk.Message.Content, len(chunk.Message.ToolCalls), chunk.DoneReason, chunk.EvalCount)
 			res := fromOllamaResponse(chunk, o.log)
+			thinkParser.Flush()
 			events <- StreamEvent{
 				Type:     StreamEventStop,
 				Response: &res,
@@ -260,6 +259,7 @@ func (o *Ollama) SendStreamingMessage(ctx context.Context, req CompletionRequest
 		}
 	}
 
+	thinkParser.Flush()
 	return nil
 }
 
@@ -496,6 +496,89 @@ func toOllamaTools(tools []ToolDefinition, log Logger) ([]ollamaTool, error) {
 // Exported so callers accumulating streaming text can also strip think blocks.
 func StripThinkBlocks(s string) string {
 	return strings.TrimSpace(thinkBlockRe.ReplaceAllString(s, ""))
+}
+
+type thinkBlockParser struct {
+	events  chan<- StreamEvent
+	inThink bool
+	buf     strings.Builder
+}
+
+const thinkOpen = "<think>"
+const thinkClose = "</think>"
+
+func newThinkBlockParser(events chan<- StreamEvent) *thinkBlockParser {
+	return &thinkBlockParser{events: events}
+}
+
+func (p *thinkBlockParser) Feed(text string) {
+	if p.buf.Len() > 0 {
+		text = p.buf.String() + text
+		p.buf.Reset()
+	}
+	for len(text) > 0 {
+		if p.inThink {
+			idx := strings.Index(text, thinkClose)
+			if idx >= 0 {
+				if idx > 0 {
+					p.events <- StreamEvent{Type: StreamEventThinking, Text: text[:idx]}
+				}
+				p.inThink = false
+				text = text[idx+len(thinkClose):]
+			} else {
+				n := p.matchTagPrefix(text, thinkClose)
+				if n > 0 {
+					if len(text)-n > 0 {
+						p.events <- StreamEvent{Type: StreamEventThinking, Text: text[:len(text)-n]}
+					}
+					p.buf.WriteString(text[len(text)-n:])
+				} else {
+					p.events <- StreamEvent{Type: StreamEventThinking, Text: text}
+				}
+				return
+			}
+		} else {
+			idx := strings.Index(text, thinkOpen)
+			if idx >= 0 {
+				if idx > 0 {
+					p.events <- StreamEvent{Type: StreamEventDelta, Text: text[:idx]}
+				}
+				p.inThink = true
+				text = text[idx+len(thinkOpen):]
+			} else {
+				n := p.matchTagPrefix(text, thinkOpen)
+				if n > 0 {
+					if len(text)-n > 0 {
+						p.events <- StreamEvent{Type: StreamEventDelta, Text: text[:len(text)-n]}
+					}
+					p.buf.WriteString(text[len(text)-n:])
+				} else {
+					p.events <- StreamEvent{Type: StreamEventDelta, Text: text}
+				}
+				return
+			}
+		}
+	}
+}
+
+func (p *thinkBlockParser) Flush() {
+	if p.buf.Len() > 0 {
+		evType := StreamEventDelta
+		if p.inThink {
+			evType = StreamEventThinking
+		}
+		p.events <- StreamEvent{Type: evType, Text: p.buf.String()}
+		p.buf.Reset()
+	}
+}
+
+func (p *thinkBlockParser) matchTagPrefix(text, tag string) int {
+	for i := 1; i < len(tag) && i <= len(text); i++ {
+		if text[len(text)-i:] == tag[:i] {
+			return i
+		}
+	}
+	return 0
 }
 
 func fromOllamaResponse(res ollamaChatResponse, log Logger) CompletionResponse {

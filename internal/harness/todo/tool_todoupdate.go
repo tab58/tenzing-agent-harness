@@ -2,8 +2,9 @@ package todo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"strconv"
+
 	"tenzing-agent/internal/harness/tools/tooldef"
 )
 
@@ -34,16 +35,18 @@ func (t *TodoUpdateTool) Schema() tooldef.Schema {
 }
 
 func (t *TodoUpdateTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
-	if len(exctx.Arguments) < 2 {
+	if len(exctx.Arguments) == 0 || exctx.Arguments[0] == "" {
 		return tooldef.NewToolResult("index and status arguments are required", tooldef.WithError()), nil
 	}
-
-	index, err := strconv.Atoi(exctx.Arguments[0])
-	if err != nil {
-		return tooldef.NewToolResult(fmt.Sprintf("invalid index: %v", err), tooldef.WithError()), nil
+	var input struct {
+		Index  int    `json:"index"`
+		Status string `json:"status"`
 	}
-
-	status := exctx.Arguments[1]
+	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &input); err != nil {
+		return tooldef.NewToolResult(fmt.Sprintf("invalid input JSON: %v", err), tooldef.WithError()), nil
+	}
+	index := input.Index
+	status := input.Status
 	if status == "" {
 		return tooldef.NewToolResult("status cannot be empty", tooldef.WithError()), nil
 	}

@@ -53,6 +53,12 @@ func main() {
 		OnToolCall: func(name, input, output string) {
 			prog.Send(toolCallMsg{name: name, input: input, output: output})
 		},
+		OnTextDelta: func(text string) {
+			prog.Send(textDeltaMsg{text: text})
+		},
+		OnThinkingDelta: func(text string) {
+			prog.Send(thinkingDeltaMsg{text: text})
+		},
 		OnMeta: func(meta runner.ResponseMeta) {
 			prog.Send(metaMsg{
 				inputTokens:  meta.InputTokens,
@@ -84,7 +90,7 @@ func main() {
 	}
 
 	m := newModel(agentHarness, llm.GetCurrentModel(), cwd)
-	prog = tea.NewProgram(m, tea.WithAltScreen())
+	prog = tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := prog.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
