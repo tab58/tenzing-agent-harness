@@ -49,5 +49,6 @@ __debug_bin*
 .agent_memory.md
 
 # AI ignores
+.superpowers/
 docs/*
 

@@ -431,6 +431,42 @@ Children don't get: `TodoFile`, `TaskGraph`, `SkillsRegistry`, or `Hooks`. Plann
 
 Wired via `HarnessConfig.SubAgentMaxDepth` (0 = disabled) and `HarnessConfig.SubAgentMaxIter` (default 30 per child). Requires `HarnessConfig.SubAgentBuilder` — an `AgentBuilder` function injected by the caller to avoid import cycles between `harness` and `agent` packages.
 
+## Event System
+
+Typed event bus providing full observability of the agent loop. Events fire at FSM state transitions and business-level boundaries. Package: `internal/harness/events/`.
+
+### Architecture
+
+`EventBus` fans out events to buffered subscriber channels. Async dispatch — if a subscriber's buffer is full, the event is dropped (logged via `slog.Warn`). Thread-safe via `sync.RWMutex`.
+
+Layers emit via the narrow `Emitter` interface (`Emit(Event)`), never importing `EventBus` directly. The Harness creates the bus and passes it down.
+
+### Event Types (21)
+
+Session: `session.started`, `session.ended`. Turn: `turn.started`, `turn.completed`. FSM: `loop.started`, `loop.stopped`, `reasoning.started`, `reasoning.finished`, `tool_execution.started`, `tool_execution.finished`. Business: `llm.response`, `tool.succeeded`, `tool.failed`, `tool.progress`, `context.compressing` (reserved), `context.compressed`, `error`. Subagent: `subagent.started`, `subagent.stopped`. Task: `task.created`, `task.completed`.
+
+All events embed `BaseEvent` (type, timestamp, runner ID) and are JSON-serializable.
+
+### Subscribing
+
+Programmatic: `bus.Subscribe(bufSize)` returns `<-chan Event`. Type-switch on concrete event structs.
+
+Hooks: `events.Hooks` struct has one typed `func(XxxEvent)` field per event type (all optional). `NewHooksAdapter(bus, hooks)` subscribes and dispatches in a goroutine.
+
+### Emit Sites
+
+Runner (`agent_runner.go`): emits turn, loop, reasoning, tool execution, LLM response, compression, and error events. Harness (`harness.go`): emits session events, bridges RLM progress to `ToolProgressEvent`. Subagent (`subagent_factory.go`): emits subagent lifecycle events. TaskGraph (`graph.go`): emits task lifecycle events.
+
+### Streaming
+
+`OnTextDelta` and `OnThinkingDelta` remain direct Agent callbacks, not events. Token-level streaming is out of scope for the event system.
+
+### Wiring
+
+`HarnessConfig.EventBus` (optional — created internally if nil), `HarnessConfig.EventHooks` (optional typed hooks). `Harness.EventBus()` accessor for programmatic subscription.
+
+Design spec: `docs/superpowers/specs/2026-06-26-event-system-design.md`.
+
 ## Provider Layer
 
 ### LLM Interface

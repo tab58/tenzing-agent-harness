@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/tools/tooldef"
 )
 
@@ -33,14 +34,19 @@ type Task struct {
 }
 
 type TaskGraph struct {
-	file string
-	mu   sync.Mutex
+	file    string
+	mu      sync.Mutex
+	emitter events.Emitter
 }
 
 func NewTaskGraph(cwd string) *TaskGraph {
 	return &TaskGraph{
 		file: filepath.Join(cwd, TasksFileName),
 	}
+}
+
+func (g *TaskGraph) SetEmitter(e events.Emitter) {
+	g.emitter = e
 }
 
 func (g *TaskGraph) GetTools() []tooldef.Definition {
@@ -87,6 +93,14 @@ func (g *TaskGraph) CreateTask(desc string, dependsOn []string, priority TaskPri
 	tasks = append(tasks, task)
 	if err := g.save(tasks); err != nil {
 		return "", err
+	}
+
+	if g.emitter != nil {
+		g.emitter.Emit(events.TaskCreatedEvent{
+			BaseEvent:   events.NewBaseEvent(events.EventTaskCreated, ""),
+			TaskID:      task.ID,
+			Description: desc,
+		})
 	}
 
 	data, _ := json.Marshal(task)
@@ -145,6 +159,7 @@ func (g *TaskGraph) UpdateTask(taskID string, status string, result string) erro
 	}
 
 	found := false
+	var foundID string
 	updated := make([]Task, len(tasks))
 	for i, t := range tasks {
 		if t.ID == taskID || strings.HasPrefix(t.ID, taskID) {
@@ -157,6 +172,7 @@ func (g *TaskGraph) UpdateTask(taskID string, status string, result string) erro
 				Result:      result,
 			}
 			found = true
+			foundID = t.ID
 		} else {
 			updated[i] = t
 		}
@@ -165,7 +181,16 @@ func (g *TaskGraph) UpdateTask(taskID string, status string, result string) erro
 	if !found {
 		return fmt.Errorf("task %q not found", taskID)
 	}
-	return g.save(updated)
+	if err := g.save(updated); err != nil {
+		return err
+	}
+	if g.emitter != nil && status == "done" {
+		g.emitter.Emit(events.TaskCompletedEvent{
+			BaseEvent: events.NewBaseEvent(events.EventTaskCompleted, ""),
+			TaskID:    foundID,
+		})
+	}
+	return nil
 }
 
 // ListTasks is necessary for the TaskGraph tools

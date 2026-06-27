@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/rlm"
 	"tenzing-agent/internal/harness/runner"
 	"tenzing-agent/internal/harness/skills"
@@ -28,6 +29,7 @@ type SubAgentFactoryConfig struct {
 	MaxDepth      int
 	MaxIterations int
 	Cwd           string
+	Emitter       events.Emitter
 }
 
 type SubAgentFactory struct {
@@ -38,6 +40,7 @@ type SubAgentFactory struct {
 	currentDepth  int
 	maxIterations int
 	cwd           string
+	emitter       events.Emitter
 }
 
 func NewSubAgentFactory(cfg SubAgentFactoryConfig) *SubAgentFactory {
@@ -61,6 +64,7 @@ func NewSubAgentFactory(cfg SubAgentFactoryConfig) *SubAgentFactory {
 		currentDepth:  0,
 		maxIterations: maxIter,
 		cwd:           cfg.Cwd,
+		emitter:       cfg.Emitter,
 	}
 }
 
@@ -93,6 +97,14 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 		return "", fmt.Errorf("create child runner: %w", err)
 	}
 
+	if f.emitter != nil {
+		f.emitter.Emit(events.SubagentStartedEvent{
+			BaseEvent: events.NewBaseEvent(events.EventSubagentStarted, childRunner.ID()),
+			AgentID:   childRunner.ID(),
+			Prompt:    task,
+		})
+	}
+
 	input := task
 	if taskContext != "" {
 		input = task + "\n\nContext:\n" + taskContext
@@ -102,10 +114,24 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 	duration := time.Since(start)
 	if err != nil {
 		slog.Error("[subagent] failed", "depth", childDepth, "duration", duration.Round(time.Millisecond), "error", err)
+		if f.emitter != nil {
+			f.emitter.Emit(events.SubagentStoppedEvent{
+				BaseEvent: events.NewBaseEvent(events.EventSubagentStopped, childRunner.ID()),
+				AgentID:   childRunner.ID(),
+				Duration:  duration.Round(time.Millisecond),
+			})
+		}
 		return "", err
 	}
 
 	slog.Info("[subagent] completed", "depth", childDepth, "duration", duration.Round(time.Millisecond), "answer_len", len(result))
+	if f.emitter != nil {
+		f.emitter.Emit(events.SubagentStoppedEvent{
+			BaseEvent: events.NewBaseEvent(events.EventSubagentStopped, childRunner.ID()),
+			AgentID:   childRunner.ID(),
+			Duration:  duration.Round(time.Millisecond),
+		})
+	}
 	return result, nil
 }
 
@@ -132,6 +158,7 @@ func (f *SubAgentFactory) buildChildToolRegistry() *tools.Registry {
 			currentDepth:  childDepth,
 			maxIterations: f.maxIterations,
 			cwd:           f.cwd,
+			emitter:       f.emitter,
 		}
 		registry.Register(NewSpawnAgentTool(childFactory))
 	}

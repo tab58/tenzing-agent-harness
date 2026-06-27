@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/runner"
 	"tenzing-agent/internal/provider"
 )
@@ -91,5 +92,62 @@ func TestHarnessNoSpawnAgentWhenDisabled(t *testing.T) {
 		if def.Name() == "spawn_agent" {
 			t.Fatal("spawn_agent tool should not be registered when SubAgentMaxDepth is 0")
 		}
+	}
+}
+
+func TestHarnessCreatesEventBus(t *testing.T) {
+	h, err := New(HarnessConfig{
+		Agent:            &stubAgent{},
+		RLMModel:         &stubLLM{},
+		MainSystemPrompt: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.EventBus() == nil {
+		t.Fatal("EventBus() should not be nil")
+	}
+}
+
+func TestHarnessEmitsTurnEventsOnRunTurn(t *testing.T) {
+	h, err := New(HarnessConfig{
+		Agent:            &stubAgent{},
+		RLMModel:         &stubLLM{},
+		MainSystemPrompt: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ch := h.EventBus().Subscribe(50)
+
+	_, err = h.RunTurn(context.Background(), "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var types []events.EventType
+	for {
+		select {
+		case ev := <-ch:
+			types = append(types, ev.Type())
+		default:
+			goto check
+		}
+	}
+check:
+	hasType := func(et events.EventType) bool {
+		for _, t := range types {
+			if t == et {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasType(events.EventTurnStarted) {
+		t.Error("missing TurnStarted event")
+	}
+	if !hasType(events.EventTurnCompleted) {
+		t.Error("missing TurnCompleted event")
 	}
 }

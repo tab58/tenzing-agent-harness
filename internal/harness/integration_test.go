@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/runner"
 	"tenzing-agent/internal/harness/skills"
 	"tenzing-agent/internal/harness/snapshot"
@@ -643,21 +644,17 @@ func TestIntegration_ToolHookCalled(t *testing.T) {
 		finalStep("done"),
 	)
 
-	var hookCalls []string
+	collector := &testEventCollector{}
 	registry := tools.NewRegistry()
 	registry.Register(taskgraph.NewTaskCreateTool(tg))
 
 	runner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
 		Agent:          agent,
+		Emitter:        collector,
 		ToolRegistry:   registry,
 		SkillsRegistry: skills.NewRegistry(),
 		TodoFile:       todo.NewTodoItemFile(workDir),
 		SystemPrompt:   "test",
-		Hooks: runner.Hooks{
-			OnToolCall: func(name, input, output string) {
-				hookCalls = append(hookCalls, name)
-			},
-		},
 	})
 	if err != nil {
 		t.Fatalf("NewAgentRunner error: %v", err)
@@ -668,7 +665,10 @@ func TestIntegration_ToolHookCalled(t *testing.T) {
 		t.Fatalf("RunLoop error: %v", err)
 	}
 
-	if len(hookCalls) != 1 || hookCalls[0] != "task_create" {
-		t.Errorf("hook calls = %v, want [task_create]", hookCalls)
+	succeeded := collector.byType(events.EventToolSucceeded)
+	if len(succeeded) != 1 {
+		t.Errorf("expected 1 ToolSucceeded event, got %d", len(succeeded))
+	} else if ev, ok := succeeded[0].(events.ToolSucceededEvent); !ok || ev.ToolName != "task_create" {
+		t.Errorf("expected ToolSucceeded for task_create, got %v", succeeded[0])
 	}
 }

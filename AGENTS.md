@@ -32,8 +32,8 @@ Three layers, strict dependency direction: **Harness → AgentRunner → Agent**
 
 | Layer                                                          | Knows about                              | Does NOT know about                   |
 | -------------------------------------------------------------- | ---------------------------------------- | ------------------------------------- |
-| Harness (`harness.go`, `agent.go`, `defaults.go`)              | AgentRunner, config wiring, session REPL | LLM, tool implementations             |
-| AgentRunner (`agent_runner.go`, `loop_fsm.go`)                 | Agent interface, tool registry, FSM      | CLI, sessions, users                  |
+| Harness (`harness.go`, `agent.go`, `defaults.go`)              | AgentRunner, EventBus, config wiring, session REPL | LLM, tool implementations             |
+| AgentRunner (`agent_runner.go`, `loop_fsm.go`)                 | Agent interface, tool registry, FSM, Emitter interface | CLI, sessions, users                  |
 | Agent (`internal/agent/agent.go`, `internal/agent/context/`)   | LLM provider, message types, compression | Filesystem, processes, tools directly |
 
 **Never import upward.** Tools don't import harness. Agent doesn't import runner. If you need cross-layer communication, use an interface injected via config.
@@ -79,7 +79,8 @@ All non-invariant behavior flows through `AgentRunnerConfig`. To change runner b
 - Swap the ToolRegistry (different tool set)
 - Swap the SystemPrompt
 - Swap the ReminderBuilder
-- Swap the Hooks
+- Provide an `events.Emitter` to receive structured events from the loop
+- Provide `OnTextDelta`/`OnThinkingDelta` callbacks for streaming text
 
 Don't modify the loop. Don't add fields to the runner struct. Configure via `AgentRunnerConfig`.
 
@@ -104,6 +105,7 @@ The FSM is per-runner instance — subagents and concurrent loops don't share st
 | Test files               | Same directory as source, `*_test.go`                 |
 | Shared test helpers      | `**/testutil_test.go`                                 |
 | Sub-agent system         | `internal/harness/subagent/`                          |
+| Event system             | `internal/harness/events/`                            |
 | Embedded assets          | Adjacent to consumer (e.g. `rlm/bootstrap.py`)       |
 
 ## Testing

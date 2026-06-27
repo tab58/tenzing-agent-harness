@@ -10,10 +10,35 @@ import (
 	"sync"
 	"testing"
 
+	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/runner"
 	"tenzing-agent/internal/harness/tools/tooldef"
 	"tenzing-agent/internal/provider"
 )
+
+// testEventCollector captures emitted events for assertion in tests.
+type testEventCollector struct {
+	mu     sync.Mutex
+	evts   []events.Event
+}
+
+func (c *testEventCollector) Emit(ev events.Event) {
+	c.mu.Lock()
+	c.evts = append(c.evts, ev)
+	c.mu.Unlock()
+}
+
+func (c *testEventCollector) byType(t events.EventType) []events.Event {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []events.Event
+	for _, ev := range c.evts {
+		if ev.Type() == t {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
 
 // ScriptedAgent replays a sequence of ReasoningResults in order.
 // Each DoReasoning call returns the next scripted result.

@@ -45,8 +45,6 @@ func main() {
 		Model:  "glm-5.2",
 	})
 
-	hooks := runner.Hooks{}
-
 	mainAgent, err := agent.New(agent.AgentConfig{
 		Model: llm,
 	})
@@ -59,7 +57,6 @@ func main() {
 	agentHarness, err := harness.New(harness.HarnessConfig{
 		Cwd:              cwd,
 		Agent:            mainAgent,
-		Hooks:            hooks,
 		MainSystemPrompt: prompts.DefaultSystemPrompt(cwd) + "\n\n" + prompts.RLMGuidance(),
 		RLMModel:         llm,
 	})

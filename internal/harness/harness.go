@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
+	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/prompts"
 	"tenzing-agent/internal/harness/rlm"
 	"tenzing-agent/internal/harness/runner"
@@ -27,12 +29,20 @@ type Harness struct {
 	toolRegistry    *tools.Registry
 	skillRegistry   *skills.Registry
 	todoFile        *todo.TodoFile
-	hooks           runner.Hooks
+	eventBus        *events.EventBus
+}
+
+// EventBus returns the harness event bus. It is always non-nil.
+func (h *Harness) EventBus() *events.EventBus {
+	return h.eventBus
 }
 
 type HarnessConfig struct {
 	Agent            runner.Agent
-	Hooks            runner.Hooks
+	OnTextDelta      func(string)
+	OnThinkingDelta  func(string)
+	EventBus         *events.EventBus
+	EventHooks       events.Hooks
 	Cwd              string
 	MainSystemPrompt string
 	ExtraTools       []tooldef.Definition
@@ -42,6 +52,31 @@ type HarnessConfig struct {
 	SubAgentMaxDepth int
 	SubAgentMaxIter  int
 	SubAgentBuilder  runner.AgentBuilder
+}
+
+// hooksEmpty reports whether no hook callbacks are set in h.
+func hooksEmpty(h events.Hooks) bool {
+	return h.OnSessionStarted == nil &&
+		h.OnSessionEnded == nil &&
+		h.OnTurnStarted == nil &&
+		h.OnTurnCompleted == nil &&
+		h.OnLoopStarted == nil &&
+		h.OnLoopStopped == nil &&
+		h.OnReasoningStarted == nil &&
+		h.OnReasoningFinished == nil &&
+		h.OnToolExecutionStarted == nil &&
+		h.OnToolExecutionFinished == nil &&
+		h.OnLLMResponse == nil &&
+		h.OnToolSucceeded == nil &&
+		h.OnToolFailed == nil &&
+		h.OnToolProgress == nil &&
+		h.OnContextCompressing == nil &&
+		h.OnContextCompressed == nil &&
+		h.OnError == nil &&
+		h.OnSubagentStarted == nil &&
+		h.OnSubagentStopped == nil &&
+		h.OnTaskCreated == nil &&
+		h.OnTaskCompleted == nil
 }
 
 func New(cfg HarnessConfig) (*Harness, error) {
@@ -59,9 +94,18 @@ func New(cfg HarnessConfig) (*Harness, error) {
 		mainSystemPrompt = prompts.DefaultSystemPrompt(cwd) + "\n\n" + prompts.RLMGuidance()
 	}
 
+	bus := cfg.EventBus
+	if bus == nil {
+		bus = events.NewEventBus()
+	}
+	if !hooksEmpty(cfg.EventHooks) {
+		events.NewHooksAdapter(bus, cfg.EventHooks)
+	}
+
 	todoFile := todo.NewTodoItemFile(cwd)
 
 	taskGraph := taskgraph.NewTaskGraph(cwd)
+	taskGraph.SetEmitter(bus)
 
 	skillsRegistry := skills.NewRegistry()
 	skillsRegistry.RegisterSkillDir("~/.claude/skills")
@@ -69,17 +113,22 @@ func New(cfg HarnessConfig) (*Harness, error) {
 		skillsRegistry.RegisterSkillDir(skillDir)
 	}
 
-	var rlmProgressFn func(rlm.ProgressEvent)
-	if cfg.Hooks.OnToolProgress != nil {
-		hook := cfg.Hooks.OnToolProgress
-		rlmProgressFn = func(ev rlm.ProgressEvent) {
-			detail := ev.Output
-			if ev.Phase == "repl_exec" {
-				detail = ev.CodeBlock
-			}
-			hook("rlm", ev.Phase, detail)
+	rlmProgressFn := func(ev rlm.ProgressEvent) {
+		detail := ev.Output
+		if ev.Phase == "repl_exec" {
+			detail = ev.CodeBlock
 		}
+		bus.Emit(events.ToolProgressEvent{
+			BaseEvent: events.NewBaseEvent(events.EventToolProgress, ""),
+			ToolName:  "rlm",
+			Phase:     ev.Phase,
+			Detail:    detail,
+			Iteration: ev.Iteration,
+			TokensIn:  ev.TokensIn,
+			TokensOut: ev.TokensOut,
+		})
 	}
+
 	rlmEngine, err := rlm.NewEngine(rlm.EngineConfig{
 		NewFetcher: rlm.NewLLMFetcherFactory(cfg.RLMModel),
 		Querier:    rlm.NewLLMQuerier(cfg.RLMModel),
@@ -109,6 +158,7 @@ func New(cfg HarnessConfig) (*Harness, error) {
 			MaxDepth:      cfg.SubAgentMaxDepth,
 			MaxIterations: cfg.SubAgentMaxIter,
 			Cwd:           cwd,
+			Emitter:       bus,
 		})
 		toolRegistry.Register(subagent.NewSpawnAgentTool(factory))
 	}
@@ -116,8 +166,6 @@ func New(cfg HarnessConfig) (*Harness, error) {
 	for _, tool := range cfg.ExtraTools {
 		toolRegistry.Register(tool)
 	}
-
-	hooks := cfg.Hooks
 
 	agent := cfg.Agent
 	if agent == nil {
@@ -127,13 +175,15 @@ func New(cfg HarnessConfig) (*Harness, error) {
 	agent.UpdateOffloadFn(rlmEngine.Run)
 
 	mainAgentRunner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
-		ToolRegistry:   toolRegistry,
-		SkillsRegistry: skillsRegistry,
-		TodoFile:       todoFile,
-		TaskGraph:      taskGraph,
-		Agent:          agent,
-		Hooks:          hooks,
-		SystemPrompt:   mainSystemPrompt,
+		ToolRegistry:    toolRegistry,
+		SkillsRegistry:  skillsRegistry,
+		TodoFile:        todoFile,
+		TaskGraph:       taskGraph,
+		Agent:           agent,
+		Emitter:         bus,
+		OnTextDelta:     cfg.OnTextDelta,
+		OnThinkingDelta: cfg.OnThinkingDelta,
+		SystemPrompt:    mainSystemPrompt,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("unable to initialize runner: %w", err)
@@ -144,7 +194,7 @@ func New(cfg HarnessConfig) (*Harness, error) {
 		toolRegistry:    toolRegistry,
 		skillRegistry:   skillsRegistry,
 		todoFile:        todoFile,
-		hooks:           cfg.Hooks,
+		eventBus:        bus,
 	}, nil
 }
 
@@ -161,6 +211,19 @@ func (h *Harness) RunTurn(ctx context.Context, query string) (string, error) {
 }
 
 func (h *Harness) RunSession(ctx context.Context, in io.Reader, out io.Writer) error {
+	sessionStart := time.Now()
+	turnCount := 0
+	h.eventBus.Emit(events.SessionStartedEvent{
+		BaseEvent: events.NewBaseEvent(events.EventSessionStarted, ""),
+	})
+	defer func() {
+		h.eventBus.Emit(events.SessionEndedEvent{
+			BaseEvent: events.NewBaseEvent(events.EventSessionEnded, ""),
+			TurnCount: turnCount,
+			Duration:  time.Since(sessionStart).Round(time.Millisecond),
+		})
+	}()
+
 	scanner := bufio.NewScanner(in)
 
 	for {
@@ -184,6 +247,7 @@ func (h *Harness) RunSession(ctx context.Context, in io.Reader, out io.Writer) e
 		if err != nil {
 			return fmt.Errorf("agent loop error: %w", err)
 		}
+		turnCount++
 		slog.Info("user output", "len", len(answer))
 		fmt.Fprint(out, answer)
 	}
