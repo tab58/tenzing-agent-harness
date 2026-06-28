@@ -32,7 +32,7 @@ Provider-agnostic via canonical types (`Message`, `ContentBlock`, `CompletionReq
 - **Tool system** — bash, read, write, edit, grep, glob, revert (file snapshots)
 - **Skill system** — lazy-loaded domain knowledge via YAML-frontmatter Markdown files
 - **Subagents** — spawn isolated agent loops with fresh context; only the final summary returns to the parent
-- **Task graph** — persistent, dependency-aware task board (`.agent_tasks.json`) with mutex-guarded atomic operations
+- **Task graph** — persistent, dependency-aware task board (`.agent_todo.json`) with mutex-guarded atomic operations
 - **Context compression** — three-layer system: recent messages kept verbatim, older messages summarized via LLM, summaries persisted to `.agent_memory.md`
 - **RLM engine** — recursive language model execution with a sandboxed Python REPL for processing inputs beyond the context window (probe → decompose → sub-LLM query → aggregate)
 - **Todo planning** — model commits a plan before acting, progress re-injected as reminders after every tool call

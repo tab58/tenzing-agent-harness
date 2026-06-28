@@ -64,6 +64,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	defer agentHarness.Shutdown()
+
 	slog.Info("session started", "model", llm.GetCurrentModel(), "cwd", cwd, "tools", len(agentHarness.ToolDefinitions()))
 
 	fmt.Println("tenzing agent harness")

@@ -226,6 +226,30 @@ func (f *TodoFile) FormatReminder() string {
 	return b.String()
 }
 
+func (f *TodoFile) Cleanup() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	tasks, err := f.load()
+	if err != nil {
+		return
+	}
+
+	var remaining []Task
+	for _, t := range tasks {
+		if t.Status != "done" {
+			remaining = append(remaining, t)
+		}
+	}
+
+	if len(remaining) == 0 {
+		os.Remove(f.file)
+		return
+	}
+
+	f.save(remaining)
+}
+
 // --- internal helpers ---
 
 func (f *TodoFile) load() ([]Task, error) {

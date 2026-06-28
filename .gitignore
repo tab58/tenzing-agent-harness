@@ -45,7 +45,6 @@ __debug_bin*
 # Agent runtime files
 .tenzing-agent.log
 .agent_todo.json
-.agent_tasks.json
 .agent_memory.md
 
 # AI ignores

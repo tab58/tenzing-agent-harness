@@ -93,6 +93,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	defer agentHarness.Shutdown()
+
 	m := newModel(agentHarness, llm.GetCurrentModel(), cwd, msgQueue)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {

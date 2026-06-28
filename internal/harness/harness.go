@@ -198,6 +198,10 @@ func New(cfg HarnessConfig) (*Harness, error) {
 	}, nil
 }
 
+func (h *Harness) Shutdown() {
+	h.todoFile.Cleanup()
+}
+
 func (h *Harness) ToolDefinitions() []tooldef.Definition {
 	return h.toolRegistry.Definitions()
 }
