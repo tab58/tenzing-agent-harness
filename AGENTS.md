@@ -102,6 +102,7 @@ The FSM is per-runner instance — subagents and concurrent loops don't share st
 | Context management       | `internal/agent/context/` (compression, task graph)   |
 | Context overflow router  | `internal/agent/context/compressor/router.go`         |
 | TUI REPL                 | `cmd/repl/`                                           |
+| HTTP/SSE web server      | `cmd/http/`                                           |
 | Test files               | Same directory as source, `*_test.go`                 |
 | Shared test helpers      | `**/testutil_test.go`                                 |
 | Sub-agent system         | `internal/harness/subagent/`                          |
@@ -120,6 +121,6 @@ The FSM is per-runner instance — subagents and concurrent loops don't share st
 
 - **Mutating the loop.** New capabilities = new tools or new config, never loop changes
 - **Importing upward.** Tools → harness or agent → runner = architecture violation
-- **Wide interfaces in tools.** Tools accept narrow interfaces (e.g. `TaskCreator`, not `*TaskGraph`)
+- **Wide interfaces in tools.** Tools accept narrow interfaces, not concrete types
 - **Hardcoding provider behavior.** All provider differences stay in the provider layer; canonical types above
 - **Forgetting `SYSTEM_ARCHITECTURE.md`.** If your change affects harness structure, agent interface, tool system, provider layer, or config surface — update the architecture doc in the same PR

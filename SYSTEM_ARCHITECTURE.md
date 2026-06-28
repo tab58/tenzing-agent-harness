@@ -55,7 +55,7 @@ internal/
 │   └── context/                        Knowledge & context management
 │       ├── compression.go              Three-layer context compression + memory persistence
 │       ├── context.go                  Context struct (placeholder)
-│       └── graph.go                    TaskGraph — persistent dependency-aware task graph
+│       └── compressor/                 Context compression + memory persistence
 ├── errors/errors.go                    Wrap() helper
 ├── harness/                            Core loop & orchestration
 │   ├── agent.go                        Agent interface + ReasoningResult
@@ -110,14 +110,13 @@ internal/harness/tools/tooldef/         Tool implementations
 ├── tool_rlm.go                         RLM tool (Python REPL loop wrapper)
 ├── tool_list_skills.go                 List available skills (interface: SkillLister)
 ├── tool_load_skill.go                  Load skill content (interface: SkillContentLoader)
-├── tool_task_create.go                 Create task in graph (interface: TaskCreator)
-├── tool_task_next.go                   Get next unblocked task (interface: TaskNexter)
-├── tool_task_update.go                 Update task status (interface: TaskUpdater)
-├── tool_task_list.go                   List all tasks (interface: TaskLister)
-├── tool_todowrite.go                   Write plan as JSON task list
-├── tool_todoupdate.go                  Mark task status (done/in_progress/blocked)
-├── tool_todoread.go                    Read and display current plan
-├── todo.go                             Todo file I/O + reminder formatting
+├── todo/                               Persistent planning system
+│   ├── todo_file.go                    TodoFile — persistent JSON with IDs, deps, priorities, topo sort
+│   ├── tool_todowrite.go              Bulk-write plan with dependency-by-index
+│   ├── tool_todocreate.go             Add single task mid-execution
+│   ├── tool_todoupdate.go             Update task status by ID
+│   ├── tool_todonext.go               Get next unblocked task
+│   └── tool_todoread.go               Read plan in dependency order
 ├── snapshot_store.go                   In-memory file snapshot store
 ├── file_tracker.go                     Read-before-edit enforcement (content hashing)
 └── fsutil.go                           Atomic file writes, per-path locks
@@ -317,13 +316,11 @@ Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn
 | `spawn_agent` | Delegate operational task | Spawns child AgentRunner with full tools, blocks until complete, returns final answer |
 | `list_skills` | List skills | Returns name→description map from skill registry |
 | `load_skill` | Load skill | Lazy-loads full `SKILL.md` content by name |
-| `task_create` | Create task | Persistent task graph, validates dependencies |
-| `task_next` | Next task | Highest-priority pending with all deps done |
-| `task_update` | Update task | Status change by ID or prefix match |
-| `task_list` | List tasks | All tasks with IDs, statuses, priorities, deps |
-| `TodoWrite` | Write plan | JSON array → `.agent_todo.json`, all `pending` |
-| `TodoUpdate` | Update status | By index: `done`, `in_progress`, `blocked` |
-| `TodoRead` | Show plan | Formatted task list |
+| `TodoWrite` | Write plan | Bulk-write tasks with deps-by-index, assigns IDs, persists to `.agent_todo.json` |
+| `TodoCreate` | Add task | Append single task mid-execution with deps-by-ID |
+| `TodoUpdate` | Update status | By ID or prefix: `pending`, `in_progress`, `done` |
+| `TodoNext` | Next task | Highest-priority pending with all deps done |
+| `TodoRead` | Show plan | Topologically sorted task list with statuses and deps |
 
 ### Shared Infrastructure
 
@@ -360,9 +357,9 @@ Skills are subdirectories of `skillsDir`, each containing a `SKILL.md` with YAML
 
 Skill metadata is passed as data into `AgentConfig` for system prompt injection. The `SkillRegistry` itself is passed to `list_skills`/`load_skill` tool constructors for runtime access.
 
-## Task Graph
+## Unified Todo System
 
-Persistent, dependency-aware task tracking in `internal/agent/context/graph.go`. Persists to `.agent_tasks.json` in the working directory. Survives session restarts.
+Persistent planning system in `internal/harness/todo/`. Persists to `.agent_todo.json` in the working directory. Survives context compression and session restarts.
 
 ```go
 type Task struct {
@@ -371,18 +368,19 @@ type Task struct {
     DependsOn   []string           // task IDs
 }
 
-type TaskGraph struct { file string; mu sync.Mutex }
+type TodoFile struct { file string; mu sync.Mutex; emitter events.Emitter }
 ```
 
-- `CreateTask(desc, dependsOn, priority)` — validates dependencies exist, assigns random hex ID
-- `NextTask()` — returns highest-priority pending task with all deps done (JSON string)
-- `UpdateTask(taskID, status, result)` — supports prefix matching on task ID
-- `ListTasks()` — all tasks as indented JSON
-- `Reminder()` — formatted `<system-reminder>` block injected per turn
+- `WriteTasks(tasks)` — bulk write, replaces existing plan
+- `CreateTask(desc, dependsOn, priority)` — appends one task, validates dependencies, assigns random hex ID
+- `UpdateTask(taskID, status, result)` — by ID or prefix match
+- `NextTask()` — highest-priority pending task with all deps done
+- `FormatReminder()` — topologically sorted `<system-reminder>` block injected per turn
+- `SetEmitter(events.Emitter)` — emits `TaskCreatedEvent`/`TaskCompletedEvent`
 
-Four tools (`task_create`, `task_next`, `task_update`, `task_list`) use narrow interfaces (`TaskCreator`, `TaskNexter`, `TaskUpdater`, `TaskLister`) to avoid import cycles. `TaskGraph` satisfies all four.
+Five tools (`TodoWrite`, `TodoCreate`, `TodoUpdate`, `TodoNext`, `TodoRead`). `TodoWrite` accepts dependency-by-index for bulk planning; `TodoCreate` uses dependency-by-ID for mid-execution additions. Display always topologically sorted.
 
-Coexists with `TodoWrite`/`TodoUpdate`/`TodoRead` — task graph is for persistent multi-step work with dependencies; todo is simpler session-scoped planning.
+Plan state is injected from disk after context compression via `TodoProvider func() string` wired through the compressor. The agent cannot lose its plan regardless of summary quality.
 
 ## Context Compression
 
@@ -393,7 +391,7 @@ type Compressor struct { llm provider.LLM; memoryFile string }
 ```
 
 - `EstimateSize(messages)` — sums char lengths across all content blocks
-- `MaybeCompress(ctx, messages)` — triggers when history exceeds 40k chars AND more than 6 messages. Splits at `len-6`, summarizes older portion via LLM, persists summary to `.agent_memory.md`, returns `[summary, ack, ...recent_6]`
+- `MaybeCompress(ctx, messages)` — triggers when history exceeds 75% of context window AND more than 6 messages. Splits at `len-6`, summarizes older portion via LLM, persists summary to `.agent_memory.md`, injects current todo state from disk (via `TodoProvider`), returns `[summary, todo_state, ack, ...recent_6]`
 - `LoadMemory()` / `SaveMemory(summary)` — disk persistence with timestamp header
 
 Integrated in `Agent.DoReasoning` — runs after each assistant response. `NewWithCompressor` loads prior memory at startup, seeding history with previous session context.
@@ -427,7 +425,7 @@ Depth control: factory tracks `currentDepth`. At `maxDepth`, child gets all tool
 
 Tool isolation: each child gets fresh tool instances via `tools.NewRegistry()`. No tool instance is shared between parent and child. `pathLocks` (package-level `sync.Map`) is the one intentional exception — serializes file writes across all agents in-process.
 
-Children don't get: `TodoFile`, `TaskGraph`, `SkillsRegistry`, or `Hooks`. Planning is the parent's job.
+Children don't get: `TodoFile`, `SkillsRegistry`, or event hooks. Planning is the parent's job.
 
 Wired via `HarnessConfig.SubAgentMaxDepth` (0 = disabled) and `HarnessConfig.SubAgentMaxIter` (default 30 per child). Requires `HarnessConfig.SubAgentBuilder` — an `AgentBuilder` function injected by the caller to avoid import cycles between `harness` and `agent` packages.
 
@@ -455,7 +453,7 @@ Hooks: `events.Hooks` struct has one typed `func(XxxEvent)` field per event type
 
 ### Emit Sites
 
-Runner (`agent_runner.go`): emits turn, loop, reasoning, tool execution, LLM response, compression, and error events. Harness (`harness.go`): emits session events, bridges RLM progress to `ToolProgressEvent`. Subagent (`subagent_factory.go`): emits subagent lifecycle events. TaskGraph (`graph.go`): emits task lifecycle events.
+Runner (`agent_runner.go`): emits turn, loop, reasoning, tool execution, LLM response, compression, and error events. Harness (`harness.go`): emits session events, bridges RLM progress to `ToolProgressEvent`. Subagent (`subagent_factory.go`): emits subagent lifecycle events. Todo (`todo_file.go`): emits task lifecycle events.
 
 ### Streaming
 

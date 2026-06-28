@@ -43,6 +43,10 @@ func (c *Context) UpdateOffloadFn(offloadFn func(context.Context, string) (strin
 	c.offloadFn = offloadFn
 }
 
+func (c *Context) SetTodoProvider(fn func() string) {
+	c.compressor.SetTodoProvider(fn)
+}
+
 // check for a context overflow
 func (c *Context) ClassifyOverflow(ctx context.Context, inputs []string) (string, int, error) {
 	if c.offloadFn != nil {

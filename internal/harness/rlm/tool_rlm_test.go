@@ -8,7 +8,7 @@ import (
 )
 
 func TestRLMToolReturnsAnswer(t *testing.T) {
-	runFn := func(ctx context.Context, prompt string) (string, error) {
+	runFn := func(ctx context.Context, prompt string, maxIter int) (string, error) {
 		return "processed: " + prompt, nil
 	}
 	tool := NewRLMTool(runFn)
@@ -28,7 +28,7 @@ func TestRLMToolReturnsAnswer(t *testing.T) {
 }
 
 func TestRLMToolError(t *testing.T) {
-	runFn := func(ctx context.Context, prompt string) (string, error) {
+	runFn := func(ctx context.Context, prompt string, maxIter int) (string, error) {
 		return "", errors.New("engine failed")
 	}
 	tool := NewRLMTool(runFn)
@@ -69,6 +69,9 @@ func TestRLMToolSchema(t *testing.T) {
 	schema := tool.Schema()
 	if _, ok := schema.Properties["prompt"]; !ok {
 		t.Fatal("schema missing 'prompt' property")
+	}
+	if _, ok := schema.Properties["max_iterations"]; !ok {
+		t.Fatal("schema missing 'max_iterations' property")
 	}
 	if len(schema.Required) != 1 || schema.Required[0] != "prompt" {
 		t.Fatalf("Required = %v, want [prompt]", schema.Required)

@@ -22,9 +22,14 @@ const (
 )
 
 type Compressor struct {
-	llm        provider.LLM
-	memoryFile string
-	threshold  int
+	llm          provider.LLM
+	memoryFile   string
+	threshold    int
+	todoProvider func() string
+}
+
+func (c *Compressor) SetTodoProvider(fn func() string) {
+	c.todoProvider = fn
 }
 
 func NewCompressor(llm provider.LLM, contextWindow int) *Compressor {
@@ -65,9 +70,20 @@ func (c *Compressor) MaybeCompress(ctx context.Context, messages []provider.Mess
 		return messages, false, fmt.Errorf("save memory: %w", err)
 	}
 
-	compressed := make([]provider.Message, 0, 2+len(recent))
+	compressed := make([]provider.Message, 0, 3+len(recent))
 	compressed = append(compressed,
 		provider.NewUserMessage("[Context summary from previous conversation]\n\n"+summary),
+	)
+
+	if c.todoProvider != nil {
+		if todoState := c.todoProvider(); todoState != "" {
+			compressed = append(compressed,
+				provider.NewUserMessage("[Current plan state — persisted from disk]\n\n"+todoState),
+			)
+		}
+	}
+
+	compressed = append(compressed,
 		provider.NewAssistantMessage("Understood. I have the full context from our previous work."),
 	)
 	compressed = append(compressed, recent...)

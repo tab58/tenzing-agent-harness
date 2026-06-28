@@ -10,7 +10,6 @@ import (
 	"tenzing-agent/internal/agent"
 	"tenzing-agent/internal/harness"
 	"tenzing-agent/internal/harness/events"
-	"tenzing-agent/internal/harness/prompts"
 	"tenzing-agent/internal/harness/runner"
 	"tenzing-agent/internal/provider"
 
@@ -86,8 +85,7 @@ func main() {
 				send(toolProgressMsg{tool: ev.ToolName, phase: ev.Phase, detail: ev.Detail})
 			},
 		},
-		MainSystemPrompt: prompts.DefaultSystemPrompt(cwd) + "\n\n" + prompts.RLMGuidance(),
-		RLMModel:         llm,
+		RLMModel: llm,
 	})
 	if err != nil {
 		slog.Error("harness init failed", "error", err, "stack", string(debug.Stack()))

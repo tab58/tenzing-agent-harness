@@ -11,7 +11,6 @@ import (
 
 	"tenzing-agent/internal/agent"
 	"tenzing-agent/internal/harness"
-	"tenzing-agent/internal/harness/prompts"
 	"tenzing-agent/internal/harness/runner"
 	"tenzing-agent/internal/provider"
 )
@@ -55,10 +54,9 @@ func main() {
 	}
 
 	agentHarness, err := harness.New(harness.HarnessConfig{
-		Cwd:              cwd,
-		Agent:            mainAgent,
-		MainSystemPrompt: prompts.DefaultSystemPrompt(cwd) + "\n\n" + prompts.RLMGuidance(),
-		RLMModel:         llm,
+		Cwd:      cwd,
+		Agent:    mainAgent,
+		RLMModel: llm,
 	})
 	if err != nil {
 		slog.Error("harness init failed", "error", err, "stack", string(debug.Stack()))

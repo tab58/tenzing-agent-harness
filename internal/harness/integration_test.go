@@ -2,8 +2,6 @@ package harness
 
 import (
 	"context"
-	"encoding/json"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -11,7 +9,6 @@ import (
 	"tenzing-agent/internal/harness/runner"
 	"tenzing-agent/internal/harness/skills"
 	"tenzing-agent/internal/harness/snapshot"
-	"tenzing-agent/internal/harness/taskgraph"
 	"tenzing-agent/internal/harness/todo"
 	"tenzing-agent/internal/harness/tools"
 )
@@ -267,7 +264,7 @@ func TestIntegration_ReadEditRevert_ThroughLoop(t *testing.T) {
 		Agent:          agent,
 		ToolRegistry:   registry,
 		SkillsRegistry: skills.NewRegistry(),
-		TodoFile:       todo.NewTodoItemFile(workDir),
+		TodoFile:       todo.NewTodoFile(workDir),
 		SystemPrompt:   "test",
 	})
 	if err != nil {
@@ -287,222 +284,6 @@ func TestIntegration_ReadEditRevert_ThroughLoop(t *testing.T) {
 	assertCallCount(t, agent, 5)
 }
 
-// ---------------------------------------------------------------------------
-// Scenario 3: Task lifecycle — full agent loop
-//
-// Task tools parse JSON from Arguments[0], so they work correctly through
-// AgentRunner.RunLoop. This tests the complete flow:
-// create task → create dependent task → update status → list all.
-// ---------------------------------------------------------------------------
-
-func TestIntegration_TaskLifecycle(t *testing.T) {
-	workDir := t.TempDir()
-	tg := taskgraph.NewTaskGraph(workDir)
-
-	// We'll create tasks outside the loop to get known IDs,
-	// then drive the loop for update + list.
-	task1JSON, err := tg.CreateTask("define handler", nil, taskgraph.TaskPriorityHigh)
-	if err != nil {
-		t.Fatalf("create task 1: %v", err)
-	}
-	var task1 taskgraph.Task
-	if err := json.Unmarshal([]byte(task1JSON), &task1); err != nil {
-		t.Fatalf("parse task 1: %v", err)
-	}
-
-	task2JSON, err := tg.CreateTask("register route", []string{task1.ID}, taskgraph.TaskPriorityMedium)
-	if err != nil {
-		t.Fatalf("create task 2: %v", err)
-	}
-	var task2 taskgraph.Task
-	if err := json.Unmarshal([]byte(task2JSON), &task2); err != nil {
-		t.Fatalf("parse task 2: %v", err)
-	}
-
-	// Script: update task1 to done → list tasks → final answer
-	agent := newScriptedAgent(
-		toolStep("task_update", jsonInput(map[string]any{
-			"task_id": task1.ID,
-			"status":  "done",
-			"result":  "handler implemented",
-		})),
-		toolStep("task_list", "{}"),
-		finalStep("tasks shown"),
-	)
-
-	registry := tools.NewRegistry()
-	registry.Register(taskgraph.NewTaskUpdateTool(tg))
-	registry.Register(taskgraph.NewTaskListTool(tg))
-
-	runner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
-		Agent:          agent,
-		ToolRegistry:   registry,
-		SkillsRegistry: skills.NewRegistry(),
-		TodoFile:       todo.NewTodoItemFile(workDir),
-		SystemPrompt:   "test",
-	})
-	if err != nil {
-		t.Fatalf("NewAgentRunner error: %v", err)
-	}
-
-	answer, err := runner.RunLoop(context.Background(), "show me the tasks")
-	if err != nil {
-		t.Fatalf("RunLoop error: %v", err)
-	}
-	if answer != "tasks shown" {
-		t.Errorf("answer = %q, want %q", answer, "tasks shown")
-	}
-
-	// Verify task graph state
-	tasksJSON, err := tg.ListTasks()
-	if err != nil {
-		t.Fatalf("ListTasks error: %v", err)
-	}
-
-	var tasks []taskgraph.Task
-	if err := json.Unmarshal([]byte(tasksJSON), &tasks); err != nil {
-		t.Fatalf("parse tasks: %v", err)
-	}
-
-	if len(tasks) != 2 {
-		t.Fatalf("expected 2 tasks, got %d", len(tasks))
-	}
-
-	taskMap := make(map[string]taskgraph.Task)
-	for _, task := range tasks {
-		taskMap[task.ID] = task
-	}
-
-	t1 := taskMap[task1.ID]
-	if t1.Status != "done" {
-		t.Errorf("task 1 status = %q, want %q", t1.Status, "done")
-	}
-	if t1.Result != "handler implemented" {
-		t.Errorf("task 1 result = %q, want %q", t1.Result, "handler implemented")
-	}
-
-	t2 := taskMap[task2.ID]
-	if t2.Status != "pending" {
-		t.Errorf("task 2 status = %q, want %q", t2.Status, "pending")
-	}
-	if len(t2.DependsOn) != 1 || t2.DependsOn[0] != task1.ID {
-		t.Errorf("task 2 depends_on = %v, want [%s]", t2.DependsOn, task1.ID)
-	}
-
-	// Verify agent was called correct number of times:
-	// 1: initial input, 2: task_update result, 3: task_list result
-	assertCallCount(t, agent, 3)
-
-	// Verify task file persisted to disk
-	taskFile := filepath.Join(workDir, taskgraph.TasksFileName)
-	if _, err := os.Stat(taskFile); os.IsNotExist(err) {
-		t.Fatal("task file should exist on disk")
-	}
-}
-
-func TestIntegration_TaskCreate_ThroughLoop(t *testing.T) {
-	workDir := t.TempDir()
-	tg := taskgraph.NewTaskGraph(workDir)
-
-	agent := newScriptedAgent(
-		toolStep("task_create", jsonInput(map[string]any{
-			"description": "write tests",
-			"priority":    "high",
-		})),
-		toolStep("task_list", "{}"),
-		finalStep("done"),
-	)
-
-	registry := tools.NewRegistry()
-	registry.Register(taskgraph.NewTaskCreateTool(tg))
-	registry.Register(taskgraph.NewTaskListTool(tg))
-
-	runner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
-		Agent:          agent,
-		ToolRegistry:   registry,
-		SkillsRegistry: skills.NewRegistry(),
-		TodoFile:       todo.NewTodoItemFile(workDir),
-		SystemPrompt:   "test",
-	})
-	if err != nil {
-		t.Fatalf("NewAgentRunner error: %v", err)
-	}
-
-	answer, err := runner.RunLoop(context.Background(), "create a task")
-	if err != nil {
-		t.Fatalf("RunLoop error: %v", err)
-	}
-	if answer != "done" {
-		t.Errorf("answer = %q, want %q", answer, "done")
-	}
-
-	tasksJSON, err := tg.ListTasks()
-	if err != nil {
-		t.Fatalf("ListTasks error: %v", err)
-	}
-
-	var tasks []taskgraph.Task
-	if err := json.Unmarshal([]byte(tasksJSON), &tasks); err != nil {
-		t.Fatalf("parse tasks: %v", err)
-	}
-
-	if len(tasks) != 1 {
-		t.Fatalf("expected 1 task, got %d", len(tasks))
-	}
-	if tasks[0].Description != "write tests" {
-		t.Errorf("task description = %q, want %q", tasks[0].Description, "write tests")
-	}
-	if tasks[0].Priority != taskgraph.TaskPriorityHigh {
-		t.Errorf("task priority = %q, want %q", tasks[0].Priority, taskgraph.TaskPriorityHigh)
-	}
-	if tasks[0].Status != "pending" {
-		t.Errorf("task status = %q, want %q", tasks[0].Status, "pending")
-	}
-}
-
-func TestIntegration_TaskDependency_BlocksNext(t *testing.T) {
-	workDir := t.TempDir()
-	tg := taskgraph.NewTaskGraph(workDir)
-
-	// Create two tasks, second depends on first
-	t1JSON, err := tg.CreateTask("step 1", nil, taskgraph.TaskPriorityHigh)
-	if err != nil {
-		t.Fatalf("create task 1: %v", err)
-	}
-	var t1 taskgraph.Task
-	json.Unmarshal([]byte(t1JSON), &t1)
-
-	_, err = tg.CreateTask("step 2", []string{t1.ID}, taskgraph.TaskPriorityHigh)
-	if err != nil {
-		t.Fatalf("create task 2: %v", err)
-	}
-
-	// NextTask should return task 1 (task 2 blocked by dependency)
-	nextJSON, err := tg.NextTask()
-	if err != nil {
-		t.Fatalf("NextTask error: %v", err)
-	}
-	var next taskgraph.Task
-	json.Unmarshal([]byte(nextJSON), &next)
-	if next.ID != t1.ID {
-		t.Errorf("next task = %s, want %s", next.ID, t1.ID)
-	}
-
-	// Complete task 1
-	if err := tg.UpdateTask(t1.ID, "done", ""); err != nil {
-		t.Fatalf("update task 1: %v", err)
-	}
-
-	// Now NextTask should return task 2
-	nextJSON, err = tg.NextTask()
-	if err != nil {
-		t.Fatalf("NextTask error: %v", err)
-	}
-	json.Unmarshal([]byte(nextJSON), &next)
-	if next.Description != "step 2" {
-		t.Errorf("next task description = %q, want %q", next.Description, "step 2")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Agent loop mechanics
@@ -517,7 +298,7 @@ func TestIntegration_FinalAnswerOnly(t *testing.T) {
 		Agent:          agent,
 		ToolRegistry:   registry,
 		SkillsRegistry: skills.NewRegistry(),
-		TodoFile:       todo.NewTodoItemFile(workDir),
+		TodoFile:       todo.NewTodoFile(workDir),
 		SystemPrompt:   "test",
 	})
 	if err != nil {
@@ -543,7 +324,7 @@ func TestIntegration_ContextCanceled(t *testing.T) {
 		Agent:          agent,
 		ToolRegistry:   registry,
 		SkillsRegistry: skills.NewRegistry(),
-		TodoFile:       todo.NewTodoItemFile(workDir),
+		TodoFile:       todo.NewTodoFile(workDir),
 		SystemPrompt:   "test",
 	})
 	if err != nil {
@@ -570,7 +351,7 @@ func TestIntegration_UnknownTool(t *testing.T) {
 		Agent:          agent,
 		ToolRegistry:   registry,
 		SkillsRegistry: skills.NewRegistry(),
-		TodoFile:       todo.NewTodoItemFile(workDir),
+		TodoFile:       todo.NewTodoFile(workDir),
 		SystemPrompt:   "test",
 	})
 	if err != nil {
@@ -587,80 +368,68 @@ func TestIntegration_UnknownTool(t *testing.T) {
 
 func TestIntegration_MultipleToolCalls(t *testing.T) {
 	workDir := t.TempDir()
-	tg := taskgraph.NewTaskGraph(workDir)
+	fileA := seedFile(t, workDir, "a.txt", "content A")
+	fileB := seedFile(t, workDir, "b.txt", "content B")
+	fileC := seedFile(t, workDir, "c.txt", "content C")
 
-	// Three tool calls then final answer
+	// Three Read tool calls then final answer
 	agent := newScriptedAgent(
-		toolStep("task_create", jsonInput(map[string]any{"description": "task A"})),
-		toolStep("task_create", jsonInput(map[string]any{"description": "task B"})),
-		toolStep("task_create", jsonInput(map[string]any{"description": "task C"})),
-		toolStep("task_list", "{}"),
-		finalStep("created 3 tasks"),
+		toolStep("Read", jsonInput(map[string]any{"file_path": fileA})),
+		toolStep("Read", jsonInput(map[string]any{"file_path": fileB})),
+		toolStep("Read", jsonInput(map[string]any{"file_path": fileC})),
+		finalStep("read 3 files"),
 	)
 
 	registry := tools.NewRegistry()
-	registry.Register(taskgraph.NewTaskCreateTool(tg))
-	registry.Register(taskgraph.NewTaskListTool(tg))
 
-	runner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
+	r, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
 		Agent:          agent,
 		ToolRegistry:   registry,
 		SkillsRegistry: skills.NewRegistry(),
-		TodoFile:       todo.NewTodoItemFile(workDir),
+		TodoFile:       todo.NewTodoFile(workDir),
 		SystemPrompt:   "test",
 	})
 	if err != nil {
 		t.Fatalf("NewAgentRunner error: %v", err)
 	}
 
-	answer, err := runner.RunLoop(context.Background(), "create 3 tasks")
+	answer, err := r.RunLoop(context.Background(), "read 3 files")
 	if err != nil {
 		t.Fatalf("RunLoop error: %v", err)
 	}
-	if answer != "created 3 tasks" {
-		t.Errorf("answer = %q, want %q", answer, "created 3 tasks")
+	if answer != "read 3 files" {
+		t.Errorf("answer = %q, want %q", answer, "read 3 files")
 	}
 
-	tasksJSON, err := tg.ListTasks()
-	if err != nil {
-		t.Fatalf("ListTasks error: %v", err)
-	}
-	var tasks []taskgraph.Task
-	json.Unmarshal([]byte(tasksJSON), &tasks)
-	if len(tasks) != 3 {
-		t.Fatalf("expected 3 tasks, got %d", len(tasks))
-	}
-
-	// 5 agent calls: initial + 3 tool results + task_list result
-	assertCallCount(t, agent, 5)
+	// 4 agent calls: initial + 3 Read results
+	assertCallCount(t, agent, 4)
 }
 
 func TestIntegration_ToolHookCalled(t *testing.T) {
 	workDir := t.TempDir()
-	tg := taskgraph.NewTaskGraph(workDir)
+	filePath := seedFile(t, workDir, "hook.txt", "hook content")
 
 	agent := newScriptedAgent(
-		toolStep("task_create", jsonInput(map[string]any{"description": "hooked task"})),
+		toolStep("Read", jsonInput(map[string]any{"file_path": filePath})),
 		finalStep("done"),
 	)
 
 	collector := &testEventCollector{}
 	registry := tools.NewRegistry()
-	registry.Register(taskgraph.NewTaskCreateTool(tg))
 
-	runner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
+	r, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
 		Agent:          agent,
 		Emitter:        collector,
 		ToolRegistry:   registry,
 		SkillsRegistry: skills.NewRegistry(),
-		TodoFile:       todo.NewTodoItemFile(workDir),
+		TodoFile:       todo.NewTodoFile(workDir),
 		SystemPrompt:   "test",
 	})
 	if err != nil {
 		t.Fatalf("NewAgentRunner error: %v", err)
 	}
 
-	_, err = runner.RunLoop(context.Background(), "create task")
+	_, err = r.RunLoop(context.Background(), "read file")
 	if err != nil {
 		t.Fatalf("RunLoop error: %v", err)
 	}
@@ -668,7 +437,7 @@ func TestIntegration_ToolHookCalled(t *testing.T) {
 	succeeded := collector.byType(events.EventToolSucceeded)
 	if len(succeeded) != 1 {
 		t.Errorf("expected 1 ToolSucceeded event, got %d", len(succeeded))
-	} else if ev, ok := succeeded[0].(events.ToolSucceededEvent); !ok || ev.ToolName != "task_create" {
-		t.Errorf("expected ToolSucceeded for task_create, got %v", succeeded[0])
+	} else if ev, ok := succeeded[0].(events.ToolSucceededEvent); !ok || ev.ToolName != "Read" {
+		t.Errorf("expected ToolSucceeded for Read, got %v", succeeded[0])
 	}
 }

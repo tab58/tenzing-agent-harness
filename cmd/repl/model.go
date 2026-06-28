@@ -72,6 +72,8 @@ type toolProgressMsg struct {
 
 type headerReadyMsg struct{}
 
+type ctrlCExpiredMsg struct{}
+
 // --- Model ---
 
 type historyEntry struct {
@@ -106,7 +108,9 @@ type model struct {
 	toolCount    int
 	eventCh      <-chan tea.Msg
 
-	lastCtrlC time.Time
+	lastCtrlC    time.Time
+	ctrlCPending bool
+	selectMode   bool
 }
 
 func newModel(h *harness.Harness, modelName, cwd string, eventCh <-chan tea.Msg) model {
@@ -292,6 +296,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.Focus()
 		return m, textarea.Blink
 
+	case ctrlCExpiredMsg:
+		m.ctrlCPending = false
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
@@ -308,16 +316,18 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyCtrlC:
 		now := time.Now()
-		if now.Sub(m.lastCtrlC) < time.Second {
+		if m.ctrlCPending && now.Sub(m.lastCtrlC) < time.Second {
 			return m, tea.Quit
 		}
 		m.lastCtrlC = now
+		m.ctrlCPending = true
+		expire := tea.Tick(time.Second, func(time.Time) tea.Msg { return ctrlCExpiredMsg{} })
 		if m.state == stateRunning && m.cancelFn != nil {
 			m.cancelFn()
-			return m, nil
+			return m, expire
 		}
 		m.input.Reset()
-		return m, nil
+		return m, expire
 
 	case tea.KeyCtrlD:
 		if m.state == stateInput && m.input.Value() == "" {
@@ -326,6 +336,13 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
+
+	case tea.KeyCtrlS:
+		m.selectMode = !m.selectMode
+		if m.selectMode {
+			return m, func() tea.Msg { return tea.DisableMouse() }
+		}
+		return m, func() tea.Msg { return tea.EnableMouseCellMotion() }
 
 	case tea.KeyCtrlL:
 		if m.state == stateInput {
@@ -474,9 +491,9 @@ const slashCommandHelp = `commands:
   /exit         exit the REPL
   ctrl+p/n      history prev/next
   ctrl+l        clear chat history
+  ctrl+s        toggle select mode (mouse text selection)
   ctrl+c        cancel running / exit
-  ctrl+d        exit (empty input)
-  shift+click   select text`
+  ctrl+d        exit (empty input)`
 
 func (m model) runAgent(ctx context.Context, query string) tea.Cmd {
 	h := m.agentHarness
@@ -578,7 +595,11 @@ func (m model) View() string {
 	b.WriteString(m.renderSeparator())
 	b.WriteString("\n")
 
-	if m.statusText != "" {
+	if m.ctrlCPending {
+		b.WriteString(errorStyle.Render("  press ctrl+c again to exit"))
+	} else if m.selectMode {
+		b.WriteString(statusLineStyle.Render("  [SELECT MODE] drag to select, ctrl+s to exit"))
+	} else if m.statusText != "" {
 		b.WriteString(statusLineStyle.Render(fmt.Sprintf("  %s %s", m.spinner.View(), m.statusText)))
 	}
 	b.WriteString("\n")

@@ -95,6 +95,7 @@ const (
 	JsonTypeObject  = "object"
 	JsonTypeString  = "string"
 	JsonTypeNumber  = "number"
+	JsonTypeInteger = "integer"
 	JsonTypeBoolean = "boolean"
 	JsonTypeArray   = "array"
 )

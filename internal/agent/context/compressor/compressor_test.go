@@ -267,6 +267,69 @@ func TestSaveMemoryFileOverwrites(t *testing.T) {
 	}
 }
 
+func TestCompressTodoInjection(t *testing.T) {
+	llm := &fakeLLM{response: "conversation summary here"}
+	c := newTestCompressor(t, llm, testContextWindow)
+	c.SetTodoProvider(func() string {
+		return "<system-reminder>\nCurrent plan:\n[abc12345] [pending] do the thing\n</system-reminder>"
+	})
+
+	totalMsgs := KeepRecent + 4
+	charsPerMsg := testThreshold/totalMsgs + 1
+	msgs := makeMessages(totalMsgs, charsPerMsg)
+
+	compressed, did, err := c.MaybeCompress(context.Background(), msgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !did {
+		t.Fatal("expected compression to trigger")
+	}
+
+	// expect: summary + todo + ack + KeepRecent recent messages
+	expectedLen := 3 + KeepRecent
+	if len(compressed) != expectedLen {
+		t.Fatalf("compressed len = %d, want %d", len(compressed), expectedLen)
+	}
+
+	// find the todo injection message
+	foundTodo := false
+	for _, msg := range compressed {
+		for _, block := range msg.Content {
+			if strings.Contains(block.Text, "Current plan:") && strings.Contains(block.Text, "abc12345") {
+				foundTodo = true
+			}
+		}
+	}
+	if !foundTodo {
+		t.Error("todo state not found in compressed messages")
+	}
+}
+
+func TestCompressTodoInjectionSkippedWhenEmpty(t *testing.T) {
+	llm := &fakeLLM{response: "summary"}
+	c := newTestCompressor(t, llm, testContextWindow)
+	c.SetTodoProvider(func() string { return "" })
+
+	totalMsgs := KeepRecent + 4
+	charsPerMsg := testThreshold/totalMsgs + 1
+	msgs := makeMessages(totalMsgs, charsPerMsg)
+
+	compressed, did, err := c.MaybeCompress(context.Background(), msgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !did {
+		t.Fatal("expected compression to trigger")
+	}
+
+	// no todo injection: summary + ack + KeepRecent
+	expectedLen := 2 + KeepRecent
+	if len(compressed) != expectedLen {
+		t.Fatalf("compressed len = %d, want %d (empty todo should not inject)", len(compressed), expectedLen)
+	}
+}
+
 func TestSummarizeInputTruncation(t *testing.T) {
 	llm := &fakeLLM{response: "truncated summary"}
 	c := newTestCompressor(t, llm, testContextWindow)

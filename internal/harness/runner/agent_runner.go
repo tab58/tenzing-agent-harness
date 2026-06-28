@@ -10,7 +10,6 @@ import (
 
 	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/skills"
-	"tenzing-agent/internal/harness/taskgraph"
 	"tenzing-agent/internal/harness/todo"
 	"tenzing-agent/internal/harness/tools"
 )
@@ -23,7 +22,6 @@ type AgentRunner struct {
 	toolRegistry    *tools.Registry
 	skillsRegistry  *skills.Registry
 	todoFile        *todo.TodoFile
-	taskGraph       *taskgraph.TaskGraph
 	agent           Agent
 	emitter         events.Emitter
 	onTextDelta     func(string)
@@ -35,7 +33,6 @@ type AgentRunnerConfig struct {
 	ToolRegistry   *tools.Registry
 	SkillsRegistry *skills.Registry
 	TodoFile       *todo.TodoFile
-	TaskGraph      *taskgraph.TaskGraph
 
 	Agent           Agent
 	Emitter         events.Emitter
@@ -60,7 +57,6 @@ func NewAgentRunner(cfg AgentRunnerConfig) (*AgentRunner, error) {
 		onThinkingDelta: cfg.OnThinkingDelta,
 		systemPrompt:    cfg.SystemPrompt,
 		todoFile:        cfg.TodoFile,
-		taskGraph:       cfg.TaskGraph,
 	}, nil
 }
 
@@ -273,23 +269,10 @@ func (h *AgentRunner) SystemPrompt() string {
 
 func (h *AgentRunner) buildSystemReminders() []string {
 	var reminders []string
-	if r := h.readTodoReminder(); r != "" {
+	if r := h.todoFile.FormatReminder(); r != "" {
 		reminders = append(reminders, r)
 	}
-	if h.taskGraph != nil {
-		if r := h.taskGraph.Reminder(); r != "" {
-			reminders = append(reminders, r)
-		}
-	}
 	return reminders
-}
-
-func (h *AgentRunner) readTodoReminder() string {
-	items, err := h.todoFile.ReadItems()
-	if err != nil {
-		return ""
-	}
-	return "<system-reminder>\nCurrent plan:\n" + h.todoFile.FormatItems(items) + "</system-reminder>"
 }
 
 func truncateLog(s string, max int) string {

@@ -40,33 +40,39 @@ type ProgressEvent struct {
 }
 
 type EngineConfig struct {
-	NewFetcher    FetcherFactory
-	Querier       Querier
-	WorkingDir    string
-	MaxIterations int
-	TruncateMax   int
-	MaxDepth      int
-	OnProgress    func(ProgressEvent)
+	NewFetcher        FetcherFactory
+	Querier           Querier
+	WorkingDir        string
+	DefaultIterations int
+	MaxIterations     int
+	TruncateMax       int
+	MaxDepth          int
+	OnProgress        func(ProgressEvent)
 }
 
 type Engine struct {
-	newFetcher    FetcherFactory
-	querier       Querier
-	workingDir    string
-	maxIterations int
-	truncateMax   int
-	maxDepth      int
-	currentDepth  int
-	onProgress    func(ProgressEvent)
+	newFetcher        FetcherFactory
+	querier           Querier
+	workingDir        string
+	defaultIterations int
+	maxIterations     int
+	truncateMax       int
+	maxDepth          int
+	currentDepth      int
+	onProgress        func(ProgressEvent)
 }
 
 func NewEngine(cfg EngineConfig) (*Engine, error) {
 	if cfg.NewFetcher == nil {
 		return nil, fmt.Errorf("fetcher factory is required")
 	}
+	defaultIter := cfg.DefaultIterations
+	if defaultIter <= 0 {
+		defaultIter = 30
+	}
 	maxIter := cfg.MaxIterations
 	if maxIter <= 0 {
-		maxIter = 30
+		maxIter = 200
 	}
 	truncMax := cfg.TruncateMax
 	if truncMax <= 0 {
@@ -77,21 +83,33 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		maxDepth = 0
 	}
 	return &Engine{
-		newFetcher:    cfg.NewFetcher,
-		querier:       cfg.Querier,
-		workingDir:    cfg.WorkingDir,
-		maxIterations: maxIter,
-		truncateMax:   truncMax,
-		maxDepth:      maxDepth,
-		currentDepth:  0,
-		onProgress:    cfg.OnProgress,
+		newFetcher:        cfg.NewFetcher,
+		querier:           cfg.Querier,
+		workingDir:        cfg.WorkingDir,
+		defaultIterations: defaultIter,
+		maxIterations:     maxIter,
+		truncateMax:       truncMax,
+		maxDepth:          maxDepth,
+		currentDepth:      0,
+		onProgress:        cfg.OnProgress,
 	}, nil
 }
 
 func (e *Engine) GetTools() []tooldef.Definition {
 	return []tooldef.Definition{
-		NewRLMTool(e.Run),
+		NewRLMTool(e.RunWithLimit),
 	}
+}
+
+func (e *Engine) resolveLimit(override int) int {
+	limit := e.defaultIterations
+	if override > 0 {
+		limit = override
+	}
+	if limit > e.maxIterations {
+		limit = e.maxIterations
+	}
+	return limit
 }
 
 func (e *Engine) emitProgress(ev ProgressEvent) {
@@ -102,14 +120,15 @@ func (e *Engine) emitProgress(ev ProgressEvent) {
 
 func (e *Engine) childEngine() *Engine {
 	return &Engine{
-		newFetcher:    e.newFetcher,
-		querier:       e.querier,
-		workingDir:    e.workingDir,
-		maxIterations: e.maxIterations,
-		truncateMax:   e.truncateMax,
-		maxDepth:      e.maxDepth,
-		currentDepth:  e.currentDepth + 1,
-		onProgress:    e.onProgress,
+		newFetcher:        e.newFetcher,
+		querier:           e.querier,
+		workingDir:        e.workingDir,
+		defaultIterations: e.defaultIterations,
+		maxIterations:     e.maxIterations,
+		truncateMax:       e.truncateMax,
+		maxDepth:          e.maxDepth,
+		currentDepth:      e.currentDepth + 1,
+		onProgress:        e.onProgress,
 	}
 }
 
@@ -124,6 +143,12 @@ type promptData struct {
 }
 
 func (e *Engine) Run(ctx context.Context, prompt string) (string, error) {
+	return e.RunWithLimit(ctx, prompt, 0)
+}
+
+func (e *Engine) RunWithLimit(ctx context.Context, prompt string, overrideIter int) (string, error) {
+	iterLimit := e.resolveLimit(overrideIter)
+
 	var rlmQueryFn RLMQueryFunc
 	if e.currentDepth < e.maxDepth {
 		child := e.childEngine()
@@ -154,11 +179,12 @@ func (e *Engine) Run(ctx context.Context, prompt string) (string, error) {
 
 	rlmStart := time.Now()
 	d := e.currentDepth
-	slog.Info("[RLM] started", "prompt_len", len(prompt), "max_iterations", e.maxIterations, "depth", d, "max_depth", e.maxDepth)
+	slog.Info("[RLM] started", "prompt_len", len(prompt), "iter_limit", iterLimit, "depth", d, "max_depth", e.maxDepth)
 
 	userContent := "Process the input loaded in the `prompt` variable and provide your answer."
+	var lastOutput string
 
-	for i := 0; i < e.maxIterations; i++ {
+	for i := 0; i < iterLimit; i++ {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
@@ -209,11 +235,18 @@ func (e *Engine) Run(ctx context.Context, prompt string) (string, error) {
 
 		slog.Debug("[RLM] repl output", "depth", d, "iter", i+1, "code_blocks", len(codeBlocks), "output_len", allOutput.Len())
 
+		if allOutput.Len() > 0 {
+			lastOutput = allOutput.String()
+		}
 		userContent = "REPL output:\n" + Truncate(allOutput.String(), e.truncateMax)
 	}
 
-	slog.Error("[RLM] failed", "depth", e.currentDepth, "reason", "max_iterations", "max", e.maxIterations, "duration", time.Since(rlmStart).Round(time.Millisecond))
-	return "", fmt.Errorf("exceeded max iterations (%d)", e.maxIterations)
+	slog.Error("[RLM] failed", "depth", e.currentDepth, "reason", "max_iterations", "max", iterLimit, "duration", time.Since(rlmStart).Round(time.Millisecond))
+	if lastOutput != "" {
+		slog.Warn("[RLM] returning partial result", "depth", e.currentDepth, "iterations", iterLimit)
+		return fmt.Sprintf("[RLM partial result — iteration budget exhausted after %d iterations]\n\n%s", iterLimit, Truncate(lastOutput, e.truncateMax*2)), nil
+	}
+	return "", fmt.Errorf("exceeded max iterations (%d)", iterLimit)
 }
 
 func (e *Engine) buildSystemPrompt(prompt string) (string, error) {

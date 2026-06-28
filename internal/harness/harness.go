@@ -17,7 +17,6 @@ import (
 	"tenzing-agent/internal/harness/runner"
 	"tenzing-agent/internal/harness/skills"
 	"tenzing-agent/internal/harness/subagent"
-	"tenzing-agent/internal/harness/taskgraph"
 	"tenzing-agent/internal/harness/todo"
 	"tenzing-agent/internal/harness/tools"
 	"tenzing-agent/internal/harness/tools/tooldef"
@@ -47,11 +46,13 @@ type HarnessConfig struct {
 	MainSystemPrompt string
 	ExtraTools       []tooldef.Definition
 	ExtraSkillDirs   []string
-	RLMModel         provider.LLM
-	SubAgentLLM      provider.LLM
-	SubAgentMaxDepth int
-	SubAgentMaxIter  int
-	SubAgentBuilder  runner.AgentBuilder
+	RLMModel             provider.LLM
+	RLMDefaultIterations int
+	RLMMaxIterations     int
+	SubAgentLLM          provider.LLM
+	SubAgentMaxDepth     int
+	SubAgentMaxIter      int
+	SubAgentBuilder      runner.AgentBuilder
 }
 
 // hooksEmpty reports whether no hook callbacks are set in h.
@@ -91,7 +92,7 @@ func New(cfg HarnessConfig) (*Harness, error) {
 
 	mainSystemPrompt := cfg.MainSystemPrompt
 	if mainSystemPrompt == "" {
-		mainSystemPrompt = prompts.DefaultSystemPrompt(cwd) + "\n\n" + prompts.RLMGuidance()
+		mainSystemPrompt = prompts.DefaultSystemPrompt(cwd)
 	}
 
 	bus := cfg.EventBus
@@ -102,10 +103,8 @@ func New(cfg HarnessConfig) (*Harness, error) {
 		events.NewHooksAdapter(bus, cfg.EventHooks)
 	}
 
-	todoFile := todo.NewTodoItemFile(cwd)
-
-	taskGraph := taskgraph.NewTaskGraph(cwd)
-	taskGraph.SetEmitter(bus)
+	todoFile := todo.NewTodoFile(cwd)
+	todoFile.SetEmitter(bus)
 
 	skillsRegistry := skills.NewRegistry()
 	skillsRegistry.RegisterSkillDir("~/.claude/skills")
@@ -130,18 +129,19 @@ func New(cfg HarnessConfig) (*Harness, error) {
 	}
 
 	rlmEngine, err := rlm.NewEngine(rlm.EngineConfig{
-		NewFetcher: rlm.NewLLMFetcherFactory(cfg.RLMModel),
-		Querier:    rlm.NewLLMQuerier(cfg.RLMModel),
-		MaxDepth:   1,
-		WorkingDir: cwd,
-		OnProgress: rlmProgressFn,
+		NewFetcher:        rlm.NewLLMFetcherFactory(cfg.RLMModel),
+		Querier:           rlm.NewLLMQuerier(cfg.RLMModel),
+		MaxDepth:          1,
+		WorkingDir:        cwd,
+		OnProgress:        rlmProgressFn,
+		DefaultIterations: cfg.RLMDefaultIterations,
+		MaxIterations:     cfg.RLMMaxIterations,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize RLM engine: %w", err)
 	}
 
 	toolRegistry := tools.NewRegistry()
-	toolRegistry.RegisterFromProvider(taskGraph)
 	toolRegistry.RegisterFromProvider(skillsRegistry)
 	toolRegistry.RegisterFromProvider(rlmEngine)
 	toolRegistry.RegisterFromProvider(todoFile)
@@ -173,12 +173,12 @@ func New(cfg HarnessConfig) (*Harness, error) {
 	}
 	agent.UpdateToolDefinitions(toolRegistry.ProviderDefinitions())
 	agent.UpdateOffloadFn(rlmEngine.Run)
+	agent.SetTodoProvider(todoFile.FormatReminder)
 
 	mainAgentRunner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
 		ToolRegistry:    toolRegistry,
 		SkillsRegistry:  skillsRegistry,
 		TodoFile:        todoFile,
-		TaskGraph:       taskGraph,
 		Agent:           agent,
 		Emitter:         bus,
 		OnTextDelta:     cfg.OnTextDelta,

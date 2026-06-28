@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/tools/tooldef"
 )
 
@@ -20,7 +22,10 @@ func NewTodoWriteTool(f *TodoFile) *TodoWriteTool {
 func (t *TodoWriteTool) Name() string { return "TodoWrite" }
 
 func (t *TodoWriteTool) Description() string {
-	return "Write a plan of tasks before executing. ALWAYS call this tool first before starting any multi-step work. Input: a JSON array of task description strings."
+	return "Write a plan of tasks before executing. ALWAYS call this tool first before starting any multi-step work. " +
+		"Input: tasks array. Each task has a 'task' string (required), optional 'depends_on' array of indices (0-based, " +
+		"referencing other tasks in this list), and optional 'priority' (high/medium/low, default medium). " +
+		"Your plan persists to disk and survives context compression and session restarts."
 }
 
 func (t *TodoWriteTool) Schema() tooldef.Schema {
@@ -28,39 +33,77 @@ func (t *TodoWriteTool) Schema() tooldef.Schema {
 		Properties: map[string]tooldef.SchemaProperty{
 			"tasks": {
 				Type:  tooldef.JsonTypeArray,
-				Items: &tooldef.SchemaProperty{Type: tooldef.JsonTypeString},
+				Items: &tooldef.SchemaProperty{Type: tooldef.JsonTypeObject},
 			},
 		},
 		Required: []string{"tasks"},
 	}
 }
 
+type todoWriteInput struct {
+	Tasks []struct {
+		Task      string       `json:"task"`
+		DependsOn []int        `json:"depends_on"`
+		Priority  TaskPriority `json:"priority"`
+	} `json:"tasks"`
+}
+
 func (t *TodoWriteTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
 	if len(exctx.Arguments) == 0 || exctx.Arguments[0] == "" {
 		return tooldef.NewToolResult("tasks argument is required", tooldef.WithError()), nil
 	}
-	var input struct {
-		Tasks []string `json:"tasks"`
-	}
+
+	var input todoWriteInput
 	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &input); err != nil {
-		return tooldef.NewToolResult(fmt.Sprintf("invalid tasks JSON: %v", err), tooldef.WithError()), nil
+		return tooldef.NewToolResult(fmt.Sprintf("invalid JSON: %v", err), tooldef.WithError()), nil
 	}
-	tasks := input.Tasks
-	if len(tasks) == 0 {
+	if len(input.Tasks) == 0 {
 		return tooldef.NewToolResult("tasks list cannot be empty", tooldef.WithError()), nil
 	}
 
-	items := make([]TodoItem, len(tasks))
-	for i, task := range tasks {
-		items[i] = TodoItem{
-			Index:  i,
-			Task:   task,
-			Status: "pending",
+	tasks := make([]Task, len(input.Tasks))
+	for i, item := range input.Tasks {
+		if item.Task == "" {
+			return tooldef.NewToolResult(fmt.Sprintf("task at index %d has empty description", i), tooldef.WithError()), nil
+		}
+		priority := item.Priority
+		if priority == "" {
+			priority = PriorityMedium
+		}
+		tasks[i] = Task{
+			ID:          randomID(8),
+			Description: item.Task,
+			Status:      "pending",
+			Priority:    priority,
+			DependsOn:   []string{},
 		}
 	}
-	if err := t.file.WriteItems(items); err != nil {
-		return tooldef.NewToolResult(fmt.Sprintf("failed to write todo file: %v", err), tooldef.WithError()), nil
+
+	for i, item := range input.Tasks {
+		for _, depIdx := range item.DependsOn {
+			if depIdx < 0 || depIdx >= len(tasks) {
+				return tooldef.NewToolResult(fmt.Sprintf("depends_on index %d out of range at task %d", depIdx, i), tooldef.WithError()), nil
+			}
+			if depIdx == i {
+				return tooldef.NewToolResult(fmt.Sprintf("task %d cannot depend on itself", i), tooldef.WithError()), nil
+			}
+			tasks[i].DependsOn = append(tasks[i].DependsOn, tasks[depIdx].ID)
+		}
 	}
 
-	return tooldef.NewToolResult(fmt.Sprintf("Plan written: %d tasks", len(items))), nil
+	if err := t.file.WriteTasks(tasks); err != nil {
+		return tooldef.NewToolResult(fmt.Sprintf("failed to write: %v", err), tooldef.WithError()), nil
+	}
+
+	if t.file.emitter != nil {
+		for _, task := range tasks {
+			t.file.emitter.Emit(events.TaskCreatedEvent{
+				BaseEvent:   events.NewBaseEvent(events.EventTaskCreated, ""),
+				TaskID:      task.ID,
+				Description: task.Description,
+			})
+		}
+	}
+
+	return tooldef.NewToolResult(fmt.Sprintf("Plan written: %d tasks", len(tasks))), nil
 }

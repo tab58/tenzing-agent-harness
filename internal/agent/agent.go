@@ -72,6 +72,10 @@ func (a *Agent) UpdateOffloadFn(fn func(ctx context.Context, input string) (stri
 	a.history.UpdateOffloadFn(fn)
 }
 
+func (a *Agent) SetTodoProvider(fn func() string) {
+	a.history.SetTodoProvider(fn)
+}
+
 func (a *Agent) UpdateStreamCallback(fn func(text string)) {
 	a.streamCallback = fn
 }

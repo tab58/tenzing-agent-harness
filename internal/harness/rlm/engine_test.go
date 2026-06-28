@@ -147,20 +147,58 @@ func TestEngineMaxIterations(t *testing.T) {
 	}}
 
 	engine, err := NewEngine(EngineConfig{
-		NewFetcher:    NewLLMFetcherFactory(rootLLM),
-		WorkingDir:    t.TempDir(),
-		MaxIterations: 3,
+		NewFetcher:        NewLLMFetcherFactory(rootLLM),
+		WorkingDir:        t.TempDir(),
+		DefaultIterations: 3,
 	})
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
 
-	_, err = engine.Run(context.Background(), "test")
-	if err == nil {
-		t.Fatal("expected max iterations error")
+	result, err := engine.Run(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "max iterations") {
-		t.Fatalf("error = %q, want max iterations", err.Error())
+	if !strings.Contains(result, "[RLM partial result") {
+		t.Fatalf("expected partial result marker, got %q", result)
+	}
+}
+
+func TestEngineDefaultIterations(t *testing.T) {
+	e, err := NewEngine(EngineConfig{
+		NewFetcher: NewLLMFetcherFactory(&scriptedLLM{}),
+		Querier:    &fakeQuerier{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.defaultIterations != 30 {
+		t.Errorf("defaultIterations = %d, want 30", e.defaultIterations)
+	}
+	if e.maxIterations != 200 {
+		t.Errorf("maxIterations = %d, want 200", e.maxIterations)
+	}
+}
+
+func TestEngineResolveLimit(t *testing.T) {
+	e := &Engine{defaultIterations: 30, maxIterations: 200}
+
+	tests := []struct {
+		name     string
+		override int
+		want     int
+	}{
+		{"no override uses default", 0, 30},
+		{"override within ceiling", 100, 100},
+		{"override above ceiling capped", 500, 200},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := e.resolveLimit(tt.override)
+			if got != tt.want {
+				t.Errorf("resolveLimit(%d) = %d, want %d", tt.override, got, tt.want)
+			}
+		})
 	}
 }
 

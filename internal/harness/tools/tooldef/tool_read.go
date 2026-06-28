@@ -76,24 +76,36 @@ func (t *ReadTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRes
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
+	totalLines := len(lines)
 
-	if offset > len(lines) {
-		offset = len(lines)
+	if offset > totalLines {
+		offset = totalLines
 	}
-	lines = lines[offset:]
-	if limit > 0 && len(lines) > limit {
-		lines = lines[:limit]
+	visible := lines[offset:]
+	truncated := false
+	if limit > 0 && len(visible) > limit {
+		visible = visible[:limit]
+		truncated = true
 	}
 
 	var sb strings.Builder
-	for i, line := range lines {
+	for i, line := range visible {
 		lineNum := offset + i + 1
 		fmt.Fprintf(&sb, "%6d\t%s\n", lineNum, line)
+	}
+
+	endLine := offset + len(visible)
+	if truncated {
+		fmt.Fprintf(&sb, "\n[Showing lines %d-%d of %d. For full-file analysis use rlm; to page use Read with offset=%d.]",
+			offset+1, endLine, totalLines, endLine)
+	} else {
+		fmt.Fprintf(&sb, "\n[%d lines]", totalLines)
 	}
 
 	return NewToolResult(sb.String(), WithMetadata(map[string]string{
 		"limit":  strconv.Itoa(limit),
 		"offset": strconv.Itoa(offset),
+		"total":  strconv.Itoa(totalLines),
 		"fp":     filePath,
 	})), nil
 }

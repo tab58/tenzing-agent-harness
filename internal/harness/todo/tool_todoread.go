@@ -2,6 +2,7 @@ package todo
 
 import (
 	"context"
+
 	"tenzing-agent/internal/harness/tools/tooldef"
 )
 
@@ -18,7 +19,7 @@ func NewTodoReadTool(f *TodoFile) *TodoReadTool {
 func (t *TodoReadTool) Name() string { return "TodoRead" }
 
 func (t *TodoReadTool) Description() string {
-	return "Read the current plan and check progress. Returns all tasks with their current status."
+	return "Read the current plan and check progress. Returns all tasks in dependency order with their status."
 }
 
 func (t *TodoReadTool) Schema() tooldef.Schema {
@@ -29,9 +30,9 @@ func (t *TodoReadTool) Schema() tooldef.Schema {
 }
 
 func (t *TodoReadTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
-	items, err := t.file.ReadItems()
-	if err != nil {
-		return tooldef.NewToolResult(err.Error(), tooldef.WithError()), nil
+	reminder := t.file.FormatReminder()
+	if reminder == "" {
+		return tooldef.NewToolResult("(no plan — call TodoWrite first)"), nil
 	}
-	return tooldef.NewToolResult(t.file.FormatItems(items)), nil
+	return tooldef.NewToolResult(reminder), nil
 }

@@ -7,7 +7,6 @@ import (
 
 	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/skills"
-	"tenzing-agent/internal/harness/taskgraph"
 	"tenzing-agent/internal/harness/todo"
 	"tenzing-agent/internal/harness/tools"
 	"tenzing-agent/internal/harness/tools/tooldef"
@@ -48,6 +47,7 @@ func (a *minimalAgent) UpdateSkillMap(_ map[string]string)                      
 func (a *minimalAgent) UpdateOffloadFn(_ func(context.Context, string) (string, error))      {}
 func (a *minimalAgent) UpdateStreamCallback(_ func(string))                                  {}
 func (a *minimalAgent) UpdateThinkingCallback(_ func(string))                                {}
+func (a *minimalAgent) SetTodoProvider(_ func() string)                                      {}
 
 func (a *minimalAgent) DoReasoning(_ context.Context, _ []string, _ []string) (ReasoningResult, error) {
 	a.mu.Lock()
@@ -70,8 +70,7 @@ func TestRunnerEmitsTurnAndLoopEvents(t *testing.T) {
 		Emitter:        collector,
 		ToolRegistry:   tools.NewRegistry(),
 		SkillsRegistry: skills.NewRegistry(),
-		TodoFile:       todo.NewTodoItemFile(dir),
-		TaskGraph:      taskgraph.NewTaskGraph(dir),
+		TodoFile:       todo.NewTodoFile(dir),
 		SystemPrompt:   "test",
 	})
 	if err != nil {
@@ -123,8 +122,7 @@ func TestRunnerEmitsToolEvents(t *testing.T) {
 		Emitter:        collector,
 		ToolRegistry:   registry,
 		SkillsRegistry: skills.NewRegistry(),
-		TodoFile:       todo.NewTodoItemFile(dir),
-		TaskGraph:      taskgraph.NewTaskGraph(dir),
+		TodoFile:       todo.NewTodoFile(dir),
 		SystemPrompt:   "test",
 	})
 	if err != nil {

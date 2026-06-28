@@ -21,56 +21,45 @@ func NewTodoUpdateTool(f *TodoFile) *TodoUpdateTool {
 func (t *TodoUpdateTool) Name() string { return "TodoUpdate" }
 
 func (t *TodoUpdateTool) Description() string {
-	return "Update the status of a single task in the current plan. Use this to mark tasks as in_progress, done, or blocked as you work through the plan."
+	return "Update the status of a task by ID (or ID prefix). " +
+		"Statuses: pending, in_progress, done. Optionally set a result string."
 }
 
 func (t *TodoUpdateTool) Schema() tooldef.Schema {
 	return tooldef.Schema{
 		Properties: map[string]tooldef.SchemaProperty{
-			"index":  {Type: tooldef.JsonTypeNumber},
+			"id":     {Type: tooldef.JsonTypeString},
 			"status": {Type: tooldef.JsonTypeString},
+			"result": {Type: tooldef.JsonTypeString},
 		},
-		Required: []string{"index", "status"},
+		Required: []string{"id", "status"},
 	}
 }
 
 func (t *TodoUpdateTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
 	if len(exctx.Arguments) == 0 || exctx.Arguments[0] == "" {
-		return tooldef.NewToolResult("index and status arguments are required", tooldef.WithError()), nil
+		return tooldef.NewToolResult("id and status are required", tooldef.WithError()), nil
 	}
+
 	var input struct {
-		Index  int    `json:"index"`
+		ID     string `json:"id"`
 		Status string `json:"status"`
+		Result string `json:"result"`
 	}
 	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &input); err != nil {
-		return tooldef.NewToolResult(fmt.Sprintf("invalid input JSON: %v", err), tooldef.WithError()), nil
+		return tooldef.NewToolResult(fmt.Sprintf("invalid JSON: %v", err), tooldef.WithError()), nil
 	}
-	index := input.Index
-	status := input.Status
-	if status == "" {
-		return tooldef.NewToolResult("status cannot be empty", tooldef.WithError()), nil
+	if input.ID == "" || input.Status == "" {
+		return tooldef.NewToolResult("id and status cannot be empty", tooldef.WithError()), nil
 	}
 
-	items, err := t.file.ReadItems()
+	if err := t.file.UpdateTask(input.ID, input.Status, input.Result); err != nil {
+		return tooldef.NewToolResult(fmt.Sprintf("update failed: %v", err), tooldef.WithError()), nil
+	}
+
+	_, err := t.file.ReadTasks()
 	if err != nil {
-		return tooldef.NewToolResult(err.Error(), tooldef.WithError()), nil
+		return tooldef.NewToolResult(fmt.Sprintf("Task updated but read failed: %v", err), tooldef.WithError()), nil
 	}
-
-	if index < 0 || index >= len(items) {
-		return tooldef.NewToolResult(fmt.Sprintf("index %d out of range (0-%d)", index, len(items)-1), tooldef.WithError()), nil
-	}
-
-	updated := make([]TodoItem, len(items))
-	copy(updated, items)
-	updated[index] = TodoItem{
-		Index:  items[index].Index,
-		Task:   items[index].Task,
-		Status: status,
-	}
-
-	if err := t.file.WriteItems(updated); err != nil {
-		return tooldef.NewToolResult(fmt.Sprintf("failed to update todo: %v", err), tooldef.WithError()), nil
-	}
-
-	return tooldef.NewToolResult(fmt.Sprintf("Task %d updated to %s\n\n%s", index, status, t.file.FormatItems(updated))), nil
+	return tooldef.NewToolResult(fmt.Sprintf("Task %s → %s\n\n%s", input.ID, input.Status, t.file.FormatReminder())), nil
 }

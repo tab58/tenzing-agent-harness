@@ -4,3 +4,7 @@ tasks:
   repl:
     desc: Run the Bubble Tea REPL
     cmd: go run ./cmd/repl
+
+  http:
+    desc: Run the HTTP/SSE web server
+    cmd: go run ./cmd/http

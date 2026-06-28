@@ -15,6 +15,7 @@ type Agent interface {
 	UpdateOffloadFn(fn func(ctx context.Context, input string) (string, error))
 	UpdateStreamCallback(fn func(text string))
 	UpdateThinkingCallback(fn func(text string))
+	SetTodoProvider(fn func() string)
 	DoReasoning(ctx context.Context, inputs []string, systemReminders []string) (ReasoningResult, error)
 }
 
