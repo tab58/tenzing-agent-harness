@@ -5,6 +5,7 @@ Enters a JSON-line message loop on stdin/stdout. Executes code blocks in a
 persistent namespace. Callbacks to Go for sub_lm, read_file, grep_file, list_files.
 """
 import json
+import signal
 import sys
 import re
 import time
@@ -17,6 +18,14 @@ _final_answer = None
 _last_output = ""
 _exec_count = 0
 
+_EXEC_TIMEOUT = 30
+_has_alarm = hasattr(signal, 'alarm')
+
+if _has_alarm:
+    def _timeout_handler(signum, frame):
+        raise TimeoutError(f"Code execution timed out ({_EXEC_TIMEOUT}s limit)")
+    signal.signal(signal.SIGALRM, _timeout_handler)
+
 
 def _log(event, **kv):
     _send({"type": "debug", "event": event, **{k: v for k, v in kv.items() if v is not None}})
@@ -28,10 +37,15 @@ def _send(msg):
 
 
 def _recv():
-    line = sys.stdin.readline()
-    if not line:
-        sys.exit(0)
-    return json.loads(line.strip())
+    remaining = signal.alarm(0) if _has_alarm else 0
+    try:
+        line = sys.stdin.readline()
+        if not line:
+            sys.exit(0)
+        return json.loads(line.strip())
+    finally:
+        if remaining > 0:
+            signal.alarm(remaining)
 
 
 def _print(*args):
@@ -48,6 +62,22 @@ def _sub_lm(prompt, max_tokens=4096):
     if resp.get("error"):
         raise RuntimeError(resp["error"])
     return resp["result"]
+
+
+def _llm_batch(prompts, max_tokens=4096):
+    """Dispatch multiple sub-LLM queries in parallel. Returns list of response strings."""
+    prompt_list = [str(p) for p in prompts]
+    _log("callback_start", func="sub_lm_batch", count=len(prompt_list), max_tokens=max_tokens)
+    t0 = time.monotonic()
+    _send({"type": "callback", "func": "sub_lm_batch",
+           "args": {"prompts": prompt_list, "max_tokens": int(max_tokens)}})
+    resp = _recv()
+    _log("callback_done", func="sub_lm_batch",
+         elapsed_ms=round((time.monotonic() - t0) * 1000),
+         error=resp.get("error"), result_len=len(resp.get("result", "")))
+    if resp.get("error"):
+        raise RuntimeError(resp["error"])
+    return json.loads(resp["result"])
 
 
 def _read_file(path, start_line=None, end_line=None):
@@ -120,10 +150,13 @@ def _final(answer):
 def _final_var(var_name):
     global _done, _final_answer
     val = _namespace.get(str(var_name), str(var_name))
-    try:
-        _final_answer = json.dumps(val)
-    except (TypeError, ValueError):
-        _final_answer = str(val)
+    if isinstance(val, str):
+        _final_answer = val
+    else:
+        try:
+            _final_answer = json.dumps(val)
+        except (TypeError, ValueError):
+            _final_answer = str(val)
     _done = True
 
 
@@ -237,6 +270,7 @@ _namespace["__builtins__"] = _safe_builtins
 _namespace["print"] = _print
 _namespace["llm_query"] = _sub_lm
 _namespace["sub_lm"] = _sub_lm  # backwards compat alias
+_namespace["llm_batch"] = _llm_batch
 _namespace["read_file"] = _read_file
 _namespace["grep_file"] = _grep_file
 _namespace["list_files"] = _list_files
@@ -274,12 +308,22 @@ while True:
         _log("exec_start", n=_exec_count, code_len=len(code), code_preview=code[:200])
         t0 = time.monotonic()
 
+        if _has_alarm:
+            signal.alarm(_EXEC_TIMEOUT)
         try:
             exec(code, _namespace)
+        except TimeoutError:
+            _log("exec_timeout", n=_exec_count, timeout=_EXEC_TIMEOUT)
+            _stdout_capture.append(
+                f"[Timeout] Code execution exceeded {_EXEC_TIMEOUT}s limit. "
+                "Break into smaller steps or delegate to llm_query/llm_batch.\n")
         except Exception:
             tb = traceback.format_exc()
             _log("exec_error", n=_exec_count, traceback=tb)
             _stdout_capture.append(f"[Python Error] {tb}")
+        finally:
+            if _has_alarm:
+                signal.alarm(0)
 
         elapsed_ms = round((time.monotonic() - t0) * 1000)
         stdout = "".join(_stdout_capture)

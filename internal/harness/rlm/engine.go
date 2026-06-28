@@ -25,7 +25,7 @@ var (
 	codeBlockRe         = regexp.MustCompile("(?s)```repl\\s*\n(.*?)```")
 	codeBlockFallbackRe = regexp.MustCompile("(?s)```python\\s*\n(.*?)```")
 	finalQuotRe         = regexp.MustCompile(`FINAL\("([^"]+)"\)`)
-	finalVarRe          = regexp.MustCompile(`FINAL_VAR\("([^"]+)"\)`)
+	finalVarRe          = regexp.MustCompile(`FINAL_VAR\("?([^")\s]+)"?\)`)
 	finalRe             = regexp.MustCompile(`FINAL\(([^)]+)\)`)
 )
 
@@ -47,6 +47,7 @@ type EngineConfig struct {
 	MaxIterations     int
 	TruncateMax       int
 	MaxDepth          int
+	ModelFamily       string
 	OnProgress        func(ProgressEvent)
 }
 
@@ -59,6 +60,7 @@ type Engine struct {
 	truncateMax       int
 	maxDepth          int
 	currentDepth      int
+	modelFamily       string
 	onProgress        func(ProgressEvent)
 }
 
@@ -91,6 +93,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		truncateMax:       truncMax,
 		maxDepth:          maxDepth,
 		currentDepth:      0,
+		modelFamily:       cfg.ModelFamily,
 		onProgress:        cfg.OnProgress,
 	}, nil
 }
@@ -128,6 +131,7 @@ func (e *Engine) childEngine() *Engine {
 		truncateMax:       e.truncateMax,
 		maxDepth:          e.maxDepth,
 		currentDepth:      e.currentDepth + 1,
+		modelFamily:       e.modelFamily,
 		onProgress:        e.onProgress,
 	}
 }
@@ -140,6 +144,8 @@ type promptData struct {
 	HasRLMQuery  bool
 	CurrentDepth int
 	MaxDepth     int
+	ModelFamily  string
+	ChunkInfo    string
 }
 
 func (e *Engine) Run(ctx context.Context, prompt string) (string, error) {
@@ -258,6 +264,8 @@ func (e *Engine) buildSystemPrompt(prompt string) (string, error) {
 		HasRLMQuery:  e.currentDepth+1 < e.maxDepth,
 		CurrentDepth: e.currentDepth,
 		MaxDepth:     e.maxDepth,
+		ModelFamily:  e.modelFamily,
+		ChunkInfo:    computeChunkInfo(prompt),
 	}
 	var buf bytes.Buffer
 	if err := systemTmpl.Execute(&buf, data); err != nil {
@@ -297,4 +305,28 @@ func detectFinalInText(response string) (string, bool) {
 		return strings.TrimSpace(m[1]), true
 	}
 	return "", false
+}
+
+func computeChunkInfo(prompt string) string {
+	sections := strings.Split(prompt, "\n\n")
+	var lengths []int
+	for _, s := range sections {
+		s = strings.TrimSpace(s)
+		if len(s) > 0 {
+			lengths = append(lengths, len(s))
+		}
+	}
+	if len(lengths) <= 1 {
+		return fmt.Sprintf("[%d]", len(prompt))
+	}
+	strs := make([]string, len(lengths))
+	for i, l := range lengths {
+		strs[i] = fmt.Sprintf("%d", l)
+	}
+	if len(strs) > 30 {
+		first := strings.Join(strs[:10], ", ")
+		last := strings.Join(strs[len(strs)-5:], ", ")
+		return fmt.Sprintf("[%s, ... (%d more sections), %s]", first, len(strs)-15, last)
+	}
+	return "[" + strings.Join(strs, ", ") + "]"
 }

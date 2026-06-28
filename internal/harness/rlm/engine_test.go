@@ -259,3 +259,49 @@ func TestEnginePromptNotInContext(t *testing.T) {
 		}
 	}
 }
+
+func TestEngineSimpleFetcher(t *testing.T) {
+	skipIfNoPython(t)
+
+	rootLLM := &scriptedLLM{responses: []string{
+		"The answer is clear.\nFINAL(\"42\")",
+	}}
+
+	engine, err := NewEngine(EngineConfig{
+		NewFetcher: NewSimpleFetcherFactory(rootLLM),
+		WorkingDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	answer, err := engine.Run(context.Background(), "what is the meaning of life?")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if answer != "42" {
+		t.Fatalf("answer = %q, want %q", answer, "42")
+	}
+}
+
+func TestComputeChunkInfo(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"single block", "hello world", "[11]"},
+		{"two paragraphs", "hello\n\nworld", "[5, 5]"},
+		{"three paragraphs", "aaa\n\nbb\n\nccccc", "[3, 2, 5]"},
+		{"empty", "", "[0]"},
+		{"trailing double newline", "abc\n\n", "[5]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := computeChunkInfo(tt.input)
+			if got != tt.want {
+				t.Errorf("computeChunkInfo(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}

@@ -67,3 +67,46 @@ func (f *llmFetcher) Send(ctx context.Context, content string) (Response, error)
 		OutputTokens: resp.Usage.OutputTokens,
 	}, nil
 }
+
+type simpleFetcher struct {
+	llm          provider.LLM
+	messages     []provider.Message
+	systemPrompt string
+}
+
+// NewSimpleFetcherFactory creates a fetcher that stores conversation history
+// in a plain message slice without context compression. Use this when the RLM's
+// REPL-based context bounding is sufficient and compression would interfere
+// with the intended algorithm behavior.
+func NewSimpleFetcherFactory(llm provider.LLM) FetcherFactory {
+	return func(systemPrompt string) (Fetcher, error) {
+		return &simpleFetcher{
+			llm:          llm,
+			systemPrompt: systemPrompt,
+		}, nil
+	}
+}
+
+func (f *simpleFetcher) Send(ctx context.Context, content string) (Response, error) {
+	f.messages = append(f.messages, provider.NewUserMessage(content))
+
+	model := f.llm.GetCurrentModel()
+	resp, err := f.llm.SendSyncMessage(ctx, provider.CompletionRequest{
+		Model:     model,
+		System:    f.systemPrompt,
+		Messages:  f.messages,
+		MaxTokens: provider.MaxTokensStdResponse,
+	})
+	if err != nil {
+		return Response{}, err
+	}
+
+	f.messages = append(f.messages, provider.NewAssistantMessage(resp.Text()))
+
+	return Response{
+		Text:         resp.Text(),
+		Model:        model,
+		InputTokens:  resp.Usage.InputTokens,
+		OutputTokens: resp.Usage.OutputTokens,
+	}, nil
+}

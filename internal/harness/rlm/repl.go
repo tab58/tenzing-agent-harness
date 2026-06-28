@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 
 )
 
@@ -94,10 +95,13 @@ func NewREPL(querier Querier, workingDir string, rlmQueryFn RLMQueryFunc) (*REPL
 		return nil, fmt.Errorf("start python: %w", err)
 	}
 
+	scanner := bufio.NewScanner(stdoutPipe)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+
 	repl := &REPL{
 		cmd:        cmd,
 		stdin:      json.NewEncoder(stdinPipe),
-		scanner:    bufio.NewScanner(stdoutPipe),
+		scanner:    scanner,
 		workingDir: workingDir,
 		querier:    querier,
 		rlmQueryFn: rlmQueryFn,
@@ -180,6 +184,8 @@ func (r *REPL) handleCallback(ctx context.Context, funcName string, args map[str
 	switch funcName {
 	case "sub_lm":
 		return r.callbackSubLM(ctx, args)
+	case "sub_lm_batch":
+		return r.callbackSubLMBatch(ctx, args)
 	case "rlm_query":
 		return r.callbackRLMQuery(ctx, args)
 	case "read_file":
@@ -194,14 +200,18 @@ func (r *REPL) handleCallback(ctx context.Context, funcName string, args map[str
 }
 
 func (r *REPL) callbackRLMQuery(ctx context.Context, args map[string]any) (string, error) {
-	if r.rlmQueryFn == nil {
-		return "", fmt.Errorf("rlm_query not available: max recursion depth reached")
-	}
 	prompt, _ := args["prompt"].(string)
 	if prompt == "" {
 		return "", fmt.Errorf("rlm_query requires a non-empty prompt")
 	}
-	return r.rlmQueryFn(ctx, prompt)
+	if r.rlmQueryFn != nil {
+		return r.rlmQueryFn(ctx, prompt)
+	}
+	if r.querier == nil {
+		return "", fmt.Errorf("rlm_query not available: no querier configured")
+	}
+	slog.Info("[RLM] rlm_query falling back to llm_query (max depth reached)", "prompt_len", len(prompt))
+	return r.querier.Query(ctx, prompt, 4096)
 }
 
 func (r *REPL) callbackSubLM(ctx context.Context, args map[string]any) (string, error) {
@@ -214,6 +224,59 @@ func (r *REPL) callbackSubLM(ctx context.Context, args map[string]any) (string, 
 		maxTokens = int64(mt)
 	}
 	return r.querier.Query(ctx, prompt, maxTokens)
+}
+
+func (r *REPL) callbackSubLMBatch(ctx context.Context, args map[string]any) (string, error) {
+	if r.querier == nil {
+		return "", fmt.Errorf("sub_lm_batch not available: no querier configured")
+	}
+	promptsRaw, _ := args["prompts"].([]any)
+	maxTokens := int64(4096)
+	if mt, ok := args["max_tokens"].(float64); ok {
+		maxTokens = int64(mt)
+	}
+
+	prompts := make([]string, 0, len(promptsRaw))
+	for _, p := range promptsRaw {
+		if s, ok := p.(string); ok && s != "" {
+			prompts = append(prompts, s)
+		}
+	}
+	if len(prompts) == 0 {
+		return "[]", nil
+	}
+
+	const maxConcurrent = 8
+	sem := make(chan struct{}, maxConcurrent)
+	results := make([]string, len(prompts))
+	errs := make([]error, len(prompts))
+	var wg sync.WaitGroup
+
+	for i, p := range prompts {
+		wg.Add(1)
+		go func(idx int, prompt string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			result, err := r.querier.Query(ctx, prompt, maxTokens)
+			results[idx] = result
+			errs[idx] = err
+		}(i, p)
+	}
+
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			return "", fmt.Errorf("batch query [%d] failed: %w", i, err)
+		}
+	}
+
+	encoded, err := json.Marshal(results)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
 }
 
 func (r *REPL) callbackReadFile(args map[string]any) (string, error) {
@@ -313,20 +376,20 @@ func (r *REPL) callbackListFiles(args map[string]any) (string, error) {
 
 func (r *REPL) resolvePath(path string) (string, error) {
 	cleaned := filepath.Clean(path)
+	var abs string
 	if filepath.IsAbs(cleaned) {
-		if !strings.HasPrefix(cleaned, r.workingDir) {
-			return "", fmt.Errorf("path outside working directory: %s", path)
+		abs = cleaned
+	} else {
+		var err error
+		abs, err = filepath.Abs(filepath.Join(r.workingDir, cleaned))
+		if err != nil {
+			return "", fmt.Errorf("resolve path: %w", err)
 		}
-		return cleaned, nil
 	}
 
-	resolved := filepath.Join(r.workingDir, cleaned)
-	abs, err := filepath.Abs(resolved)
-	if err != nil {
-		return "", fmt.Errorf("resolve path: %w", err)
-	}
 	wdAbs, _ := filepath.Abs(r.workingDir)
-	if !strings.HasPrefix(abs, wdAbs) {
+	rel, err := filepath.Rel(wdAbs, abs)
+	if err != nil || strings.HasPrefix(rel, "..") {
 		return "", fmt.Errorf("path outside working directory: %s", path)
 	}
 	return abs, nil

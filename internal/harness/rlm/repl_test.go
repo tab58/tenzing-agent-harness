@@ -384,6 +384,112 @@ else:
 	}
 }
 
+type echoQuerier struct{}
+
+func (q *echoQuerier) Query(_ context.Context, prompt string, _ int64) (string, error) {
+	return "echo:" + prompt, nil
+}
+
+func TestREPLBatchSubLM(t *testing.T) {
+	skipIfNoPython(t)
+	q := &echoQuerier{}
+	r, err := NewREPL(q, t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewREPL: %v", err)
+	}
+	defer r.Close()
+
+	stdout, _, _, err := r.Execute(context.Background(), `
+results = llm_batch(["alpha", "beta", "gamma"])
+print("|".join(results))
+`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.TrimSpace(stdout) != "echo:alpha|echo:beta|echo:gamma" {
+		t.Fatalf("stdout = %q, want %q", strings.TrimSpace(stdout), "echo:alpha|echo:beta|echo:gamma")
+	}
+}
+
+func TestREPLBatchSubLMEmpty(t *testing.T) {
+	skipIfNoPython(t)
+	q := &echoQuerier{}
+	r, err := NewREPL(q, t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewREPL: %v", err)
+	}
+	defer r.Close()
+
+	stdout, _, _, err := r.Execute(context.Background(), `
+results = llm_batch([])
+print(len(results))
+`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.TrimSpace(stdout) != "0" {
+		t.Fatalf("stdout = %q, want %q", strings.TrimSpace(stdout), "0")
+	}
+}
+
+func TestREPLBatchSubLMError(t *testing.T) {
+	skipIfNoPython(t)
+	q := &fakeQuerier{err: fmt.Errorf("api down")}
+	r, err := NewREPL(q, t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewREPL: %v", err)
+	}
+	defer r.Close()
+
+	stdout, _, _, err := r.Execute(context.Background(), `
+try:
+    llm_batch(["hello", "world"])
+except RuntimeError as e:
+    print("caught: " + str(e))
+`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(stdout, "caught:") {
+		t.Fatalf("expected error caught, stdout = %q", stdout)
+	}
+}
+
+func TestREPLExecTimeout(t *testing.T) {
+	skipIfNoPython(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("signal.alarm not available on Windows")
+	}
+	if testing.Short() {
+		t.Skip("timeout test requires 30s wait")
+	}
+	r, err := NewREPL(nil, t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewREPL: %v", err)
+	}
+	defer r.Close()
+
+	stdout, done, _, err := r.Execute(context.Background(), "while True: pass")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if done {
+		t.Fatal("timeout should not set done")
+	}
+	if !strings.Contains(stdout, "[Timeout]") {
+		t.Fatalf("expected timeout message, got %q", stdout)
+	}
+
+	// REPL should still work after timeout
+	stdout, _, _, err = r.Execute(context.Background(), `print("still alive")`)
+	if err != nil {
+		t.Fatalf("Execute after timeout: %v", err)
+	}
+	if strings.TrimSpace(stdout) != "still alive" {
+		t.Fatalf("stdout = %q, want %q", strings.TrimSpace(stdout), "still alive")
+	}
+}
+
 func TestREPLClose(t *testing.T) {
 	skipIfNoPython(t)
 	r, err := NewREPL(nil, t.TempDir(), nil)
