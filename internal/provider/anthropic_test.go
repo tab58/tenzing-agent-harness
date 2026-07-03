@@ -21,7 +21,7 @@ func TestToAnthropicMessages_ToolRoundTrip(t *testing.T) {
 		},
 		{
 			Role:    RoleUser,
-			Content: []ContentBlock{NewToolResultContent("toolu_01", "package main")},
+			Content: []ContentBlock{NewToolResultContent("toolu_01", "read_file", "package main")},
 		},
 	}
 

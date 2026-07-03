@@ -176,7 +176,7 @@ RunLoop(ctx, input string) → (string, error)
    d. If ToolCall == nil → Stop → return FinalAnswer
    e. StartToolExecution → registry.Execute(toolName, args) → FinishToolExecution
    f. Fire hooks.OnToolCall(name, input, output)
-   g. Append tool result to inputs
+   g. Set inputs to the new tool result only (agent history holds earlier turns)
    h. Loop to 2a
 3. On error: Reset FSM, return error
 ```
@@ -197,7 +197,7 @@ type ReasoningResult struct {
 }
 ```
 
-The AgentRunner owns the loop; `Agent` owns the LLM interaction. `inputs` accumulates user message + tool results as raw strings. `systemReminders` carries the current todo plan state.
+The AgentRunner owns the loop; `Agent` owns the LLM interaction. `inputs` carries the user message on the first iteration and only the newest tool result afterwards — the Agent keeps the conversation history itself, and pairs tool outputs with the pending `tool_use` ids from the previous response as `tool_result` blocks (required by the Anthropic API). `systemReminders` carries the current todo plan state.
 
 The concrete implementation lives in `internal/agent/`. Tool definitions are injected at construction via `AgentConfig` — the tool registry converts its definitions to `[]provider.ToolDefinition` via `Registry.ProviderDefinitions()`.
 
@@ -232,6 +232,7 @@ type HarnessConfig struct {
     SubAgentMaxDepth  int             // 0 = disabled, default 2
     SubAgentMaxIter   int             // default 30 per child
     SubAgentBuilder   AgentBuilder    // required if SubAgentMaxDepth > 0
+    DisabledTools     []string        // remove tools by name (case-insensitive) after registration, incl. built-ins
 }
 
 type RLMConfig struct {
@@ -423,7 +424,7 @@ Architecture: `spawn_agent` tool → `AgentFactory` interface (in `subagent/`) �
 
 Depth control: factory tracks `currentDepth`. At `maxDepth`, child gets all tools except `spawn_agent`. Default max depth is 2 (main → child → grandchild).
 
-Tool isolation: each child gets fresh tool instances via `tools.NewRegistry()`. No tool instance is shared between parent and child. `pathLocks` (package-level `sync.Map`) is the one intentional exception — serializes file writes across all agents in-process.
+Tool isolation: each child gets fresh tool instances via `tools.NewRegistry(cwd)`. No tool instance is shared between parent and child. `pathLocks` (package-level `sync.Map`) is the one intentional exception — serializes file writes across all agents in-process.
 
 Children don't get: `TodoFile`, `SkillsRegistry`, or event hooks. Planning is the parent's job.
 

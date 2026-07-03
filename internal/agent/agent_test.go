@@ -153,3 +153,91 @@ func TestDoReasoning_NoCallbackUsesSyncPath(t *testing.T) {
 		t.Fatal("SendStreamingMessage should not be called without callback")
 	}
 }
+// TestDoReasoning_ToolResultPairing verifies a tool round-trip produces a
+// valid history: the user message after an assistant tool_use must carry
+// tool_result blocks paired by id (the Anthropic API rejects anything else),
+// and earlier inputs must not be re-appended.
+func TestDoReasoning_ToolResultPairing(t *testing.T) {
+	toolUseResp := provider.CompletionResponse{
+		ID:         "resp-1",
+		Model:      "test-model",
+		StopReason: provider.StopReasonToolUse,
+		Content: []provider.ContentBlock{
+			provider.NewToolUseContent("tu-1", "Read", []byte(`{"path":"a.go"}`)),
+			provider.NewToolUseContent("tu-2", "Read", []byte(`{"path":"b.go"}`)),
+		},
+	}
+	finalResp := provider.CompletionResponse{
+		ID:         "resp-2",
+		Model:      "test-model",
+		StopReason: provider.StopReasonEndTurn,
+		Content:    []provider.ContentBlock{provider.NewTextContent("done")},
+	}
+
+	mock := &recordingLLM{responses: []provider.CompletionResponse{toolUseResp, finalResp}}
+	ag := newTestAgent(t, mock)
+
+	res, err := ag.DoReasoning(context.Background(), []string{"analyze"}, nil)
+	if err != nil {
+		t.Fatalf("DoReasoning 1: %v", err)
+	}
+	if res.ToolCall == nil || res.ToolCall.ID != "tu-1" {
+		t.Fatalf("expected first tool call tu-1, got %+v", res.ToolCall)
+	}
+
+	if _, err := ag.DoReasoning(context.Background(), []string{"file contents"}, nil); err != nil {
+		t.Fatalf("DoReasoning 2: %v", err)
+	}
+
+	msgs := mock.lastRequest.Messages
+	if len(msgs) != 3 {
+		t.Fatalf("history = %d messages, want 3 (user, assistant, tool_result message); got %+v", len(msgs), msgs)
+	}
+	last := msgs[2]
+	if last.Role != provider.RoleTool {
+		t.Fatalf("last message role = %q, want tool", last.Role)
+	}
+	if len(last.Content) != 2 {
+		t.Fatalf("tool_result blocks = %d, want 2", len(last.Content))
+	}
+	if last.Content[0].Type != provider.ContentTypeToolResult || last.Content[0].ToolResultID != "tu-1" {
+		t.Errorf("block 0 = %+v, want tool_result for tu-1", last.Content[0])
+	}
+	if last.Content[0].ToolOutput != "file contents" {
+		t.Errorf("block 0 output = %q, want %q", last.Content[0].ToolOutput, "file contents")
+	}
+	if last.Content[1].Type != provider.ContentTypeToolResult || last.Content[1].ToolResultID != "tu-2" {
+		t.Errorf("block 1 = %+v, want placeholder tool_result for tu-2", last.Content[1])
+	}
+}
+
+// recordingLLM returns canned responses in order and records the last request.
+type recordingLLM struct {
+	responses   []provider.CompletionResponse
+	calls       int
+	lastRequest provider.CompletionRequest
+}
+
+func (m *recordingLLM) SendSyncMessage(_ context.Context, _ provider.CompletionRequest) (provider.CompletionResponse, error) {
+	return provider.CompletionResponse{}, nil
+}
+
+func (m *recordingLLM) SendStreamingMessage(_ context.Context, _ provider.CompletionRequest, events chan<- provider.StreamEvent) error {
+	close(events)
+	return nil
+}
+
+func (m *recordingLLM) SendMessageWithTools(_ context.Context, req provider.CompletionRequest, _ []provider.ToolDefinition) (provider.CompletionResponse, error) {
+	m.lastRequest = req
+	resp := m.responses[min(m.calls, len(m.responses)-1)]
+	m.calls++
+	return resp, nil
+}
+
+func (m *recordingLLM) CountTokens(_ context.Context, _ provider.CompletionRequest) (provider.TokenCount, error) {
+	return provider.TokenCount{InputTokens: 10}, nil
+}
+
+func (m *recordingLLM) ListModels(_ context.Context) ([]provider.ModelInfo, error) { return nil, nil }
+func (m *recordingLLM) GetCurrentModel() string                                    { return "test-model" }
+func (m *recordingLLM) GetContextWindowSize() int                                  { return 128000 }

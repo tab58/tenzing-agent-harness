@@ -45,7 +45,10 @@ type HarnessConfig struct {
 	Cwd              string
 	MainSystemPrompt string
 	ExtraTools       []tooldef.Definition
-	ExtraSkillDirs   []string
+	// DisabledTools removes tools by name (case-insensitive) after all
+	// registration, including built-ins like "bash" and "edit".
+	DisabledTools  []string
+	ExtraSkillDirs []string
 	RLMModel             provider.LLM
 	RLMDefaultIterations int
 	RLMMaxIterations     int
@@ -141,7 +144,7 @@ func New(cfg HarnessConfig) (*Harness, error) {
 		return nil, fmt.Errorf("failed to initialize RLM engine: %w", err)
 	}
 
-	toolRegistry := tools.NewRegistry()
+	toolRegistry := tools.NewRegistry(cwd)
 	toolRegistry.RegisterFromProvider(skillsRegistry)
 	toolRegistry.RegisterFromProvider(rlmEngine)
 	toolRegistry.RegisterFromProvider(todoFile)
@@ -165,6 +168,10 @@ func New(cfg HarnessConfig) (*Harness, error) {
 
 	for _, tool := range cfg.ExtraTools {
 		toolRegistry.Register(tool)
+	}
+
+	if len(cfg.DisabledTools) > 0 {
+		toolRegistry = toolRegistry.CopyWithout(cfg.DisabledTools...)
 	}
 
 	agent := cfg.Agent

@@ -362,6 +362,10 @@ func toAnthropicMessages(msgs []Message) []anthropic.MessageParam {
 			result = append(result, anthropic.NewUserMessage(blocks...))
 		case RoleAssistant:
 			result = append(result, anthropic.NewAssistantMessage(blocks...))
+		case RoleTool:
+			// Anthropic has no tool role; tool_result blocks ride in a
+			// user message.
+			result = append(result, anthropic.NewUserMessage(blocks...))
 		case RoleSystem:
 			continue
 		}

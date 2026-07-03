@@ -104,6 +104,9 @@ type ollamaChatMessage struct {
 	Role      string           `json:"role"`
 	Content   string           `json:"content"`
 	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+	// ToolName labels a role-"tool" message with the tool that produced it.
+	// Ollama's native API has no tool_call_id; this is its only linkage.
+	ToolName string `json:"tool_name,omitempty"`
 }
 
 type ollamaTool struct {
@@ -458,8 +461,9 @@ func toOllamaMessages(req CompletionRequest, log Logger) []ollamaChatMessage {
 			for _, block := range msg.Content {
 				if block.Type == ContentTypeToolResult {
 					msgs = append(msgs, ollamaChatMessage{
-						Role:    "tool",
-						Content: block.ToolOutput,
+						Role:     "tool",
+						Content:  block.ToolOutput,
+						ToolName: block.ToolName,
 					})
 				}
 			}

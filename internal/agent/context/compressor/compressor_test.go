@@ -91,7 +91,7 @@ func TestEstimateSize(t *testing.T) {
 			messages: []provider.Message{{
 				Role: provider.RoleTool,
 				Content: []provider.ContentBlock{
-					provider.NewToolResultContent("id-1", strings.Repeat("x", 40)),
+					provider.NewToolResultContent("id-1", "tool", strings.Repeat("x", 40)),
 				},
 			}},
 			want: 10, // 40 chars / toolOutputWeight(4) = 10

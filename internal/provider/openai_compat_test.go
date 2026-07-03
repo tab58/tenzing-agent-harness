@@ -62,7 +62,7 @@ func TestToOpenAIMessages_ToolResult(t *testing.T) {
 	msgs := []Message{
 		{
 			Role:    RoleTool,
-			Content: []ContentBlock{NewToolResultContent("call_01", "package main")},
+			Content: []ContentBlock{NewToolResultContent("call_01", "read_file", "package main")},
 		},
 	}
 
@@ -90,7 +90,7 @@ func TestCombinedText(t *testing.T) {
 	}{
 		{"single text block", []ContentBlock{NewTextContent("hello")}, "hello"},
 		{"single tool use block", []ContentBlock{NewToolUseContent("id", "tool", nil)}, ""},
-		{"single tool result block", []ContentBlock{NewToolResultContent("id", "output")}, ""},
+		{"single tool result block", []ContentBlock{NewToolResultContent("id", "tool", "output")}, ""},
 		{
 			"mixed blocks",
 			[]ContentBlock{

@@ -243,8 +243,10 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 			})
 		}
 
-		// Loop: feed tool result back to agent for next reasoning cycle
-		inputs = append(inputs, toolResult.Output)
+		// Loop: feed only the new tool result to the next reasoning cycle.
+		// The agent keeps its own history; re-sending earlier inputs would
+		// duplicate them in the context every iteration.
+		inputs = []string{toolResult.Output}
 	}
 
 	if err := h.fsm.TransitionStates(ctx, LoopTransitionReset); err != nil {

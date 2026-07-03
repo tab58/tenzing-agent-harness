@@ -25,7 +25,7 @@ func TestIntegration_ReadTool(t *testing.T) {
 	content := "line one\nline two\nline three\n"
 	filePath := seedFile(t, workDir, "sample.txt", content)
 
-	registry := tools.NewRegistry()
+	registry := tools.NewRegistry("")
 
 	result, err := registry.Execute(context.Background(), "Read", jsonInput(map[string]any{
 		"file_path": filePath,
@@ -44,7 +44,7 @@ func TestIntegration_ReadTool(t *testing.T) {
 
 func TestIntegration_ReadTool_MissingFile(t *testing.T) {
 	workDir := t.TempDir()
-	registry := tools.NewRegistry()
+	registry := tools.NewRegistry("")
 
 	result, err := registry.Execute(context.Background(), "Read", jsonInput(map[string]any{
 		"file_path": filepath.Join(workDir, "nope.txt"),
@@ -66,7 +66,7 @@ func TestIntegration_WriteAndRevert(t *testing.T) {
 	writeTool := snapshot.NewWriteTool(snapshots)
 	revertTool := snapshot.NewRevertTool(snapshots)
 
-	registry := tools.NewRegistry()
+	registry := tools.NewRegistry("")
 	registry.Register(writeTool)
 	registry.Register(revertTool)
 
@@ -101,7 +101,7 @@ func TestIntegration_WriteAndRevert_NoSnapshot(t *testing.T) {
 	snapshots := snapshot.NewSnapshotStore()
 	revertTool := snapshot.NewRevertTool(snapshots)
 
-	registry := tools.NewRegistry()
+	registry := tools.NewRegistry("")
 	registry.Register(revertTool)
 
 	result, err := registry.Execute(context.Background(), "Revert", jsonInput(map[string]any{
@@ -120,7 +120,7 @@ func TestIntegration_EditTool(t *testing.T) {
 	workDir := t.TempDir()
 	filePath := seedFile(t, workDir, "editable.txt", "hello world")
 
-	registry := tools.NewRegistry()
+	registry := tools.NewRegistry("")
 
 	result, err := registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
 		"file_path":  filePath,
@@ -140,7 +140,7 @@ func TestIntegration_EditTool_NotFound(t *testing.T) {
 	workDir := t.TempDir()
 	filePath := seedFile(t, workDir, "editable.txt", "hello world")
 
-	registry := tools.NewRegistry()
+	registry := tools.NewRegistry("")
 
 	result, err := registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
 		"file_path":  filePath,
@@ -159,7 +159,7 @@ func TestIntegration_EditTool_NotUnique(t *testing.T) {
 	workDir := t.TempDir()
 	filePath := seedFile(t, workDir, "editable.txt", "aaa bbb aaa")
 
-	registry := tools.NewRegistry()
+	registry := tools.NewRegistry("")
 
 	result, err := registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
 		"file_path":  filePath,
@@ -179,7 +179,7 @@ func TestIntegration_EditTool_ReplaceAll(t *testing.T) {
 	workDir := t.TempDir()
 	filePath := seedFile(t, workDir, "editable.txt", "aaa bbb aaa")
 
-	registry := tools.NewRegistry()
+	registry := tools.NewRegistry("")
 
 	result, err := registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
 		"file_path":   filePath,
@@ -205,7 +205,7 @@ func TestIntegration_WriteEditRevert_FullCycle(t *testing.T) {
 	writeTool := snapshot.NewWriteTool(snapshots)
 	revertTool := snapshot.NewRevertTool(snapshots)
 
-	registry := tools.NewRegistry()
+	registry := tools.NewRegistry("")
 	registry.Register(writeTool)
 	registry.Register(revertTool)
 
@@ -256,7 +256,7 @@ func TestIntegration_ReadEditRevert_ThroughLoop(t *testing.T) {
 		finalStep("reverted"),
 	)
 
-	registry := tools.NewRegistry()
+	registry := tools.NewRegistry("")
 	registry.Register(snapshot.NewWriteTool(snapshots))
 	registry.Register(snapshot.NewRevertTool(snapshots))
 
@@ -293,7 +293,7 @@ func TestIntegration_FinalAnswerOnly(t *testing.T) {
 	workDir := t.TempDir()
 	agent := newScriptedAgent(finalStep("direct answer"))
 
-	registry := tools.NewRegistry()
+	registry := tools.NewRegistry("")
 	runner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
 		Agent:          agent,
 		ToolRegistry:   registry,
@@ -319,7 +319,7 @@ func TestIntegration_ContextCanceled(t *testing.T) {
 	workDir := t.TempDir()
 	agent := newScriptedAgent(finalStep("should not reach"))
 
-	registry := tools.NewRegistry()
+	registry := tools.NewRegistry("")
 	runner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
 		Agent:          agent,
 		ToolRegistry:   registry,
@@ -346,7 +346,7 @@ func TestIntegration_UnknownTool(t *testing.T) {
 		toolStep("nonexistent_tool", "{}"),
 	)
 
-	registry := tools.NewRegistry()
+	registry := tools.NewRegistry("")
 	runner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
 		Agent:          agent,
 		ToolRegistry:   registry,
@@ -380,7 +380,7 @@ func TestIntegration_MultipleToolCalls(t *testing.T) {
 		finalStep("read 3 files"),
 	)
 
-	registry := tools.NewRegistry()
+	registry := tools.NewRegistry("")
 
 	r, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
 		Agent:          agent,
@@ -415,7 +415,7 @@ func TestIntegration_ToolHookCalled(t *testing.T) {
 	)
 
 	collector := &testEventCollector{}
-	registry := tools.NewRegistry()
+	registry := tools.NewRegistry("")
 
 	r, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
 		Agent:          agent,

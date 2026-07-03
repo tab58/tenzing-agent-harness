@@ -137,7 +137,7 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 
 func (f *SubAgentFactory) buildChildToolRegistry() *tools.Registry {
 	childDepth := f.currentDepth + 1
-	registry := tools.NewRegistry()
+	registry := tools.NewRegistry(f.cwd)
 
 	rlmEngine, err := rlm.NewEngine(rlm.EngineConfig{
 		NewFetcher: rlm.NewLLMFetcherFactory(f.agentLLM),

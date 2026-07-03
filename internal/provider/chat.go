@@ -31,7 +31,7 @@ const (
 // populated:
 //   - ContentTypeText: Text
 //   - ContentTypeToolUse: ToolUseID, ToolName, ToolInput
-//   - ContentTypeToolResult: ToolResultID, ToolOutput
+//   - ContentTypeToolResult: ToolResultID, ToolOutput, ToolName
 //
 // This structure mirrors the content block concept shared by both
 // Anthropic (ContentBlockUnion) and OpenAI (message content + tool calls),
@@ -73,11 +73,14 @@ func NewToolUseContent(id, name string, input json.RawMessage) ContentBlock {
 
 // NewToolResultContent creates a content block containing the output of a
 // tool invocation. toolUseID must match the ToolUseID from the corresponding
-// tool use block so the provider can correlate the result.
-func NewToolResultContent(toolUseID, output string) ContentBlock {
+// tool use block so the provider can correlate the result. name is the tool
+// that produced the output — providers without call-id linkage (Ollama's
+// native API) use it to label the result for the model.
+func NewToolResultContent(toolUseID, name, output string) ContentBlock {
 	return ContentBlock{
 		Type:         ContentTypeToolResult,
 		ToolResultID: toolUseID,
+		ToolName:     name,
 		ToolOutput:   output,
 	}
 }

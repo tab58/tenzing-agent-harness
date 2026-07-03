@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"tenzing-agent/internal/harness/events"
@@ -92,6 +93,33 @@ func TestHarnessNoSpawnAgentWhenDisabled(t *testing.T) {
 	for _, def := range h.ToolDefinitions() {
 		if def.Name() == "spawn_agent" {
 			t.Fatal("spawn_agent tool should not be registered when SubAgentMaxDepth is 0")
+		}
+	}
+}
+
+func TestHarnessDisabledToolsRemovesBuiltins(t *testing.T) {
+	h, err := New(HarnessConfig{
+		Agent:            &stubAgent{},
+		RLMModel:         &stubLLM{},
+		MainSystemPrompt: "test",
+		DisabledTools:    []string{"bash", "edit"},
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	names := make(map[string]bool)
+	for _, def := range h.ToolDefinitions() {
+		names[strings.ToLower(def.Name())] = true
+	}
+	for _, banned := range []string{"bash", "edit"} {
+		if names[banned] {
+			t.Errorf("tool %q present despite DisabledTools", banned)
+		}
+	}
+	for _, required := range []string{"read", "grep", "glob"} {
+		if !names[required] {
+			t.Errorf("tool %q missing; DisabledTools removed too much", required)
 		}
 	}
 }

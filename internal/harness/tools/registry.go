@@ -16,15 +16,18 @@ type ToolProvider interface {
 }
 
 type Registry struct {
-	tools map[string]tooldef.Definition
-	// workingDir string
+	tools      map[string]tooldef.Definition
+	workingDir string
 }
 
-// func NewRegistry(workingDir string) *Registry {
-func NewRegistry() *Registry {
+// NewRegistry creates a Registry with the built-in tools registered.
+// workingDir, when non-empty, is passed to tools via ExecutionContext so
+// relative paths resolve against it; empty means each tool falls back to
+// the process working directory.
+func NewRegistry(workingDir string) *Registry {
 	r := &Registry{
-		tools: make(map[string]tooldef.Definition),
-		// workingDir: workingDir,
+		tools:      make(map[string]tooldef.Definition),
+		workingDir: workingDir,
 	}
 
 	// basic tools
@@ -68,7 +71,10 @@ func (r *Registry) CopyWithout(names ...string) *Registry {
 	for _, n := range names {
 		exclude[strings.ToLower(n)] = struct{}{}
 	}
-	filtered := NewRegistry()
+	filtered := &Registry{
+		tools:      make(map[string]tooldef.Definition, len(r.tools)),
+		workingDir: r.workingDir,
+	}
 	for name, def := range r.tools {
 		if _, skip := exclude[name]; !skip {
 			filtered.tools[name] = def
@@ -117,8 +123,8 @@ func (r *Registry) Execute(ctx context.Context, name string, input string) (tool
 		}, nil
 	}
 	exctx := tooldef.ExecutionContext{
-		Arguments: []string{input},
-		// WorkingDir: r.workingDir,
+		Arguments:  []string{input},
+		WorkingDir: r.workingDir,
 	}
 	result, err := toolDef.Execute(ctx, exctx)
 	if err != nil {

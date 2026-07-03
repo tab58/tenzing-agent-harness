@@ -25,6 +25,13 @@ type Agent struct {
 	tools            []provider.ToolDefinition
 	streamCallback   func(text string)
 	thinkingCallback func(text string)
+
+	// pendingToolUses holds the tool_use blocks from the last assistant
+	// response. The next DoReasoning call pairs incoming inputs with these
+	// ids as tool_result blocks — required by the Anthropic API, which
+	// rejects histories where a tool_use is not answered by a tool_result
+	// in the immediately following user message.
+	pendingToolUses []provider.ContentBlock
 }
 
 type AgentConfig struct {
@@ -143,10 +150,33 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 		inputs = replaceInput(inputs, idx, "[RLM processed result]\n\n"+result)
 	}
 
-	// convert inputs arg to user messages and add to context
-	userMsgs := make([]provider.Message, len(inputs))
-	for i, input := range inputs {
-		userMsgs[i] = provider.NewUserMessage(input)
+	// convert inputs arg to user messages and add to context. When the
+	// previous response contained tool_use blocks, inputs are tool outputs
+	// and must be sent back as tool_result blocks paired by id.
+	var userMsgs []provider.Message
+	if len(a.pendingToolUses) > 0 {
+		blocks := make([]provider.ContentBlock, 0, len(a.pendingToolUses))
+		for i, tu := range a.pendingToolUses {
+			output := "tool call was not executed"
+			if i < len(inputs) {
+				output = inputs[i]
+			}
+			blocks = append(blocks, provider.NewToolResultContent(tu.ToolUseID, tu.ToolName, output))
+		}
+		// RoleTool: every provider converter renders this natively — the
+		// Anthropic converter as a user message with tool_result blocks,
+		// Ollama/OpenAI as role-"tool" messages. A plain RoleUser message
+		// would drop the blocks in the Ollama/OpenAI text conversion.
+		userMsgs = append(userMsgs, provider.Message{Role: provider.RoleTool, Content: blocks})
+		for i := len(a.pendingToolUses); i < len(inputs); i++ {
+			userMsgs = append(userMsgs, provider.NewUserMessage(inputs[i]))
+		}
+		a.pendingToolUses = nil
+	} else {
+		userMsgs = make([]provider.Message, len(inputs))
+		for i, input := range inputs {
+			userMsgs[i] = provider.NewUserMessage(input)
+		}
 	}
 	if _, err := a.history.AppendMessages(ctx, userMsgs...); err != nil {
 		return runner.ReasoningResult{}, fmt.Errorf("append user inputs: %w", err)
@@ -232,6 +262,9 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 	// if the action to take is a tool call, get it
 	toolCalls := resp.ToolCalls()
 	if len(toolCalls) > 0 {
+		a.pendingToolUses = toolCalls
+		// ponytail: only the first tool call is executed; the rest get
+		// "not executed" tool_results and the model re-issues them.
 		tc := toolCalls[0]
 		return runner.ReasoningResult{
 			ToolCall: &tooldef.ToolCall{

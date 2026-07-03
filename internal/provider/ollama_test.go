@@ -49,7 +49,7 @@ func TestToOllamaMessages_RolesAndToolResults(t *testing.T) {
 			NewAssistantMessage("hello"),
 			{
 				Role:    RoleTool,
-				Content: []ContentBlock{NewToolResultContent("call_01", "package main")},
+				Content: []ContentBlock{NewToolResultContent("call_01", "read_file", "package main")},
 			},
 		},
 	}
@@ -70,6 +70,9 @@ func TestToOllamaMessages_RolesAndToolResults(t *testing.T) {
 			t.Errorf("msg[%d] = {%q, %q}, want {%q, %q}",
 				i, msgs[i].Role, msgs[i].Content, want.role, want.content)
 		}
+	}
+	if msgs[3].ToolName != "read_file" {
+		t.Errorf("tool message ToolName = %q, want %q", msgs[3].ToolName, "read_file")
 	}
 }
 

@@ -68,7 +68,7 @@ func TestRunnerEmitsTurnAndLoopEvents(t *testing.T) {
 	r, err := NewAgentRunner(AgentRunnerConfig{
 		Agent:          agent,
 		Emitter:        collector,
-		ToolRegistry:   tools.NewRegistry(),
+		ToolRegistry:   tools.NewRegistry(""),
 		SkillsRegistry: skills.NewRegistry(),
 		TodoFile:       todo.NewTodoFile(dir),
 		SystemPrompt:   "test",
@@ -109,7 +109,7 @@ func TestRunnerEmitsToolEvents(t *testing.T) {
 	collector := &eventCollector{}
 	dir := t.TempDir()
 
-	registry := tools.NewRegistry()
+	registry := tools.NewRegistry("")
 	registry.Register(&echoTool{})
 
 	agent := &minimalAgent{steps: []ReasoningResult{
