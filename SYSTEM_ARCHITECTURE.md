@@ -233,7 +233,8 @@ type HarnessConfig struct {
     SubAgentMaxIter   int             // default 30 per child
     SubAgentBuilder   AgentBuilder    // required if SubAgentMaxDepth > 0
     DisabledTools     []string        // remove tools by name (case-insensitive) after registration, incl. built-ins
-    AdvisorModel      provider.LLM    // nil = advisor tool not registered; should be a stronger reasoning model
+    AdvisorModel      provider.LLM    // backs the advisor tool; should be a stronger reasoning model
+    EnableAdvisor     bool            // default false — advisor tool registered only when true AND AdvisorModel set
 }
 
 type RLMConfig struct {
@@ -316,7 +317,7 @@ Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn
 | `Revert` | Restore file | Pops from snapshot store (one-shot) |
 | `rlm` | Recursive Language Model | Python REPL loop with llm_query, rlm_query (recursive), file access, FINAL termination |
 | `spawn_agent` | Delegate operational task | Spawns child AgentRunner with full tools, blocks until complete, returns final answer |
-| `advisor` | Plan review by stronger model | One-shot call to `AdvisorModel` (plan + optional context); returns critique: risks, missing steps, alternatives. Registered only when `AdvisorModel` set; not given to subagents |
+| `advisor` | Plan review by stronger model | One-shot call to `AdvisorModel` (plan + optional context); returns critique: risks, missing steps, alternatives. Disabled by default — requires `EnableAdvisor` + `AdvisorModel`; not given to subagents |
 | `list_skills` | List skills | Returns name→description map from skill registry |
 | `load_skill` | Load skill | Lazy-loads full `SKILL.md` content by name |
 | `TodoWrite` | Write plan | Bulk-write tasks with deps-by-index, assigns IDs, persists to `.agent_todo.json` |

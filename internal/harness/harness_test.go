@@ -97,43 +97,43 @@ func TestHarnessNoSpawnAgentWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestHarnessRegistersAdvisorWhenModelSet(t *testing.T) {
-	h, err := New(HarnessConfig{
-		Agent:            &stubAgent{},
-		RLMModel:         &stubLLM{},
-		AdvisorModel:     &stubLLM{},
-		MainSystemPrompt: "test",
-	})
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
+func TestHarnessAdvisorRegistration(t *testing.T) {
+	tests := []struct {
+		name         string
+		advisorModel provider.LLM
+		enabled      bool
+		want         bool
+	}{
+		{"enabled with model", &stubLLM{}, true, true},
+		{"model set but not enabled (default off)", &stubLLM{}, false, false},
+		{"enabled but no model", nil, true, false},
+		{"neither", nil, false, false},
 	}
 
-	found := false
-	for _, def := range h.ToolDefinitions() {
-		if def.Name() == "advisor" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatal("advisor tool not registered when AdvisorModel is set")
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, err := New(HarnessConfig{
+				Agent:            &stubAgent{},
+				RLMModel:         &stubLLM{},
+				AdvisorModel:     tt.advisorModel,
+				EnableAdvisor:    tt.enabled,
+				MainSystemPrompt: "test",
+			})
+			if err != nil {
+				t.Fatalf("New() error: %v", err)
+			}
 
-func TestHarnessNoAdvisorWhenModelUnset(t *testing.T) {
-	h, err := New(HarnessConfig{
-		Agent:            &stubAgent{},
-		RLMModel:         &stubLLM{},
-		MainSystemPrompt: "test",
-	})
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
-
-	for _, def := range h.ToolDefinitions() {
-		if def.Name() == "advisor" {
-			t.Fatal("advisor tool should not be registered when AdvisorModel is nil")
-		}
+			found := false
+			for _, def := range h.ToolDefinitions() {
+				if def.Name() == "advisor" {
+					found = true
+					break
+				}
+			}
+			if found != tt.want {
+				t.Errorf("advisor registered = %v, want %v", found, tt.want)
+			}
+		})
 	}
 }
 

@@ -53,9 +53,12 @@ type HarnessConfig struct {
 	RLMModel             provider.LLM
 	RLMDefaultIterations int
 	RLMMaxIterations     int
-	// AdvisorModel, when set, registers the "advisor" tool backed by this
-	// model. It should be a stronger reasoning model than the main agent's.
-	AdvisorModel provider.LLM
+	// AdvisorModel backs the "advisor" tool. It should be a stronger
+	// reasoning model than the main agent's. The tool is registered only
+	// when EnableAdvisor is also true — disabled by default while the
+	// tool is being improved.
+	AdvisorModel  provider.LLM
+	EnableAdvisor bool
 	SubAgentLLM          provider.LLM
 	SubAgentMaxDepth     int
 	SubAgentMaxIter      int
@@ -170,7 +173,7 @@ func New(cfg HarnessConfig) (*Harness, error) {
 		toolRegistry.Register(subagent.NewSpawnAgentTool(factory))
 	}
 
-	if cfg.AdvisorModel != nil {
+	if cfg.EnableAdvisor && cfg.AdvisorModel != nil {
 		toolRegistry.Register(advisor.NewAdvisorTool(cfg.AdvisorModel))
 	}
 
