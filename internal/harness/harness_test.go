@@ -97,6 +97,46 @@ func TestHarnessNoSpawnAgentWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestHarnessRegistersAdvisorWhenModelSet(t *testing.T) {
+	h, err := New(HarnessConfig{
+		Agent:            &stubAgent{},
+		RLMModel:         &stubLLM{},
+		AdvisorModel:     &stubLLM{},
+		MainSystemPrompt: "test",
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	found := false
+	for _, def := range h.ToolDefinitions() {
+		if def.Name() == "advisor" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("advisor tool not registered when AdvisorModel is set")
+	}
+}
+
+func TestHarnessNoAdvisorWhenModelUnset(t *testing.T) {
+	h, err := New(HarnessConfig{
+		Agent:            &stubAgent{},
+		RLMModel:         &stubLLM{},
+		MainSystemPrompt: "test",
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	for _, def := range h.ToolDefinitions() {
+		if def.Name() == "advisor" {
+			t.Fatal("advisor tool should not be registered when AdvisorModel is nil")
+		}
+	}
+}
+
 func TestHarnessDisabledToolsRemovesBuiltins(t *testing.T) {
 	h, err := New(HarnessConfig{
 		Agent:            &stubAgent{},

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"tenzing-agent/internal/harness/advisor"
 	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/prompts"
 	"tenzing-agent/internal/harness/rlm"
@@ -52,6 +53,9 @@ type HarnessConfig struct {
 	RLMModel             provider.LLM
 	RLMDefaultIterations int
 	RLMMaxIterations     int
+	// AdvisorModel, when set, registers the "advisor" tool backed by this
+	// model. It should be a stronger reasoning model than the main agent's.
+	AdvisorModel provider.LLM
 	SubAgentLLM          provider.LLM
 	SubAgentMaxDepth     int
 	SubAgentMaxIter      int
@@ -164,6 +168,10 @@ func New(cfg HarnessConfig) (*Harness, error) {
 			Emitter:       bus,
 		})
 		toolRegistry.Register(subagent.NewSpawnAgentTool(factory))
+	}
+
+	if cfg.AdvisorModel != nil {
+		toolRegistry.Register(advisor.NewAdvisorTool(cfg.AdvisorModel))
 	}
 
 	for _, tool := range cfg.ExtraTools {
