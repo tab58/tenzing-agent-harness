@@ -30,13 +30,13 @@ var (
 )
 
 type ProgressEvent struct {
-	Iteration  int
-	Phase      string // "repl_exec", "repl_result", "llm_call", "callback"
-	CodeBlock  string
-	Output     string
-	Depth      int
-	TokensIn   int64
-	TokensOut  int64
+	Iteration int
+	Phase     string // "repl_exec", "repl_result", "llm_call", "callback"
+	CodeBlock string
+	Output    string
+	Depth     int
+	TokensIn  int64
+	TokensOut int64
 }
 
 type EngineConfig struct {

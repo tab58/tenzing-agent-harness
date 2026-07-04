@@ -22,4 +22,3 @@ func DefaultSystemPrompt(cwd string) string {
 	}
 	return buf.String()
 }
-

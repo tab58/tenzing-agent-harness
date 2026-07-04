@@ -14,7 +14,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-
 )
 
 const darwinSandboxProfile = `(version 1)` +

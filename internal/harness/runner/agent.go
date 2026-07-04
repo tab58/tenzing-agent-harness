@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/tab58/llm-providers/common"
 	"tenzing-agent/internal/harness/tools/tooldef"
-	"tenzing-agent/internal/provider"
 )
 
 type Agent interface {
-	UpdateToolDefinitions(tooldefs []provider.ToolDefinition)
+	UpdateToolDefinitions(tooldefs []common.ToolDefinition)
 	UpdateSkillMap(skillMap map[string]string)
 	UpdateOffloadFn(fn func(ctx context.Context, input string) (string, error))
 	UpdateStreamCallback(fn func(text string))
@@ -20,7 +20,7 @@ type Agent interface {
 }
 
 // AgentBuilder creates an Agent given an LLM and system prompt.
-type AgentBuilder func(llm provider.LLM, systemPrompt string) (Agent, error)
+type AgentBuilder func(llm common.LLM, systemPrompt string) (Agent, error)
 
 type ResponseMeta struct {
 	Model         string

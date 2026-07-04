@@ -12,9 +12,12 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/tab58/llm-providers/common"
 	"tenzing-agent/internal/harness/tools/tooldef"
-	"tenzing-agent/internal/provider"
 )
+
+// maxTokensStdResponse caps output tokens per LLM request.
+const maxTokensStdResponse int64 = 32768
 
 var _ tooldef.Definition = (*AdvisorTool)(nil)
 
@@ -23,10 +26,10 @@ const systemPrompt = "You are a senior technical advisor reviewing a plan before
 	"Be direct and concise. If the plan is sound, say so briefly rather than inventing objections."
 
 type AdvisorTool struct {
-	llm provider.LLM
+	llm common.LLM
 }
 
-func NewAdvisorTool(llm provider.LLM) *AdvisorTool {
+func NewAdvisorTool(llm common.LLM) *AdvisorTool {
 	return &AdvisorTool{llm: llm}
 }
 
@@ -74,11 +77,11 @@ func (t *AdvisorTool) Execute(ctx context.Context, exctx tooldef.ExecutionContex
 	prompt.WriteString("Plan under review:\n")
 	prompt.WriteString(input.Plan)
 
-	resp, err := t.llm.SendSyncMessage(ctx, provider.CompletionRequest{
+	resp, err := t.llm.SendSyncMessage(ctx, common.CompletionRequest{
 		Model:     t.llm.GetCurrentModel(),
 		System:    systemPrompt,
-		Messages:  []provider.Message{provider.NewUserMessage(prompt.String())},
-		MaxTokens: provider.MaxTokensStdResponse,
+		Messages:  []common.Message{common.NewUserMessage(prompt.String())},
+		MaxTokens: maxTokensStdResponse,
 	})
 	if err != nil {
 		return tooldef.NewToolResult(fmt.Sprintf("advisor error: %v", err), tooldef.WithError()), nil

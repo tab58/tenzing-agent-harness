@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"tenzing-agent/internal/provider"
+	"github.com/tab58/llm-providers/common"
 )
 
 // scriptedLLM returns canned responses in sequence
@@ -13,41 +13,41 @@ type scriptedLLM struct {
 	responses    []string
 	idx          int
 	callCount    int
-	lastMessages []provider.Message
+	lastMessages []common.Message
 }
 
-func (s *scriptedLLM) SendSyncMessage(_ context.Context, req provider.CompletionRequest) (provider.CompletionResponse, error) {
+func (s *scriptedLLM) SendSyncMessage(_ context.Context, req common.CompletionRequest) (common.CompletionResponse, error) {
 	s.callCount++
 	s.lastMessages = req.Messages
 	if s.idx >= len(s.responses) {
-		return provider.CompletionResponse{
-			Content: []provider.ContentBlock{provider.NewTextContent("FINAL(\"exhausted\")")},
+		return common.CompletionResponse{
+			Content: []common.ContentBlock{common.NewTextContent("FINAL(\"exhausted\")")},
 		}, nil
 	}
 	resp := s.responses[s.idx]
 	s.idx++
-	return provider.CompletionResponse{
-		Content: []provider.ContentBlock{provider.NewTextContent(resp)},
+	return common.CompletionResponse{
+		Content: []common.ContentBlock{common.NewTextContent(resp)},
 	}, nil
 }
 
-func (s *scriptedLLM) SendStreamingMessage(context.Context, provider.CompletionRequest, chan<- provider.StreamEvent) error {
-	return provider.ErrNotSupported
+func (s *scriptedLLM) SendStreamingMessage(context.Context, common.CompletionRequest, chan<- common.StreamEvent) error {
+	return common.ErrNotSupported
 }
 
-func (s *scriptedLLM) SendMessageWithTools(_ context.Context, _ provider.CompletionRequest, _ []provider.ToolDefinition) (provider.CompletionResponse, error) {
-	return provider.CompletionResponse{}, provider.ErrNotSupported
+func (s *scriptedLLM) SendMessageWithTools(_ context.Context, _ common.CompletionRequest, _ []common.ToolDefinition) (common.CompletionResponse, error) {
+	return common.CompletionResponse{}, common.ErrNotSupported
 }
 
-func (s *scriptedLLM) CountTokens(context.Context, provider.CompletionRequest) (provider.TokenCount, error) {
-	return provider.TokenCount{}, provider.ErrNotSupported
+func (s *scriptedLLM) CountTokens(context.Context, common.CompletionRequest) (common.TokenCount, error) {
+	return common.TokenCount{}, common.ErrNotSupported
 }
 
-func (s *scriptedLLM) ListModels(context.Context) ([]provider.ModelInfo, error) {
-	return nil, provider.ErrNotSupported
+func (s *scriptedLLM) ListModels(context.Context) ([]common.ModelInfo, error) {
+	return nil, common.ErrNotSupported
 }
 
-func (s *scriptedLLM) GetCurrentModel() string      { return "scripted-model" }
+func (s *scriptedLLM) GetCurrentModel() string   { return "scripted-model" }
 func (s *scriptedLLM) GetContextWindowSize() int { return 128_000 }
 
 func TestEngineSimpleFinal(t *testing.T) {

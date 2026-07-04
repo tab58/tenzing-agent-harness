@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tab58/llm-providers/common"
 	"tenzing-agent/internal/harness/advisor"
 	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/prompts"
@@ -21,7 +22,6 @@ import (
 	"tenzing-agent/internal/harness/todo"
 	"tenzing-agent/internal/harness/tools"
 	"tenzing-agent/internal/harness/tools/tooldef"
-	"tenzing-agent/internal/provider"
 )
 
 type Harness struct {
@@ -48,21 +48,21 @@ type HarnessConfig struct {
 	ExtraTools       []tooldef.Definition
 	// DisabledTools removes tools by name (case-insensitive) after all
 	// registration, including built-ins like "bash" and "edit".
-	DisabledTools  []string
-	ExtraSkillDirs []string
-	RLMModel             provider.LLM
+	DisabledTools        []string
+	ExtraSkillDirs       []string
+	RLMModel             common.LLM
 	RLMDefaultIterations int
 	RLMMaxIterations     int
 	// AdvisorModel backs the "advisor" tool. It should be a stronger
 	// reasoning model than the main agent's. The tool is registered only
 	// when EnableAdvisor is also true — disabled by default while the
 	// tool is being improved.
-	AdvisorModel  provider.LLM
-	EnableAdvisor bool
-	SubAgentLLM          provider.LLM
-	SubAgentMaxDepth     int
-	SubAgentMaxIter      int
-	SubAgentBuilder      runner.AgentBuilder
+	AdvisorModel     common.LLM
+	EnableAdvisor    bool
+	SubAgentLLM      common.LLM
+	SubAgentMaxDepth int
+	SubAgentMaxIter  int
+	SubAgentBuilder  runner.AgentBuilder
 }
 
 // hooksEmpty reports whether no hook callbacks are set in h.

@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/tab58/llm-providers/common"
 	agentctx "tenzing-agent/internal/agent/context"
-	"tenzing-agent/internal/provider"
 )
+
+// maxTokensStdResponse caps output tokens per LLM request.
+const maxTokensStdResponse int64 = 32768
 
 type Response struct {
 	Text         string
@@ -23,12 +26,12 @@ type Fetcher interface {
 type FetcherFactory func(systemPrompt string) (Fetcher, error)
 
 type llmFetcher struct {
-	llm          provider.LLM
+	llm          common.LLM
 	history      *agentctx.Context
 	systemPrompt string
 }
 
-func NewLLMFetcherFactory(llm provider.LLM) FetcherFactory {
+func NewLLMFetcherFactory(llm common.LLM) FetcherFactory {
 	return func(systemPrompt string) (Fetcher, error) {
 		history, err := agentctx.NewContext(agentctx.ContextConfig{LLM: llm})
 		if err != nil {
@@ -43,20 +46,20 @@ func NewLLMFetcherFactory(llm provider.LLM) FetcherFactory {
 }
 
 func (f *llmFetcher) Send(ctx context.Context, content string) (Response, error) {
-	f.history.AppendMessages(ctx, provider.NewUserMessage(content))
+	f.history.AppendMessages(ctx, common.NewUserMessage(content))
 
 	model := f.llm.GetCurrentModel()
-	resp, err := f.llm.SendSyncMessage(ctx, provider.CompletionRequest{
+	resp, err := f.llm.SendSyncMessage(ctx, common.CompletionRequest{
 		Model:     model,
 		System:    f.systemPrompt,
 		Messages:  f.history.Messages(),
-		MaxTokens: provider.MaxTokensStdResponse,
+		MaxTokens: maxTokensStdResponse,
 	})
 	if err != nil {
 		return Response{}, err
 	}
 
-	if _, err := f.history.AppendMessages(ctx, provider.NewAssistantMessage(resp.Text())); err != nil {
+	if _, err := f.history.AppendMessages(ctx, common.NewAssistantMessage(resp.Text())); err != nil {
 		slog.Warn("[RLM] compression failed", "error", err)
 	}
 
@@ -69,8 +72,8 @@ func (f *llmFetcher) Send(ctx context.Context, content string) (Response, error)
 }
 
 type simpleFetcher struct {
-	llm          provider.LLM
-	messages     []provider.Message
+	llm          common.LLM
+	messages     []common.Message
 	systemPrompt string
 }
 
@@ -78,7 +81,7 @@ type simpleFetcher struct {
 // in a plain message slice without context compression. Use this when the RLM's
 // REPL-based context bounding is sufficient and compression would interfere
 // with the intended algorithm behavior.
-func NewSimpleFetcherFactory(llm provider.LLM) FetcherFactory {
+func NewSimpleFetcherFactory(llm common.LLM) FetcherFactory {
 	return func(systemPrompt string) (Fetcher, error) {
 		return &simpleFetcher{
 			llm:          llm,
@@ -88,20 +91,20 @@ func NewSimpleFetcherFactory(llm provider.LLM) FetcherFactory {
 }
 
 func (f *simpleFetcher) Send(ctx context.Context, content string) (Response, error) {
-	f.messages = append(f.messages, provider.NewUserMessage(content))
+	f.messages = append(f.messages, common.NewUserMessage(content))
 
 	model := f.llm.GetCurrentModel()
-	resp, err := f.llm.SendSyncMessage(ctx, provider.CompletionRequest{
+	resp, err := f.llm.SendSyncMessage(ctx, common.CompletionRequest{
 		Model:     model,
 		System:    f.systemPrompt,
 		Messages:  f.messages,
-		MaxTokens: provider.MaxTokensStdResponse,
+		MaxTokens: maxTokensStdResponse,
 	})
 	if err != nil {
 		return Response{}, err
 	}
 
-	f.messages = append(f.messages, provider.NewAssistantMessage(resp.Text()))
+	f.messages = append(f.messages, common.NewAssistantMessage(resp.Text()))
 
 	return Response{
 		Text:         resp.Text(),

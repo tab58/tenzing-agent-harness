@@ -8,21 +8,24 @@ import (
 	"runtime/debug"
 	"strings"
 
+	"github.com/tab58/llm-providers/common"
 	agentctx "tenzing-agent/internal/agent/context"
 	"tenzing-agent/internal/harness/runner"
 	"tenzing-agent/internal/harness/tools/tooldef"
-	"tenzing-agent/internal/provider"
 )
+
+// maxTokensStdResponse caps output tokens per LLM request.
+const maxTokensStdResponse int64 = 32768
 
 var _ runner.Agent = (*Agent)(nil)
 
 type Agent struct {
-	model        provider.LLM
+	model        common.LLM
 	systemPrompt string
 	history      *agentctx.Context
 
 	skillMap         map[string]string
-	tools            []provider.ToolDefinition
+	tools            []common.ToolDefinition
 	streamCallback   func(text string)
 	thinkingCallback func(text string)
 
@@ -31,11 +34,11 @@ type Agent struct {
 	// ids as tool_result blocks — required by the Anthropic API, which
 	// rejects histories where a tool_use is not answered by a tool_result
 	// in the immediately following user message.
-	pendingToolUses []provider.ContentBlock
+	pendingToolUses []common.ContentBlock
 }
 
 type AgentConfig struct {
-	Model        provider.LLM
+	Model        common.LLM
 	SystemPrompt string
 	SkillMap     map[string]string
 }
@@ -51,7 +54,7 @@ func New(cfg AgentConfig) (*Agent, error) {
 
 	return &Agent{
 		model:        cfg.Model,
-		tools:        []provider.ToolDefinition{},
+		tools:        []common.ToolDefinition{},
 		skillMap:     skillMap,
 		systemPrompt: enrichedPrompt,
 		history:      llmContext,
@@ -91,7 +94,7 @@ func (a *Agent) UpdateThinkingCallback(fn func(text string)) {
 	a.thinkingCallback = fn
 }
 
-func (a *Agent) UpdateToolDefinitions(tooldefs []provider.ToolDefinition) {
+func (a *Agent) UpdateToolDefinitions(tooldefs []common.ToolDefinition) {
 	a.tools = tooldefs
 }
 
@@ -103,9 +106,9 @@ func replaceInput(inputs []string, idx int, replacement string) []string {
 	return out
 }
 
-func (a *Agent) doStreamingReasoning(ctx context.Context, req provider.CompletionRequest) (provider.CompletionResponse, error) {
+func (a *Agent) doStreamingReasoning(ctx context.Context, req common.CompletionRequest) (common.CompletionResponse, error) {
 	req.Tools = a.tools
-	events := make(chan provider.StreamEvent)
+	events := make(chan common.StreamEvent)
 
 	var streamErr error
 	done := make(chan struct{})
@@ -114,27 +117,27 @@ func (a *Agent) doStreamingReasoning(ctx context.Context, req provider.Completio
 		close(done)
 	}()
 
-	var resp provider.CompletionResponse
+	var resp common.CompletionResponse
 	for event := range events {
 		switch event.Type {
-		case provider.StreamEventDelta:
+		case common.StreamEventDelta:
 			a.streamCallback(event.Text)
-		case provider.StreamEventThinking:
+		case common.StreamEventThinking:
 			if a.thinkingCallback != nil {
 				a.thinkingCallback(event.Text)
 			}
-		case provider.StreamEventStop:
+		case common.StreamEventStop:
 			if event.Response != nil {
 				resp = *event.Response
 			}
-		case provider.StreamEventError:
-			return provider.CompletionResponse{}, event.Err
+		case common.StreamEventError:
+			return common.CompletionResponse{}, event.Err
 		}
 	}
 
 	<-done
 	if streamErr != nil {
-		return provider.CompletionResponse{}, streamErr
+		return common.CompletionResponse{}, streamErr
 	}
 	return resp, nil
 }
@@ -153,29 +156,29 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 	// convert inputs arg to user messages and add to context. When the
 	// previous response contained tool_use blocks, inputs are tool outputs
 	// and must be sent back as tool_result blocks paired by id.
-	var userMsgs []provider.Message
+	var userMsgs []common.Message
 	if len(a.pendingToolUses) > 0 {
-		blocks := make([]provider.ContentBlock, 0, len(a.pendingToolUses))
+		blocks := make([]common.ContentBlock, 0, len(a.pendingToolUses))
 		for i, tu := range a.pendingToolUses {
 			output := "tool call was not executed"
 			if i < len(inputs) {
 				output = inputs[i]
 			}
-			blocks = append(blocks, provider.NewToolResultContent(tu.ToolUseID, tu.ToolName, output))
+			blocks = append(blocks, common.NewToolResultContent(tu.ToolUseID, tu.ToolName, output))
 		}
 		// RoleTool: every provider converter renders this natively — the
 		// Anthropic converter as a user message with tool_result blocks,
 		// Ollama/OpenAI as role-"tool" messages. A plain RoleUser message
 		// would drop the blocks in the Ollama/OpenAI text conversion.
-		userMsgs = append(userMsgs, provider.Message{Role: provider.RoleTool, Content: blocks})
+		userMsgs = append(userMsgs, common.Message{Role: common.RoleTool, Content: blocks})
 		for i := len(a.pendingToolUses); i < len(inputs); i++ {
-			userMsgs = append(userMsgs, provider.NewUserMessage(inputs[i]))
+			userMsgs = append(userMsgs, common.NewUserMessage(inputs[i]))
 		}
 		a.pendingToolUses = nil
 	} else {
-		userMsgs = make([]provider.Message, len(inputs))
+		userMsgs = make([]common.Message, len(inputs))
 		for i, input := range inputs {
-			userMsgs[i] = provider.NewUserMessage(input)
+			userMsgs[i] = common.NewUserMessage(input)
 		}
 	}
 	if _, err := a.history.AppendMessages(ctx, userMsgs...); err != nil {
@@ -191,11 +194,11 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 	// create LLM request
 	messages := a.history.Messages()
 	model := a.model.GetCurrentModel()
-	req := provider.CompletionRequest{
+	req := common.CompletionRequest{
 		Model:     model,
 		System:    system,
 		Messages:  messages,
-		MaxTokens: provider.MaxTokensStdResponse,
+		MaxTokens: maxTokensStdResponse,
 		Tools:     a.tools,
 	}
 
@@ -211,7 +214,7 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 	}
 
 	// get the LLM response
-	var resp provider.CompletionResponse
+	var resp common.CompletionResponse
 	if a.streamCallback != nil {
 		resp, err = a.doStreamingReasoning(ctx, req)
 	} else {
@@ -228,8 +231,8 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 	}
 
 	// add response as assistant message and add to context
-	assistantMsg := provider.Message{
-		Role:    provider.RoleAssistant,
+	assistantMsg := common.Message{
+		Role:    common.RoleAssistant,
 		Content: resp.Content,
 	}
 	beforeCount := a.history.Len()

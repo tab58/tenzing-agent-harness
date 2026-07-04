@@ -5,19 +5,19 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tab58/llm-providers/common"
 	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/runner"
-	"tenzing-agent/internal/provider"
 )
 
 type stubAgent struct{}
 
-func (s *stubAgent) UpdateToolDefinitions(_ []provider.ToolDefinition)                              {}
-func (s *stubAgent) UpdateSkillMap(_ map[string]string)                                             {}
-func (s *stubAgent) UpdateOffloadFn(_ func(context.Context, string) (string, error))                {}
-func (s *stubAgent) UpdateStreamCallback(_ func(string))                                            {}
-func (s *stubAgent) UpdateThinkingCallback(_ func(string))                                          {}
-func (s *stubAgent) SetTodoProvider(_ func() string)                                                {}
+func (s *stubAgent) UpdateToolDefinitions(_ []common.ToolDefinition)                 {}
+func (s *stubAgent) UpdateSkillMap(_ map[string]string)                              {}
+func (s *stubAgent) UpdateOffloadFn(_ func(context.Context, string) (string, error)) {}
+func (s *stubAgent) UpdateStreamCallback(_ func(string))                             {}
+func (s *stubAgent) UpdateThinkingCallback(_ func(string))                           {}
+func (s *stubAgent) SetTodoProvider(_ func() string)                                 {}
 
 func (s *stubAgent) DoReasoning(_ context.Context, _ []string, _ []string) (runner.ReasoningResult, error) {
 	return runner.ReasoningResult{FinalAnswer: "done"}, nil
@@ -25,19 +25,19 @@ func (s *stubAgent) DoReasoning(_ context.Context, _ []string, _ []string) (runn
 
 type stubLLM struct{}
 
-func (s *stubLLM) SendSyncMessage(_ context.Context, _ provider.CompletionRequest) (provider.CompletionResponse, error) {
-	return provider.CompletionResponse{}, nil
+func (s *stubLLM) SendSyncMessage(_ context.Context, _ common.CompletionRequest) (common.CompletionResponse, error) {
+	return common.CompletionResponse{}, nil
 }
-func (s *stubLLM) SendStreamingMessage(_ context.Context, _ provider.CompletionRequest, _ chan<- provider.StreamEvent) error {
+func (s *stubLLM) SendStreamingMessage(_ context.Context, _ common.CompletionRequest, _ chan<- common.StreamEvent) error {
 	return nil
 }
-func (s *stubLLM) SendMessageWithTools(_ context.Context, _ provider.CompletionRequest, _ []provider.ToolDefinition) (provider.CompletionResponse, error) {
-	return provider.CompletionResponse{}, nil
+func (s *stubLLM) SendMessageWithTools(_ context.Context, _ common.CompletionRequest, _ []common.ToolDefinition) (common.CompletionResponse, error) {
+	return common.CompletionResponse{}, nil
 }
-func (s *stubLLM) CountTokens(_ context.Context, _ provider.CompletionRequest) (provider.TokenCount, error) {
-	return provider.TokenCount{}, nil
+func (s *stubLLM) CountTokens(_ context.Context, _ common.CompletionRequest) (common.TokenCount, error) {
+	return common.TokenCount{}, nil
 }
-func (s *stubLLM) ListModels(_ context.Context) ([]provider.ModelInfo, error) {
+func (s *stubLLM) ListModels(_ context.Context) ([]common.ModelInfo, error) {
 	return nil, nil
 }
 func (s *stubLLM) GetCurrentModel() string   { return "stub" }
@@ -59,7 +59,7 @@ func TestHarnessRegistersSpawnAgentWhenEnabled(t *testing.T) {
 		Agent:            &stubAgent{},
 		RLMModel:         &stubLLM{},
 		SubAgentMaxDepth: 2,
-		SubAgentBuilder: func(llm provider.LLM, sp string) (runner.Agent, error) {
+		SubAgentBuilder: func(llm common.LLM, sp string) (runner.Agent, error) {
 			return &stubAgent{}, nil
 		},
 		MainSystemPrompt: "test",
@@ -100,7 +100,7 @@ func TestHarnessNoSpawnAgentWhenDisabled(t *testing.T) {
 func TestHarnessAdvisorRegistration(t *testing.T) {
 	tests := []struct {
 		name         string
-		advisorModel provider.LLM
+		advisorModel common.LLM
 		enabled      bool
 		want         bool
 	}{

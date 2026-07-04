@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"tenzing-agent/internal/provider"
+	"github.com/tab58/llm-providers/common"
 )
 
 const testContextWindow = 10_000 // yields threshold of 30_000 chars (10000 * compressAtFraction)
@@ -18,53 +18,53 @@ var testThreshold = testContextWindow * compressAtFraction
 type fakeLLM struct {
 	response string
 	err      error
-	lastReq  provider.CompletionRequest
+	lastReq  common.CompletionRequest
 }
 
-func (f *fakeLLM) SendSyncMessage(_ context.Context, req provider.CompletionRequest) (provider.CompletionResponse, error) {
+func (f *fakeLLM) SendSyncMessage(_ context.Context, req common.CompletionRequest) (common.CompletionResponse, error) {
 	f.lastReq = req
 	if f.err != nil {
-		return provider.CompletionResponse{}, f.err
+		return common.CompletionResponse{}, f.err
 	}
-	return provider.CompletionResponse{
-		Content: []provider.ContentBlock{provider.NewTextContent(f.response)},
+	return common.CompletionResponse{
+		Content: []common.ContentBlock{common.NewTextContent(f.response)},
 	}, nil
 }
 
-func (f *fakeLLM) SendStreamingMessage(context.Context, provider.CompletionRequest, chan<- provider.StreamEvent) error {
-	return provider.ErrNotSupported
+func (f *fakeLLM) SendStreamingMessage(context.Context, common.CompletionRequest, chan<- common.StreamEvent) error {
+	return common.ErrNotSupported
 }
 
-func (f *fakeLLM) SendMessageWithTools(_ context.Context, _ provider.CompletionRequest, _ []provider.ToolDefinition) (provider.CompletionResponse, error) {
-	return provider.CompletionResponse{}, provider.ErrNotSupported
+func (f *fakeLLM) SendMessageWithTools(_ context.Context, _ common.CompletionRequest, _ []common.ToolDefinition) (common.CompletionResponse, error) {
+	return common.CompletionResponse{}, common.ErrNotSupported
 }
 
-func (f *fakeLLM) CountTokens(context.Context, provider.CompletionRequest) (provider.TokenCount, error) {
-	return provider.TokenCount{}, provider.ErrNotSupported
+func (f *fakeLLM) CountTokens(context.Context, common.CompletionRequest) (common.TokenCount, error) {
+	return common.TokenCount{}, common.ErrNotSupported
 }
 
-func (f *fakeLLM) ListModels(context.Context) ([]provider.ModelInfo, error) {
-	return nil, provider.ErrNotSupported
+func (f *fakeLLM) ListModels(context.Context) ([]common.ModelInfo, error) {
+	return nil, common.ErrNotSupported
 }
 
 func (f *fakeLLM) GetCurrentModel() string   { return "fake-model" }
 func (f *fakeLLM) GetContextWindowSize() int { return 128_000 }
 
-func newTestCompressor(t *testing.T, llm provider.LLM, contextWindow int) *Compressor {
+func newTestCompressor(t *testing.T, llm common.LLM, contextWindow int) *Compressor {
 	t.Helper()
 	c := NewCompressor(llm, contextWindow)
 	c.memoryFile = filepath.Join(t.TempDir(), MemoryFileName)
 	return c
 }
 
-func makeMessages(n int, charsPer int) []provider.Message {
-	msgs := make([]provider.Message, n)
+func makeMessages(n int, charsPer int) []common.Message {
+	msgs := make([]common.Message, n)
 	text := strings.Repeat("x", charsPer)
 	for i := range msgs {
 		if i%2 == 0 {
-			msgs[i] = provider.NewUserMessage(text)
+			msgs[i] = common.NewUserMessage(text)
 		} else {
-			msgs[i] = provider.NewAssistantMessage(text)
+			msgs[i] = common.NewAssistantMessage(text)
 		}
 	}
 	return msgs
@@ -73,7 +73,7 @@ func makeMessages(n int, charsPer int) []provider.Message {
 func TestEstimateSize(t *testing.T) {
 	tests := []struct {
 		name     string
-		messages []provider.Message
+		messages []common.Message
 		want     int
 	}{
 		{
@@ -83,25 +83,25 @@ func TestEstimateSize(t *testing.T) {
 		},
 		{
 			name:     "text blocks",
-			messages: []provider.Message{provider.NewUserMessage("hello"), provider.NewAssistantMessage("world")},
+			messages: []common.Message{common.NewUserMessage("hello"), common.NewAssistantMessage("world")},
 			want:     10,
 		},
 		{
 			name: "tool result block weighted",
-			messages: []provider.Message{{
-				Role: provider.RoleTool,
-				Content: []provider.ContentBlock{
-					provider.NewToolResultContent("id-1", "tool", strings.Repeat("x", 40)),
+			messages: []common.Message{{
+				Role: common.RoleTool,
+				Content: []common.ContentBlock{
+					common.NewToolResultContent("id-1", "tool", strings.Repeat("x", 40)),
 				},
 			}},
 			want: 10, // 40 chars / toolOutputWeight(4) = 10
 		},
 		{
 			name: "tool use block",
-			messages: []provider.Message{{
-				Role: provider.RoleAssistant,
-				Content: []provider.ContentBlock{
-					provider.NewToolUseContent("id-1", "bash", json.RawMessage(`{"cmd":"ls"}`)),
+			messages: []common.Message{{
+				Role: common.RoleAssistant,
+				Content: []common.ContentBlock{
+					common.NewToolUseContent("id-1", "bash", json.RawMessage(`{"cmd":"ls"}`)),
 				},
 			}},
 			want: 12,
@@ -173,13 +173,13 @@ func TestMaybeCompressTriggered(t *testing.T) {
 		t.Fatalf("compressed len = %d, want %d", len(result), expectedLen)
 	}
 
-	if result[0].Role != provider.RoleUser {
+	if result[0].Role != common.RoleUser {
 		t.Fatalf("first message role = %s, want user", result[0].Role)
 	}
 	if !strings.Contains(result[0].Content[0].Text, "summary of old conversation") {
 		t.Fatal("summary not in first message")
 	}
-	if result[1].Role != provider.RoleAssistant {
+	if result[1].Role != common.RoleAssistant {
 		t.Fatalf("second message role = %s, want assistant", result[1].Role)
 	}
 
@@ -372,9 +372,9 @@ func TestCompressPreservesRecentMessages(t *testing.T) {
 	for i := totalMsgs - KeepRecent; i < totalMsgs; i++ {
 		tag := strings.Repeat("y", charsPerMsg)
 		if i%2 == 0 {
-			msgs[i] = provider.NewUserMessage(tag)
+			msgs[i] = common.NewUserMessage(tag)
 		} else {
-			msgs[i] = provider.NewAssistantMessage(tag)
+			msgs[i] = common.NewAssistantMessage(tag)
 		}
 	}
 

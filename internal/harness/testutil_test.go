@@ -10,16 +10,16 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/tab58/llm-providers/common"
 	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/runner"
 	"tenzing-agent/internal/harness/tools/tooldef"
-	"tenzing-agent/internal/provider"
 )
 
 // testEventCollector captures emitted events for assertion in tests.
 type testEventCollector struct {
-	mu     sync.Mutex
-	evts   []events.Event
+	mu   sync.Mutex
+	evts []events.Event
 }
 
 func (c *testEventCollector) Emit(ev events.Event) {
@@ -59,12 +59,12 @@ func newScriptedAgent(steps ...runner.ReasoningResult) *ScriptedAgent {
 	return &ScriptedAgent{steps: steps}
 }
 
-func (s *ScriptedAgent) UpdateToolDefinitions(_ []provider.ToolDefinition)                    {}
-func (s *ScriptedAgent) UpdateSkillMap(_ map[string]string)                                   {}
-func (s *ScriptedAgent) UpdateOffloadFn(_ func(context.Context, string) (string, error))      {}
-func (s *ScriptedAgent) UpdateStreamCallback(_ func(string))                                  {}
-func (s *ScriptedAgent) UpdateThinkingCallback(_ func(string))                                {}
-func (s *ScriptedAgent) SetTodoProvider(_ func() string)                                      {}
+func (s *ScriptedAgent) UpdateToolDefinitions(_ []common.ToolDefinition)                 {}
+func (s *ScriptedAgent) UpdateSkillMap(_ map[string]string)                              {}
+func (s *ScriptedAgent) UpdateOffloadFn(_ func(context.Context, string) (string, error)) {}
+func (s *ScriptedAgent) UpdateStreamCallback(_ func(string))                             {}
+func (s *ScriptedAgent) UpdateThinkingCallback(_ func(string))                           {}
+func (s *ScriptedAgent) SetTodoProvider(_ func() string)                                 {}
 
 func (s *ScriptedAgent) DoReasoning(_ context.Context, inputs []string, reminders []string) (runner.ReasoningResult, error) {
 	s.mu.Lock()

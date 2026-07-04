@@ -62,14 +62,14 @@ If the tool needs external state (skill registry, task graph), define a narrow i
 2. Body is loaded lazily via `load_skill` tool — no registration code needed
 3. Skill metadata is discovered at startup from frontmatter only
 
-## Adding Providers
+## Providers
 
-1. Create `internal/provider/<name>.go`
-2. Implement `provider.LLM` interface (6 methods, 6 existing implementations: Anthropic, OpenAI, Cerebras, Lightning, OpenRouter, Ollama)
-3. For OpenAI-compatible APIs, embed `OpenAICompatBase` and override as needed
-4. Add compile-time interface check: `var _ LLM = (*NewProvider)(nil)`
-5. Conversion between canonical types (`Message`, `ContentBlock`) and SDK types stays in the provider file
-6. Rate limiting utilities live in `internal/provider/utils/` (token bucket, semaphore)
+LLM providers live in the external module `github.com/tab58/llm-providers` (Anthropic, OpenAI, Cerebras, Lightning, OpenRouter, Ollama). This repo imports:
+
+- `github.com/tab58/llm-providers/common` — canonical types (`common.LLM`, `CompletionRequest`, `Message`, `ContentBlock`, `ToolDefinition`) used throughout the harness
+- `github.com/tab58/llm-providers/<provider>` — constructors (`ollama.NewClient(ollama.Config{...})`), used only in `cmd/` mains
+
+Models are `common.Model` values (`common.ModelDefinition{Name, MaxTokens, ContextWindowSize, DefaultContextWindow}`), not strings. To add or change a provider, change the external module and bump the dependency.
 
 ## Configuration & DI
 
@@ -95,8 +95,7 @@ The FSM is per-runner instance — subagents and concurrent loops don't share st
 | Pattern                  | Location                                              |
 | ------------------------ | ----------------------------------------------------- |
 | Tool implementations     | `internal/harness/tools/tooldef/tool_*.go`            |
-| Provider implementations | `internal/provider/*.go`                              |
-| Provider utilities       | `internal/provider/utils/*.go`                        |
+| Provider implementations | external: `github.com/tab58/llm-providers`            |
 | Prompt templates         | `internal/harness/prompts/*.gotmpl`                   |
 | RLM engine               | `internal/harness/rlm/` (Fetcher, Querier, Engine)    |
 | Context management       | `internal/agent/context/` (compression, task graph)   |

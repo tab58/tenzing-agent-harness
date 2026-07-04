@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/tab58/llm-providers/common"
 	"tenzing-agent/internal/harness/tools/tooldef"
-	"tenzing-agent/internal/provider"
 )
 
 type ToolProvider interface {
@@ -91,12 +91,12 @@ func (r *Registry) Definitions() []tooldef.Definition {
 	return defs
 }
 
-func (r *Registry) ProviderDefinitions() []provider.ToolDefinition {
+func (r *Registry) ProviderDefinitions() []common.ToolDefinition {
 	defs := r.Definitions()
-	providerDefs := make([]provider.ToolDefinition, len(defs))
+	providerDefs := make([]common.ToolDefinition, len(defs))
 	for i, d := range defs {
 		schema, _ := json.Marshal(d.Schema())
-		providerDefs[i] = provider.ToolDefinition{
+		providerDefs[i] = common.ToolDefinition{
 			Name:        d.Name(),
 			Description: d.Description(),
 			InputSchema: schema,

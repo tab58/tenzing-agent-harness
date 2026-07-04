@@ -3,20 +3,20 @@ package context
 import (
 	"context"
 	"fmt"
+	"github.com/tab58/llm-providers/common"
 	"log/slog"
 	"tenzing-agent/internal/agent/context/compressor"
-	"tenzing-agent/internal/provider"
 )
 
 type Context struct {
-	messages []provider.Message
+	messages []common.Message
 
 	compressor *compressor.Compressor
 	offloadFn  func(context.Context, string) (string, error)
 }
 
 type ContextConfig struct {
-	LLM provider.LLM
+	LLM common.LLM
 }
 
 func NewContext(cfg ContextConfig) (*Context, error) {
@@ -28,7 +28,7 @@ func NewContext(cfg ContextConfig) (*Context, error) {
 	compressor := compressor.NewCompressor(llm, contextWindowSize)
 
 	ctx := &Context{
-		messages:   make([]provider.Message, 0),
+		messages:   make([]common.Message, 0),
 		compressor: compressor,
 	}
 
@@ -64,8 +64,8 @@ func (c *Context) ClassifyOverflow(ctx context.Context, inputs []string) (string
 	return "", 0, nil
 }
 
-func (c *Context) Messages() []provider.Message {
-	out := make([]provider.Message, len(c.messages))
+func (c *Context) Messages() []common.Message {
+	out := make([]common.Message, len(c.messages))
 	copy(out, c.messages)
 	return out
 }
@@ -83,17 +83,17 @@ func (c *Context) LoadFromMemoryFile() error {
 	}
 	if mem != "" {
 		c.messages = append(c.messages,
-			provider.NewUserMessage("[Context summary from previous conversation]\n\n"+mem),
-			provider.NewAssistantMessage("Understood. I have the full context from our previous work."),
+			common.NewUserMessage("[Context summary from previous conversation]\n\n"+mem),
+			common.NewAssistantMessage("Understood. I have the full context from our previous work."),
 		)
 	}
 	return nil
 }
 
-func (c *Context) AppendMessages(ctx context.Context, messages ...provider.Message) (bool, error) {
+func (c *Context) AppendMessages(ctx context.Context, messages ...common.Message) (bool, error) {
 	c.messages = append(c.messages, messages...)
 
-	if len(messages) == 0 || messages[len(messages)-1].Role != provider.RoleAssistant {
+	if len(messages) == 0 || messages[len(messages)-1].Role != common.RoleAssistant {
 		return false, nil
 	}
 

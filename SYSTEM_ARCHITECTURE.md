@@ -56,47 +56,37 @@ internal/
 │       ├── compression.go              Three-layer context compression + memory persistence
 │       ├── context.go                  Context struct (placeholder)
 │       └── compressor/                 Context compression + memory persistence
-├── errors/errors.go                    Wrap() helper
-├── harness/                            Core loop & orchestration
-│   ├── agent.go                        Agent interface + ReasoningResult
-│   ├── agent_runner.go                 AgentRunner: FSM-driven loop, DI config
-│   ├── loop_fsm.go                     Per-runner FSM (6 states, 6 transitions)
-│   ├── harness.go                      Thin orchestrator, config types, RunSession REPL
-│   ├── subagent_factory.go             SubAgentFactory — builds child AgentRunner+Agent
-│   ├── defaults.go                     DefaultReminderBuilder, DefaultMainConfig
-│   ├── prompts/                        System prompt construction
-│   ├── skills/                         Skill discovery & lazy loading
-│   │   └── registry.go                 Discover frontmatter at startup, Load on demand
-│   ├── tools/                          Tool dispatch system
-│   │   └── registry.go                 Name→Definition map, Execute(), GetDefaultToolDefs()
-│   └── rlm/                            Recursive Language Model engine
-│       ├── bootstrap.py                Embedded Python REPL (//go:embed)
-│       ├── fetcher.go                  Fetcher interface + llmFetcher (LLM + context compression)
-│       ├── querier.go                  Querier interface + llmQuerier (stateless one-shot LLM calls)
-│       ├── repl.go                     Python subprocess + JSON-line IPC
-│       ├── engine.go                   RLM loop: Fetcher→code→REPL→feedback→repeat
-│       ├── truncate.go                 First/last-half truncation
-│       └── prompts/
-│           └── system.md.tmpl          RLM system prompt template
-│   ├── subagent/                       Sub-agent delegation
-│   │   └── tool_spawn_agent.go         spawn_agent tool + AgentFactory interface
-├── provider/                           LLM abstraction layer
-│   ├── llm.go                          LLM interface (6 implementations)
-│   ├── chat.go                         Provider-agnostic message types
-│   ├── logger.go                       Optional diagnostics logger
-│   ├── anthropic.go                    Anthropic SDK wrapper
-│   ├── openai.go                       OpenAI SDK wrapper
-│   ├── openai_compat.go               Shared OpenAI-compatible base
-│   ├── openai_compat_convert.go        Message/tool conversion helpers
-│   ├── openai_compat_retry.go          Rate-limit retry with exponential backoff
-│   ├── cerebras.go                     Cerebras (OpenAI-compatible)
-│   ├── lightning.go                    Lightning (OpenAI-compatible)
-│   ├── ollama.go                       Ollama (direct HTTP)
-│   ├── openrouter.go                   OpenRouter (multi-backend routing)
-│   └── utils/
-│       ├── token_bucket.go             Token-bucket rate limiter
-│       └── semaphore.go                Concurrency semaphore
-└── utils/strings.go                    Generic Strings() helper
+└── harness/                            Core loop & orchestration
+    ├── agent.go                        Agent interface + ReasoningResult
+    ├── agent_runner.go                 AgentRunner: FSM-driven loop, DI config
+    ├── loop_fsm.go                     Per-runner FSM (6 states, 6 transitions)
+    ├── harness.go                      Thin orchestrator, config types, RunSession REPL
+    ├── subagent_factory.go             SubAgentFactory — builds child AgentRunner+Agent
+    ├── defaults.go                     DefaultReminderBuilder, DefaultMainConfig
+    ├── prompts/                        System prompt construction
+    ├── skills/                         Skill discovery & lazy loading
+    │   └── registry.go                 Discover frontmatter at startup, Load on demand
+    ├── tools/                          Tool dispatch system
+    │   └── registry.go                 Name→Definition map, Execute(), GetDefaultToolDefs()
+    ├── rlm/                            Recursive Language Model engine
+    │   ├── bootstrap.py                Embedded Python REPL (//go:embed)
+    │   ├── fetcher.go                  Fetcher interface + llmFetcher (LLM + context compression)
+    │   ├── querier.go                  Querier interface + llmQuerier (stateless one-shot LLM calls)
+    │   ├── repl.go                     Python subprocess + JSON-line IPC
+    │   ├── engine.go                   RLM loop: Fetcher→code→REPL→feedback→repeat
+    │   ├── truncate.go                 First/last-half truncation
+    │   └── prompts/
+    │       └── system.md.tmpl          RLM system prompt template
+    └── subagent/                       Sub-agent delegation
+        └── tool_spawn_agent.go         spawn_agent tool + AgentFactory interface
+
+LLM provider layer: external module github.com/tab58/llm-providers
+├── common/                             LLM interface + canonical message types
+├── anthropic/, openai/, cerebras/,     One package per provider (constructors,
+│   lightning/, openrouter/, ollama/    model definitions)
+├── openai_compat/                      Shared OpenAI-compatible base + 429 retry
+├── ratelimit/                          TokenBucket, Semaphore, Wrap decorator
+└── logger/                             Optional diagnostics logger
 
 internal/harness/tools/tooldef/         Tool implementations
 ├── definition.go                       Definition interface, Schema, ToolCall, ToolResult
@@ -199,18 +189,18 @@ type ReasoningResult struct {
 
 The AgentRunner owns the loop; `Agent` owns the LLM interaction. `inputs` carries the user message on the first iteration and only the newest tool result afterwards — the Agent keeps the conversation history itself, and pairs tool outputs with the pending `tool_use` ids from the previous response as `tool_result` blocks (required by the Anthropic API). `systemReminders` carries the current todo plan state.
 
-The concrete implementation lives in `internal/agent/`. Tool definitions are injected at construction via `AgentConfig` — the tool registry converts its definitions to `[]provider.ToolDefinition` via `Registry.ProviderDefinitions()`.
+The concrete implementation lives in `internal/agent/`. Tool definitions are injected at construction via `AgentConfig` — the tool registry converts its definitions to `[]common.ToolDefinition` via `Registry.ProviderDefinitions()`.
 
 ```go
 type AgentConfig struct {
-    Model           provider.LLM
-    ToolDefinitions []provider.ToolDefinition
+    Model           common.LLM
+    ToolDefinitions []common.ToolDefinition
     SystemPrompt    string
     Skills          map[string]string // name → description, injected into system prompt
 }
 ```
 
-`Agent` manages conversation history as `[]provider.Message`, builds `CompletionRequest` each reasoning cycle, and parses `CompletionResponse` into `ReasoningResult`.
+`Agent` manages conversation history as `[]common.Message`, builds `CompletionRequest` each reasoning cycle, and parses `CompletionResponse` into `ReasoningResult`.
 
 Two constructors:
 - `New(cfg)` — basic agent, no compression
@@ -228,12 +218,12 @@ type Harness struct {
 type HarnessConfig struct {
     MainRunner        AgentRunnerConfig
     RLM               *RLMConfig      // nil = rlm tool not registered
-    SubAgentLLM       provider.LLM    // nil = use RLMSubLLM
+    SubAgentLLM       common.LLM    // nil = use RLMSubLLM
     SubAgentMaxDepth  int             // 0 = disabled, default 2
     SubAgentMaxIter   int             // default 30 per child
     SubAgentBuilder   AgentBuilder    // required if SubAgentMaxDepth > 0
     DisabledTools     []string        // remove tools by name (case-insensitive) after registration, incl. built-ins
-    AdvisorModel      provider.LLM    // backs the advisor tool; should be a stronger reasoning model
+    AdvisorModel      common.LLM    // backs the advisor tool; should be a stronger reasoning model
     EnableAdvisor     bool            // default false — advisor tool registered only when true AND AdvisorModel set
 }
 
@@ -278,7 +268,7 @@ type Registry struct {
 - `Execute(ctx, name, input)` — lookup, build `ExecutionContext` with registry's `workingDir`, run tool, return `ToolResult`
 - `CopyWithout(names...)` — clone registry excluding named tools (preserves `workingDir`)
 - `Definitions()` — return all registered tool definitions
-- `ProviderDefinitions()` — convert registered tools to `[]provider.ToolDefinition` (name, description, JSON schema) for injection into Agent
+- `ProviderDefinitions()` — convert registered tools to `[]common.ToolDefinition` (name, description, JSON schema) for injection into Agent
 
 ### Tool Interface
 
@@ -391,7 +381,7 @@ Plan state is injected from disk after context compression via `TodoProvider fun
 Three-layer compression in `internal/agent/context/compression.go`. Prevents unbounded history growth during long sessions.
 
 ```go
-type Compressor struct { llm provider.LLM; memoryFile string }
+type Compressor struct { llm common.LLM; memoryFile string }
 ```
 
 - `EstimateSize(messages)` — sums char lengths across all content blocks
@@ -409,8 +399,8 @@ Full RLM implementation based on Zhang et al. (2025). Processes arbitrarily larg
 Architecture: Engine (Go) drives a loop — create per-run Fetcher (LLM + context compression) → send user content → extract ```repl code blocks → send to Python subprocess → handle callbacks (llm_query via Querier, rlm_query, read_file, grep_file, list_files) over JSON-line protocol on stdin/stdout → capture stdout → truncate → feed back via Fetcher → repeat until `FINAL()`.
 
 Two interfaces separate the roles:
-- **Fetcher** — drives the reasoning loop with managed conversation history and context compression. Created per-run via `FetcherFactory`. Default impl (`llmFetcher`) wraps `provider.LLM` + `agentctx.Context`.
-- **Querier** — handles stateless one-shot LLM calls from the Python REPL (`sub_lm()`). Default impl (`llmQuerier`) wraps a bare `provider.LLM`.
+- **Fetcher** — drives the reasoning loop with managed conversation history and context compression. Created per-run via `FetcherFactory`. Default impl (`llmFetcher`) wraps `common.LLM` + `agentctx.Context`.
+- **Querier** — handles stateless one-shot LLM calls from the Python REPL (`sub_lm()`). Default impl (`llmQuerier`) wraps a bare `common.LLM`.
 
 Single tool: `rlm` — analytical delegation via the REPL. Depth parameter controls recursion:
 - depth=0: REPL only, no sub-LLM calls
@@ -470,6 +460,8 @@ Runner (`agent_runner.go`): emits turn, loop, reasoning, tool execution, LLM res
 Design spec: `docs/superpowers/specs/2026-06-26-event-system-design.md`.
 
 ## Provider Layer
+
+Lives in the external module `github.com/tab58/llm-providers`. The harness imports canonical types from its `common` package and constructors from the per-provider packages (`anthropic`, `openai`, `cerebras`, `lightning`, `openrouter`, `ollama`). Constructors take a `common.Model` (a `common.ModelDefinition` value, not a string) and return a `common.LLM` wrapped with default client-side rate limiting; `WithNoRateLimit` options opt out.
 
 ### LLM Interface
 
@@ -550,7 +542,7 @@ OpenAI-compat streaming tracks `pendingToolCall` structs keyed by stream index, 
 
 ### Rate Limiting
 
-**TokenBucket** (`provider/utils/token_bucket.go`) — token-bucket algorithm with configurable:
+**TokenBucket** (`llm-providers/ratelimit`) — token-bucket algorithm with configurable:
 - `Rate` (tokens/second refill)
 - `BurstSize` (max bucket capacity)
 - `MaxConcurrency` (semaphore slots)
@@ -572,8 +564,9 @@ Each provider converts between canonical types and SDK-specific types:
 
 | Package | Purpose |
 |---------|---------|
-| `anthropics/anthropic-sdk-go` | Anthropic API client |
-| `openai/openai-go/v3` | OpenAI API client |
+| `tab58/llm-providers` | LLM provider layer (canonical types, provider clients, rate limiting) |
+| `anthropics/anthropic-sdk-go` | Anthropic API client (via llm-providers) |
+| `openai/openai-go/v3` | OpenAI API client (via llm-providers) |
 | `looplab/fsm` | Finite state machine for loop transitions |
 | `golang.org/x/sync` | Weighted semaphore for concurrency limiting |
 

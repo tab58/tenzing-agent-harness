@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"tenzing-agent/internal/provider"
+	"github.com/tab58/llm-providers/common"
 )
 
 const (
@@ -22,7 +22,7 @@ const (
 )
 
 type Compressor struct {
-	llm          provider.LLM
+	llm          common.LLM
 	memoryFile   string
 	threshold    int
 	todoProvider func() string
@@ -32,7 +32,7 @@ func (c *Compressor) SetTodoProvider(fn func() string) {
 	c.todoProvider = fn
 }
 
-func NewCompressor(llm provider.LLM, contextWindow int) *Compressor {
+func NewCompressor(llm common.LLM, contextWindow int) *Compressor {
 	memFile := MemoryFileName
 
 	if contextWindow <= 0 {
@@ -49,7 +49,7 @@ func NewCompressor(llm provider.LLM, contextWindow int) *Compressor {
 // MaybeCompress checks whether the message history exceeds the threshold.
 // If so, it summarizes the older portion via LLM, persists it to disk,
 // and returns a shorter history with the summary prepended.
-func (c *Compressor) MaybeCompress(ctx context.Context, messages []provider.Message) ([]provider.Message, bool, error) {
+func (c *Compressor) MaybeCompress(ctx context.Context, messages []common.Message) ([]common.Message, bool, error) {
 	if c.EstimateSize(messages) < c.threshold {
 		return messages, false, nil
 	}
@@ -70,21 +70,21 @@ func (c *Compressor) MaybeCompress(ctx context.Context, messages []provider.Mess
 		return messages, false, fmt.Errorf("save memory: %w", err)
 	}
 
-	compressed := make([]provider.Message, 0, 3+len(recent))
+	compressed := make([]common.Message, 0, 3+len(recent))
 	compressed = append(compressed,
-		provider.NewUserMessage("[Context summary from previous conversation]\n\n"+summary),
+		common.NewUserMessage("[Context summary from previous conversation]\n\n"+summary),
 	)
 
 	if c.todoProvider != nil {
 		if todoState := c.todoProvider(); todoState != "" {
 			compressed = append(compressed,
-				provider.NewUserMessage("[Current plan state — persisted from disk]\n\n"+todoState),
+				common.NewUserMessage("[Current plan state — persisted from disk]\n\n"+todoState),
 			)
 		}
 	}
 
 	compressed = append(compressed,
-		provider.NewAssistantMessage("Understood. I have the full context from our previous work."),
+		common.NewAssistantMessage("Understood. I have the full context from our previous work."),
 	)
 	compressed = append(compressed, recent...)
 
@@ -93,7 +93,7 @@ func (c *Compressor) MaybeCompress(ctx context.Context, messages []provider.Mess
 
 func (c *Compressor) Threshold() int { return c.threshold }
 
-func (c *Compressor) EstimateSize(messages []provider.Message) int {
+func (c *Compressor) EstimateSize(messages []common.Message) int {
 	size := 0
 	for _, msg := range messages {
 		for _, block := range msg.Content {
@@ -122,7 +122,7 @@ func (c *Compressor) SaveToMemoryFile(summary string) error {
 	return os.WriteFile(c.memoryFile, []byte(content), 0644)
 }
 
-func (c *Compressor) summarize(ctx context.Context, messages []provider.Message) (string, error) {
+func (c *Compressor) summarize(ctx context.Context, messages []common.Message) (string, error) {
 	var sb strings.Builder
 	for _, msg := range messages {
 		fmt.Fprintf(&sb, "[%s] ", msg.Role)
@@ -142,10 +142,10 @@ func (c *Compressor) summarize(ctx context.Context, messages []provider.Message)
 		text = text[:maxSummarizeInput]
 	}
 
-	resp, err := c.llm.SendSyncMessage(ctx, provider.CompletionRequest{
+	resp, err := c.llm.SendSyncMessage(ctx, common.CompletionRequest{
 		Model:     c.llm.GetCurrentModel(),
 		System:    "Summarise this conversation. Keep all important decisions, code changes, file paths, and context. Be concise but complete.",
-		Messages:  []provider.Message{provider.NewUserMessage(text)},
+		Messages:  []common.Message{common.NewUserMessage(text)},
 		MaxTokens: 4096,
 	})
 	if err != nil {

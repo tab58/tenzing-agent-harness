@@ -5,9 +5,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/tab58/llm-providers/common"
 	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/runner"
-	"tenzing-agent/internal/provider"
 )
 
 type eventCollector struct {
@@ -40,7 +40,7 @@ func TestSubAgentFactoryEmitsLifecycleEvents(t *testing.T) {
 	factory := NewSubAgentFactory(SubAgentFactoryConfig{
 		AgentLLM: &stubLLM{},
 		RLMModel: &stubLLM{},
-		AgentBuilder: func(_ provider.LLM, _ string) (runner.Agent, error) {
+		AgentBuilder: func(_ common.LLM, _ string) (runner.Agent, error) {
 			return &stubAgent{}, nil
 		},
 		MaxDepth: 1,

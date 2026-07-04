@@ -6,40 +6,40 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tab58/llm-providers/common"
 	"tenzing-agent/internal/harness/tools/tooldef"
-	"tenzing-agent/internal/provider"
 )
 
 // stubLLM returns a canned response (or error) and records the last request.
 type stubLLM struct {
-	response    provider.CompletionResponse
+	response    common.CompletionResponse
 	err         error
-	lastRequest provider.CompletionRequest
+	lastRequest common.CompletionRequest
 }
 
-func (s *stubLLM) SendSyncMessage(_ context.Context, req provider.CompletionRequest) (provider.CompletionResponse, error) {
+func (s *stubLLM) SendSyncMessage(_ context.Context, req common.CompletionRequest) (common.CompletionResponse, error) {
 	s.lastRequest = req
 	return s.response, s.err
 }
 
-func (s *stubLLM) SendStreamingMessage(_ context.Context, _ provider.CompletionRequest, events chan<- provider.StreamEvent) error {
+func (s *stubLLM) SendStreamingMessage(_ context.Context, _ common.CompletionRequest, events chan<- common.StreamEvent) error {
 	close(events)
 	return nil
 }
 
-func (s *stubLLM) SendMessageWithTools(_ context.Context, _ provider.CompletionRequest, _ []provider.ToolDefinition) (provider.CompletionResponse, error) {
-	return provider.CompletionResponse{}, nil
+func (s *stubLLM) SendMessageWithTools(_ context.Context, _ common.CompletionRequest, _ []common.ToolDefinition) (common.CompletionResponse, error) {
+	return common.CompletionResponse{}, nil
 }
 
-func (s *stubLLM) CountTokens(_ context.Context, _ provider.CompletionRequest) (provider.TokenCount, error) {
-	return provider.TokenCount{}, nil
+func (s *stubLLM) CountTokens(_ context.Context, _ common.CompletionRequest) (common.TokenCount, error) {
+	return common.TokenCount{}, nil
 }
 
-func (s *stubLLM) ListModels(_ context.Context) ([]provider.ModelInfo, error) { return nil, nil }
-func (s *stubLLM) GetCurrentModel() string                                    { return "advisor-model" }
-func (s *stubLLM) GetContextWindowSize() int                                  { return 128000 }
+func (s *stubLLM) ListModels(_ context.Context) ([]common.ModelInfo, error) { return nil, nil }
+func (s *stubLLM) GetCurrentModel() string                                  { return "advisor-model" }
+func (s *stubLLM) GetContextWindowSize() int                                { return 128000 }
 
-func execute(t *testing.T, llm provider.LLM, input string) tooldef.ToolResult {
+func execute(t *testing.T, llm common.LLM, input string) tooldef.ToolResult {
 	t.Helper()
 	tool := NewAdvisorTool(llm)
 	result, err := tool.Execute(context.Background(), tooldef.ExecutionContext{Arguments: []string{input}})
@@ -85,8 +85,8 @@ func TestAdvisorTool_Execute(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			llm := &stubLLM{response: provider.CompletionResponse{
-				Content: []provider.ContentBlock{provider.NewTextContent("advice text")},
+			llm := &stubLLM{response: common.CompletionResponse{
+				Content: []common.ContentBlock{common.NewTextContent("advice text")},
 			}}
 			result := execute(t, llm, tt.input)
 
@@ -101,8 +101,8 @@ func TestAdvisorTool_Execute(t *testing.T) {
 }
 
 func TestAdvisorTool_RequestShape(t *testing.T) {
-	llm := &stubLLM{response: provider.CompletionResponse{
-		Content: []provider.ContentBlock{provider.NewTextContent("ok")},
+	llm := &stubLLM{response: common.CompletionResponse{
+		Content: []common.ContentBlock{common.NewTextContent("ok")},
 	}}
 	execute(t, llm, `{"plan":"the plan body","context":"the task context"}`)
 

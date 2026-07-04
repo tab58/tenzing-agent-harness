@@ -5,12 +5,12 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/tab58/llm-providers/common"
 	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/skills"
 	"tenzing-agent/internal/harness/todo"
 	"tenzing-agent/internal/harness/tools"
 	"tenzing-agent/internal/harness/tools/tooldef"
-	"tenzing-agent/internal/provider"
 )
 
 type eventCollector struct {
@@ -42,12 +42,12 @@ type minimalAgent struct {
 	idx   int
 }
 
-func (a *minimalAgent) UpdateToolDefinitions(_ []provider.ToolDefinition)                    {}
-func (a *minimalAgent) UpdateSkillMap(_ map[string]string)                                   {}
-func (a *minimalAgent) UpdateOffloadFn(_ func(context.Context, string) (string, error))      {}
-func (a *minimalAgent) UpdateStreamCallback(_ func(string))                                  {}
-func (a *minimalAgent) UpdateThinkingCallback(_ func(string))                                {}
-func (a *minimalAgent) SetTodoProvider(_ func() string)                                      {}
+func (a *minimalAgent) UpdateToolDefinitions(_ []common.ToolDefinition)                 {}
+func (a *minimalAgent) UpdateSkillMap(_ map[string]string)                              {}
+func (a *minimalAgent) UpdateOffloadFn(_ func(context.Context, string) (string, error)) {}
+func (a *minimalAgent) UpdateStreamCallback(_ func(string))                             {}
+func (a *minimalAgent) UpdateThinkingCallback(_ func(string))                           {}
+func (a *minimalAgent) SetTodoProvider(_ func() string)                                 {}
 
 func (a *minimalAgent) DoReasoning(_ context.Context, _ []string, _ []string) (ReasoningResult, error) {
 	a.mu.Lock()

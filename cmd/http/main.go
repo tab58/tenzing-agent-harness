@@ -14,11 +14,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
+	httpserver "github.com/tab58/huma-http-server"
+	srverrors "github.com/tab58/huma-http-server/errors"
+	"github.com/tab58/huma-http-server/router"
+
+	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/llm-providers/ollama"
 	"tenzing-agent/internal/agent"
 	"tenzing-agent/internal/harness"
 	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/runner"
-	"tenzing-agent/internal/provider"
 )
 
 func main() {
@@ -44,9 +50,14 @@ func main() {
 		}
 	}()
 
-	llm := provider.NewOllamaClient(provider.OllamaConfig{
+	llm := ollama.NewClient(ollama.Config{
 		APIKey: os.Getenv("OLLAMA_API_KEY"),
-		Model:  "glm-5.2",
+		Model: common.ModelDefinition{
+			Name:                 "glm-5.2",
+			MaxTokens:            32_768,
+			ContextWindowSize:    131_072,
+			DefaultContextWindow: 32_768,
+		},
 	})
 
 	bus := events.NewEventBus()
@@ -60,40 +71,47 @@ func main() {
 		os.Exit(1)
 	}
 
-	srv := newServer(cwd, llm, mainAgent, bus)
+	// create the HTTP server
+
+	s := newServer(cwd, llm, mainAgent, bus)
+
+	srv := httpserver.New(httpserver.ServerConfig{
+		ServiceName:    "tenzing-agent",
+		ServiceVersion: "0.1.0",
+	}, router.MapAuthInfoBuilder)
+	s.registerRoutes(srv)
 
 	addr := os.Getenv("ADDR")
 	if addr == "" {
 		addr = ":8080"
 	}
 
-	httpSrv := &http.Server{
-		Addr:              addr,
-		Handler:           srv.mux,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	defer srv.harness.Shutdown()
+	defer s.harness.Shutdown()
 
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		httpSrv.Shutdown(shutdownCtx)
-	}()
-
-	fmt.Fprintf(os.Stderr, "listening on %s\n", addr)
-	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	errCh, err := srv.Start(addr)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "listening on %s\n", addr)
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+			os.Exit(1)
+		}
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(shutdownCtx)
 	}
 }
 
 type server struct {
-	mux     *http.ServeMux
 	harness *harness.Harness
 	bus     *events.EventBus
 
@@ -101,9 +119,8 @@ type server struct {
 	cancelFn context.CancelFunc
 }
 
-func newServer(cwd string, llm provider.LLM, mainAgent runner.Agent, bus *events.EventBus) *server {
+func newServer(cwd string, llm common.LLM, mainAgent runner.Agent, bus *events.EventBus) *server {
 	s := &server{
-		mux: http.NewServeMux(),
 		bus: bus,
 	}
 
@@ -125,13 +142,40 @@ func newServer(cwd string, llm provider.LLM, mainAgent runner.Agent, bus *events
 	evCh := bus.Subscribe(256)
 	go s.forwardEvents(evCh)
 
-	s.mux.HandleFunc("GET /", s.handleIndex)
-	s.mux.HandleFunc("GET /events", s.handleSSE)
-	s.mux.HandleFunc("POST /query", s.handleQuery)
-	s.mux.HandleFunc("POST /cancel", s.handleCancel)
-	s.mux.HandleFunc("GET /info", s.handleInfo)
-
 	return s
+}
+
+// registerRoutes mounts the API on the huma server. The index page and SSE
+// stream are raw routes (they bypass huma middleware and the OpenAPI spec);
+// the JSON endpoints are typed routes.
+func (s *server) registerRoutes(srv *httpserver.Server[router.MapAuthInfo]) {
+	srv.Handle("GET /", http.HandlerFunc(s.handleIndex))
+	srv.Handle("GET /events", http.HandlerFunc(s.handleSSE))
+
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[queryInput, statusOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "query",
+			Method:      http.MethodPost,
+			Path:        "/query",
+		},
+		Handler: s.handleQuery,
+	})
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[struct{}, statusOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "cancel",
+			Method:      http.MethodPost,
+			Path:        "/cancel",
+		},
+		Handler: s.handleCancel,
+	})
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[struct{}, infoOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "info",
+			Method:      http.MethodGet,
+			Path:        "/info",
+		},
+		Handler: s.handleInfo,
+	})
 }
 
 // --- SSE broadcast ---
@@ -254,28 +298,36 @@ func (s *server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-type queryRequest struct {
-	Query string `json:"query"`
+type queryInput struct {
+	Body struct {
+		Query string `json:"query" doc:"Prompt to run the agent with"`
+	}
 }
 
-func (s *server) handleQuery(w http.ResponseWriter, r *http.Request) {
-	var req queryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return
+type statusOutput struct {
+	Body struct {
+		Status string `json:"status" doc:"Result of the request"`
 	}
-	query := strings.TrimSpace(req.Query)
+}
+
+type infoOutput struct {
+	Body struct {
+		Tools int `json:"tools" doc:"Number of registered tools"`
+	}
+}
+
+func (s *server) handleQuery(_ context.Context, _ router.MapAuthInfo, in *queryInput) (*statusOutput, error) {
+	query := strings.TrimSpace(in.Body.Query)
 	if query == "" {
-		http.Error(w, "empty query", http.StatusBadRequest)
-		return
+		return nil, srverrors.Wrap(srverrors.ErrBadRequest, "empty query")
 	}
 
 	s.mu.Lock()
 	if s.cancelFn != nil {
 		s.mu.Unlock()
-		http.Error(w, "agent already running", http.StatusConflict)
-		return
+		return nil, srverrors.Wrap(srverrors.ErrConflict, "agent already running")
 	}
+	// the turn outlives the HTTP request, so it gets its own context
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancelFn = cancel
 	s.mu.Unlock()
@@ -302,29 +354,29 @@ func (s *server) handleQuery(w http.ResponseWriter, r *http.Request) {
 		s.broadcastSSEJSON("answer", map[string]string{"text": answer})
 	}()
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "started"})
+	out := &statusOutput{}
+	out.Body.Status = "started"
+	return out, nil
 }
 
-func (s *server) handleCancel(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleCancel(_ context.Context, _ router.MapAuthInfo, _ *struct{}) (*statusOutput, error) {
 	s.mu.Lock()
 	cancel := s.cancelFn
 	s.mu.Unlock()
 
 	if cancel == nil {
-		http.Error(w, "nothing running", http.StatusBadRequest)
-		return
+		return nil, srverrors.Wrap(srverrors.ErrBadRequest, "nothing running")
 	}
 	cancel()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "cancelled"})
+	out := &statusOutput{}
+	out.Body.Status = "cancelled"
+	return out, nil
 }
 
-func (s *server) handleInfo(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"tools": len(s.harness.ToolDefinitions()),
-	})
+func (s *server) handleInfo(_ context.Context, _ router.MapAuthInfo, _ *struct{}) (*infoOutput, error) {
+	out := &infoOutput{}
+	out.Body.Tools = len(s.harness.ToolDefinitions())
+	return out, nil
 }
 
 func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {

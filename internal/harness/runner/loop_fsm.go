@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"tenzing-agent/internal/utils"
-
 	"github.com/looplab/fsm"
 )
 
@@ -31,12 +29,12 @@ const (
 	LoopStateToolExecutionStarted  LoopState = "tool_execution_started"
 	LoopStateToolExecutionFinished LoopState = "tool_execution_finished"
 
-	LoopTransitionStartReasoning     LoopTransition = "start_reasoning"
-	LoopTransitionFinishReasoning    LoopTransition = "finish_reasoning"
-	LoopTransitionStartToolExecution LoopTransition = "start_tool_execution"
+	LoopTransitionStartReasoning      LoopTransition = "start_reasoning"
+	LoopTransitionFinishReasoning     LoopTransition = "finish_reasoning"
+	LoopTransitionStartToolExecution  LoopTransition = "start_tool_execution"
 	LoopTransitionFinishToolExecution LoopTransition = "finish_tool_execution"
-	LoopTransitionStop               LoopTransition = "stop"
-	LoopTransitionReset              LoopTransition = "reset"
+	LoopTransitionStop                LoopTransition = "stop"
+	LoopTransitionReset               LoopTransition = "reset"
 )
 
 type LoopFSM struct {
@@ -60,14 +58,14 @@ func createNewLoopFSM() *LoopFSM {
 	f := fsm.NewFSM(
 		string(LoopStateStarted),
 		fsm.Events{
-			{Name: LoopTransitionStartReasoning.String(), Src: utils.Strings(LoopStateStarted, LoopStateToolExecutionFinished), Dst: LoopStateReasoningStarted.String()},
-			{Name: LoopTransitionFinishReasoning.String(), Src: utils.Strings(LoopStateReasoningStarted), Dst: LoopStateReasoningFinished.String()},
-			{Name: LoopTransitionStartToolExecution.String(), Src: utils.Strings(LoopStateReasoningFinished), Dst: LoopStateToolExecutionStarted.String()},
-			{Name: LoopTransitionFinishToolExecution.String(), Src: utils.Strings(LoopStateToolExecutionStarted), Dst: LoopStateToolExecutionFinished.String()},
-			{Name: LoopTransitionStop.String(), Src: utils.Strings(LoopStateReasoningFinished), Dst: LoopStateStopped.String()},
+			{Name: LoopTransitionStartReasoning.String(), Src: toStrings(LoopStateStarted, LoopStateToolExecutionFinished), Dst: LoopStateReasoningStarted.String()},
+			{Name: LoopTransitionFinishReasoning.String(), Src: toStrings(LoopStateReasoningStarted), Dst: LoopStateReasoningFinished.String()},
+			{Name: LoopTransitionStartToolExecution.String(), Src: toStrings(LoopStateReasoningFinished), Dst: LoopStateToolExecutionStarted.String()},
+			{Name: LoopTransitionFinishToolExecution.String(), Src: toStrings(LoopStateToolExecutionStarted), Dst: LoopStateToolExecutionFinished.String()},
+			{Name: LoopTransitionStop.String(), Src: toStrings(LoopStateReasoningFinished), Dst: LoopStateStopped.String()},
 			{
 				Name: LoopTransitionReset.String(),
-				Src: utils.Strings(
+				Src: toStrings(
 					LoopStateStarted,
 					LoopStateReasoningStarted,
 					LoopStateReasoningFinished,
@@ -81,4 +79,12 @@ func createNewLoopFSM() *LoopFSM {
 		fsm.Callbacks{},
 	)
 	return &LoopFSM{FSM: f}
+}
+
+func toStrings[T fmt.Stringer](vs ...T) []string {
+	strs := make([]string, 0, len(vs))
+	for _, v := range vs {
+		strs = append(strs, v.String())
+	}
+	return strs
 }

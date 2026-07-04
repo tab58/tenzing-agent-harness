@@ -1,17 +1,17 @@
 package compressor
 
-import "tenzing-agent/internal/provider"
+import "github.com/tab58/llm-providers/common"
 
 type OverflowCause int
 
 const (
-	OverflowNone       OverflowCause = iota
+	OverflowNone OverflowCause = iota
 	OverflowLargeInput
 	OverflowHistory
 	OverflowBoth
 )
 
-func ClassifyOverflow(history []provider.Message, pendingInputs []string, threshold int) (OverflowCause, int) {
+func ClassifyOverflow(history []common.Message, pendingInputs []string, threshold int) (OverflowCause, int) {
 	historySize := estimateTextSize(history)
 
 	largeIdx := -1
@@ -38,7 +38,7 @@ func ClassifyOverflow(history []provider.Message, pendingInputs []string, thresh
 	}
 }
 
-func estimateTextSize(messages []provider.Message) int {
+func estimateTextSize(messages []common.Message) int {
 	size := 0
 	for _, msg := range messages {
 		for _, block := range msg.Content {

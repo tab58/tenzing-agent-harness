@@ -562,18 +562,18 @@ func (m *model) refreshViewport() {
 // --- View ---
 
 var (
-	promptStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true)
-	userStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Bold(true)
-	toolStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Faint(true)
-	toolStartStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	promptStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true)
+	userStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Bold(true)
+	toolStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Faint(true)
+	toolStartStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	assistantStyle  = lipgloss.NewStyle()
 	thinkingStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	errorStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)
 	systemStyle     = lipgloss.NewStyle().Faint(true)
 	statusLineStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 	separatorStyle  = lipgloss.NewStyle().Faint(true)
-	headerStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Bold(true)
-	headerDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	headerStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Bold(true)
+	headerDim       = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 )
 
 func (m model) buildHeader() string {

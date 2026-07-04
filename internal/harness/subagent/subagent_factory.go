@@ -6,13 +6,13 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/tab58/llm-providers/common"
 	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/rlm"
 	"tenzing-agent/internal/harness/runner"
 	"tenzing-agent/internal/harness/skills"
 	"tenzing-agent/internal/harness/todo"
 	"tenzing-agent/internal/harness/tools"
-	"tenzing-agent/internal/provider"
 )
 
 const (
@@ -23,8 +23,8 @@ const (
 var _ AgentFactory = (*SubAgentFactory)(nil)
 
 type SubAgentFactoryConfig struct {
-	AgentLLM      provider.LLM
-	RLMModel      provider.LLM
+	AgentLLM      common.LLM
+	RLMModel      common.LLM
 	AgentBuilder  runner.AgentBuilder
 	MaxDepth      int
 	MaxIterations int
@@ -33,8 +33,8 @@ type SubAgentFactoryConfig struct {
 }
 
 type SubAgentFactory struct {
-	agentLLM      provider.LLM
-	rlmModel      provider.LLM
+	agentLLM      common.LLM
+	rlmModel      common.LLM
 	agentBuilder  runner.AgentBuilder
 	maxDepth      int
 	currentDepth  int

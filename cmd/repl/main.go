@@ -7,11 +7,12 @@ import (
 	"path/filepath"
 	"runtime/debug"
 
+	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/llm-providers/ollama"
 	"tenzing-agent/internal/agent"
 	"tenzing-agent/internal/harness"
 	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/runner"
-	"tenzing-agent/internal/provider"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -39,9 +40,14 @@ func main() {
 		}
 	}()
 
-	llm := provider.NewOllamaClient(provider.OllamaConfig{
+	llm := ollama.NewClient(ollama.Config{
 		APIKey: os.Getenv("OLLAMA_API_KEY"),
-		Model:  "glm-5.2",
+		Model: common.ModelDefinition{
+			Name:                 "glm-5.2",
+			MaxTokens:            32_768,
+			ContextWindowSize:    131_072,
+			DefaultContextWindow: 32_768,
+		},
 	})
 
 	msgQueue := make(chan tea.Msg, 256)

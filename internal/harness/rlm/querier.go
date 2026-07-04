@@ -3,7 +3,7 @@ package rlm
 import (
 	"context"
 
-	"tenzing-agent/internal/provider"
+	"github.com/tab58/llm-providers/common"
 )
 
 type Querier interface {
@@ -11,18 +11,18 @@ type Querier interface {
 }
 
 type llmQuerier struct {
-	llm provider.LLM
+	llm common.LLM
 }
 
-func NewLLMQuerier(llm provider.LLM) Querier {
+func NewLLMQuerier(llm common.LLM) Querier {
 	return &llmQuerier{llm: llm}
 }
 
 func (q *llmQuerier) Query(ctx context.Context, prompt string, maxTokens int64) (string, error) {
-	resp, err := q.llm.SendSyncMessage(ctx, provider.CompletionRequest{
+	resp, err := q.llm.SendSyncMessage(ctx, common.CompletionRequest{
 		Model:     q.llm.GetCurrentModel(),
 		System:    "Answer concisely and accurately.",
-		Messages:  []provider.Message{provider.NewUserMessage(prompt)},
+		Messages:  []common.Message{common.NewUserMessage(prompt)},
 		MaxTokens: maxTokens,
 	})
 	if err != nil {

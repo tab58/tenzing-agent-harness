@@ -284,7 +284,6 @@ func TestIntegration_ReadEditRevert_ThroughLoop(t *testing.T) {
 	assertCallCount(t, agent, 5)
 }
 
-
 // ---------------------------------------------------------------------------
 // Agent loop mechanics
 // ---------------------------------------------------------------------------
