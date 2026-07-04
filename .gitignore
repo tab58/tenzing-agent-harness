@@ -51,3 +51,4 @@ __debug_bin*
 .superpowers/
 docs/*
 
+.tenzing-agent-*.log

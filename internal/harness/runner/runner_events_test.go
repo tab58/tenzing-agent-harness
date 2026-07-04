@@ -67,14 +67,14 @@ func TestRunnerEmitsTurnAndLoopEvents(t *testing.T) {
 		{FinalAnswer: "done"},
 	}}
 
-	r, err := NewAgentRunner(AgentRunnerConfig{
-		Agent:          agent,
-		Emitter:        collector,
-		ToolRegistry:   tools.NewRegistry(""),
-		SkillsRegistry: skills.NewRegistry(),
-		TodoFile:       todo.NewTodoFile(dir),
-		SystemPrompt:   "test",
-	})
+	r, err := NewAgentRunner(
+		agent,
+		WithEmitter(collector),
+		WithToolRegistry(tools.NewRegistry("")),
+		WithSkillsRegistry(skills.NewRegistry()),
+		WithTodoFile(todo.NewTodoFile(dir)),
+		WithSystemPrompt("test"),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,14 +119,14 @@ func TestRunnerEmitsToolEvents(t *testing.T) {
 		{FinalAnswer: "done"},
 	}}
 
-	r, err := NewAgentRunner(AgentRunnerConfig{
-		Agent:          agent,
-		Emitter:        collector,
-		ToolRegistry:   registry,
-		SkillsRegistry: skills.NewRegistry(),
-		TodoFile:       todo.NewTodoFile(dir),
-		SystemPrompt:   "test",
-	})
+	r, err := NewAgentRunner(
+		agent,
+		WithEmitter(collector),
+		WithToolRegistry(tools.NewRegistry("")),
+		WithSkillsRegistry(skills.NewRegistry()),
+		WithTodoFile(todo.NewTodoFile(dir)),
+		WithSystemPrompt("test"),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

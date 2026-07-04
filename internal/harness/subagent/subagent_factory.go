@@ -6,13 +6,14 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/tab58/llm-providers/common"
 	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/rlm"
 	"tenzing-agent/internal/harness/runner"
 	"tenzing-agent/internal/harness/skills"
 	"tenzing-agent/internal/harness/todo"
 	"tenzing-agent/internal/harness/tools"
+
+	"github.com/tab58/llm-providers/common"
 )
 
 const (
@@ -86,13 +87,13 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 	todoFile := todo.NewTodoFile(f.cwd)
 	skillsReg := skills.NewRegistry()
 
-	childRunner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
-		Agent:          childAgent,
-		ToolRegistry:   registry,
-		SystemPrompt:   systemPrompt,
-		TodoFile:       todoFile,
-		SkillsRegistry: skillsReg,
-	})
+	childRunner, err := runner.NewAgentRunner(
+		childAgent,
+		runner.WithToolRegistry(registry),
+		runner.WithSkillsRegistry(skillsReg),
+		runner.WithTodoFile(todoFile),
+		runner.WithSystemPrompt(systemPrompt),
+	)
 	if err != nil {
 		return "", fmt.Errorf("create child runner: %w", err)
 	}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"tenzing-agent/internal/harness/events"
+	"tenzing-agent/internal/harness/prompts"
 	"tenzing-agent/internal/harness/skills"
 	"tenzing-agent/internal/harness/todo"
 	"tenzing-agent/internal/harness/tools"
@@ -16,6 +17,8 @@ import (
 
 const logOutputMaxLen = 2000
 
+// AgentRunner executes a single agent's reasoning and tool execution loop.
+// It receives the environment configured in the harness.
 type AgentRunner struct {
 	id              string
 	fsm             *LoopFSM
@@ -29,34 +32,101 @@ type AgentRunner struct {
 	systemPrompt    string
 }
 
-type AgentRunnerConfig struct {
-	ToolRegistry   *tools.Registry
-	SkillsRegistry *skills.Registry
-	TodoFile       *todo.TodoFile
-
-	Agent           Agent
-	Emitter         events.Emitter
-	OnTextDelta     func(string)
-	OnThinkingDelta func(string)
-	SystemPrompt    string
+type agentRunnerOptions struct {
+	toolRegistry    *tools.Registry
+	skillsRegistry  *skills.Registry
+	todoFile        *todo.TodoFile
+	onTextDelta     func(string)
+	onThinkingDelta func(string)
+	systemPrompt    string
+	emitter         events.Emitter
 }
 
-func NewAgentRunner(cfg AgentRunnerConfig) (*AgentRunner, error) {
-	if cfg.Agent == nil {
+type AgentRunnerOption func(*agentRunnerOptions)
+
+func WithEmitter(emitter events.Emitter) AgentRunnerOption {
+	return func(o *agentRunnerOptions) {
+		o.emitter = emitter
+	}
+}
+
+func WithTextDeltaHandler(f func(string)) AgentRunnerOption {
+	return func(o *agentRunnerOptions) {
+		o.onTextDelta = f
+	}
+}
+
+func WithThinkingDeltaHandler(f func(string)) AgentRunnerOption {
+	return func(o *agentRunnerOptions) {
+		o.onThinkingDelta = f
+	}
+}
+
+func WithSystemPrompt(prompt string) AgentRunnerOption {
+	return func(o *agentRunnerOptions) {
+		if prompt != "" {
+			o.systemPrompt = prompt
+		}
+	}
+}
+
+func WithToolRegistry(registry *tools.Registry) AgentRunnerOption {
+	return func(o *agentRunnerOptions) {
+		o.toolRegistry = registry
+	}
+}
+
+func WithSkillsRegistry(registry *skills.Registry) AgentRunnerOption {
+	return func(o *agentRunnerOptions) {
+		o.skillsRegistry = registry
+	}
+}
+
+func WithTodoFile(file *todo.TodoFile) AgentRunnerOption {
+	return func(o *agentRunnerOptions) {
+		o.todoFile = file
+	}
+}
+
+// NewAgentRunner creates a new AgentRunner, the actual executor of a single agent's
+// reasoning and tool execution loop. The agent, tool registry, skills registry, and todo file
+// must be defined.
+func NewAgentRunner(agent Agent, opts ...AgentRunnerOption) (*AgentRunner, error) {
+	if agent == nil {
 		return nil, fmt.Errorf("no agent defined")
 	}
 
+	// apply options
+	o := &agentRunnerOptions{
+		systemPrompt: prompts.DefaultSystemPrompt(),
+	}
+	for _, opt := range opts {
+		opt(o)
+	}
+
+	if o.toolRegistry == nil {
+		return nil, fmt.Errorf("no tool registry defined")
+	}
+
+	if o.skillsRegistry == nil {
+		return nil, fmt.Errorf("no skills registry defined")
+	}
+
+	if o.todoFile == nil {
+		return nil, fmt.Errorf("no todo file defined")
+	}
+
 	return &AgentRunner{
+		agent:           agent,
 		id:              runnerID(),
-		agent:           cfg.Agent,
 		fsm:             createNewLoopFSM(),
-		toolRegistry:    cfg.ToolRegistry,
-		skillsRegistry:  cfg.SkillsRegistry,
-		emitter:         cfg.Emitter,
-		onTextDelta:     cfg.OnTextDelta,
-		onThinkingDelta: cfg.OnThinkingDelta,
-		systemPrompt:    cfg.SystemPrompt,
-		todoFile:        cfg.TodoFile,
+		toolRegistry:    o.toolRegistry,
+		skillsRegistry:  o.skillsRegistry,
+		todoFile:        o.todoFile,
+		emitter:         o.emitter,
+		systemPrompt:    o.systemPrompt,
+		onTextDelta:     o.onTextDelta,
+		onThinkingDelta: o.onThinkingDelta,
 	}, nil
 }
 

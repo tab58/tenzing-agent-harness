@@ -13,10 +13,12 @@ import (
 // set handler level to LevelTrace or lower to see these.
 const LevelTrace = slog.Level(-8)
 
+// LoopState is the current state of the reasoning-tool execution loop.
 type LoopState string
 
 func (s LoopState) String() string { return string(s) }
 
+// LoopTransition is a transition between two LoopStates.
 type LoopTransition string
 
 func (t LoopTransition) String() string { return string(t) }
@@ -37,6 +39,7 @@ const (
 	LoopTransitionReset               LoopTransition = "reset"
 )
 
+// LoopFSM is the finite state machine that defines the allowed transitions between loop states.
 type LoopFSM struct {
 	*fsm.FSM
 }

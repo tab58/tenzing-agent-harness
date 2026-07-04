@@ -13,7 +13,6 @@ import (
 
 	"tenzing-agent/internal/harness/advisor"
 	"tenzing-agent/internal/harness/events"
-	"tenzing-agent/internal/harness/prompts"
 	"tenzing-agent/internal/harness/rlm"
 	"tenzing-agent/internal/harness/runner"
 	"tenzing-agent/internal/harness/skills"
@@ -116,9 +115,6 @@ func New(cfg HarnessConfig) (*Harness, error) {
 	}
 
 	mainSystemPrompt := cfg.MainSystemPrompt
-	if mainSystemPrompt == "" {
-		mainSystemPrompt = prompts.DefaultSystemPrompt(cwd)
-	}
 
 	bus := cfg.EventBus
 	if bus == nil {
@@ -210,16 +206,16 @@ func New(cfg HarnessConfig) (*Harness, error) {
 	agent.SetTodoProvider(todoFile.FormatReminder)
 
 	// create agent runner
-	mainAgentRunner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
-		Agent:           agent,
-		ToolRegistry:    toolRegistry,
-		SkillsRegistry:  skillsRegistry,
-		TodoFile:        todoFile,
-		Emitter:         bus,
-		OnTextDelta:     cfg.OnTextDelta,
-		OnThinkingDelta: cfg.OnThinkingDelta,
-		SystemPrompt:    mainSystemPrompt,
-	})
+	mainAgentRunner, err := runner.NewAgentRunner(
+		agent,
+		runner.WithToolRegistry(toolRegistry),
+		runner.WithSkillsRegistry(skillsRegistry),
+		runner.WithTodoFile(todoFile),
+		runner.WithEmitter(bus),
+		runner.WithTextDeltaHandler(cfg.OnTextDelta),
+		runner.WithThinkingDeltaHandler(cfg.OnThinkingDelta),
+		runner.WithSystemPrompt(mainSystemPrompt),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("unable to initialize runner: %w", err)
 	}

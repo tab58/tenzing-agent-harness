@@ -11,13 +11,11 @@ var defaultMainPromptString string
 
 var defaultMainPromptTmpl = template.Must(template.New("default_system_prompt").Parse(defaultMainPromptString))
 
-type systemPromptData struct {
-	Cwd string
-}
+type systemPromptData struct{}
 
-func DefaultSystemPrompt(cwd string) string {
+func DefaultSystemPrompt() string {
 	var buf bytes.Buffer
-	if err := defaultMainPromptTmpl.Execute(&buf, systemPromptData{Cwd: cwd}); err != nil {
+	if err := defaultMainPromptTmpl.Execute(&buf, systemPromptData{}); err != nil {
 		panic("default system prompt template: " + err.Error())
 	}
 	return buf.String()

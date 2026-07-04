@@ -47,7 +47,8 @@ main.go
 Go module: `tenzing-agent` (go 1.25.9)
 
 ```
-cmd/app/main.go                         Entry point — wires agent, tools, skills, task graph
+cmd/app/main.go                         Entry point — signal handling, banner, exit codes
+cmd/app/container.go                    AppContainer — config, logging, LLM/agent/harness, HTTP server wiring
 
 internal/
 ├── agent/                              Concrete Agent implementation
@@ -576,7 +577,7 @@ Each provider converts between canonical types and SDK-specific types:
 
 ## What's Not Built Yet
 
-- `cmd/app/main.go` wires everything but Agent model is `nil` — needs a provider instance
+- `cmd/app` HTTP server is a skeleton — no routes registered yet (see `docs/superpowers/specs/2026-07-04-app-container-design.md`)
 - No async execution, multi-agent teams (Phase 3)
 - No permission governance, event bus, session persistence (Phase 4)
 - No parallel tool execution, prompt caching, MCP integration (Phase 5)

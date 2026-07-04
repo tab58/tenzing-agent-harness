@@ -10,6 +10,8 @@ import (
 	"github.com/tab58/llm-providers/common"
 )
 
+// An Agent is an abstraction of the "brain" of the harness. Any decision making for the harness
+// is executed from an Agent.
 type Agent interface {
 	GetCurrentModel() string
 	UpdateToolDefinitions(tooldefs []common.ToolDefinition)

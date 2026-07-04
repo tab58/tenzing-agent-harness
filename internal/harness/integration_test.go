@@ -260,13 +260,13 @@ func TestIntegration_ReadEditRevert_ThroughLoop(t *testing.T) {
 	registry.Register(snapshot.NewWriteTool(snapshots))
 	registry.Register(snapshot.NewRevertTool(snapshots))
 
-	runner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
-		Agent:          agent,
-		ToolRegistry:   registry,
-		SkillsRegistry: skills.NewRegistry(),
-		TodoFile:       todo.NewTodoFile(workDir),
-		SystemPrompt:   "test",
-	})
+	runner, err := runner.NewAgentRunner(
+		agent,
+		runner.WithToolRegistry(registry),
+		runner.WithSkillsRegistry(skills.NewRegistry()),
+		runner.WithTodoFile(todo.NewTodoFile(workDir)),
+		runner.WithSystemPrompt("test"),
+	)
 	if err != nil {
 		t.Fatalf("NewAgentRunner error: %v", err)
 	}
@@ -293,13 +293,13 @@ func TestIntegration_FinalAnswerOnly(t *testing.T) {
 	agent := newScriptedAgent(finalStep("direct answer"))
 
 	registry := tools.NewRegistry("")
-	runner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
-		Agent:          agent,
-		ToolRegistry:   registry,
-		SkillsRegistry: skills.NewRegistry(),
-		TodoFile:       todo.NewTodoFile(workDir),
-		SystemPrompt:   "test",
-	})
+	runner, err := runner.NewAgentRunner(
+		agent,
+		runner.WithToolRegistry(registry),
+		runner.WithSkillsRegistry(skills.NewRegistry()),
+		runner.WithTodoFile(todo.NewTodoFile(workDir)),
+		runner.WithSystemPrompt("test"),
+	)
 	if err != nil {
 		t.Fatalf("NewAgentRunner error: %v", err)
 	}
@@ -319,13 +319,13 @@ func TestIntegration_ContextCanceled(t *testing.T) {
 	agent := newScriptedAgent(finalStep("should not reach"))
 
 	registry := tools.NewRegistry("")
-	runner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
-		Agent:          agent,
-		ToolRegistry:   registry,
-		SkillsRegistry: skills.NewRegistry(),
-		TodoFile:       todo.NewTodoFile(workDir),
-		SystemPrompt:   "test",
-	})
+	runner, err := runner.NewAgentRunner(
+		agent,
+		runner.WithToolRegistry(registry),
+		runner.WithSkillsRegistry(skills.NewRegistry()),
+		runner.WithTodoFile(todo.NewTodoFile(workDir)),
+		runner.WithSystemPrompt("test"),
+	)
 	if err != nil {
 		t.Fatalf("NewAgentRunner error: %v", err)
 	}
@@ -346,13 +346,13 @@ func TestIntegration_UnknownTool(t *testing.T) {
 	)
 
 	registry := tools.NewRegistry("")
-	runner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
-		Agent:          agent,
-		ToolRegistry:   registry,
-		SkillsRegistry: skills.NewRegistry(),
-		TodoFile:       todo.NewTodoFile(workDir),
-		SystemPrompt:   "test",
-	})
+	runner, err := runner.NewAgentRunner(
+		agent,
+		runner.WithToolRegistry(registry),
+		runner.WithSkillsRegistry(skills.NewRegistry()),
+		runner.WithTodoFile(todo.NewTodoFile(workDir)),
+		runner.WithSystemPrompt("test"),
+	)
 	if err != nil {
 		t.Fatalf("NewAgentRunner error: %v", err)
 	}
@@ -381,13 +381,13 @@ func TestIntegration_MultipleToolCalls(t *testing.T) {
 
 	registry := tools.NewRegistry("")
 
-	r, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
-		Agent:          agent,
-		ToolRegistry:   registry,
-		SkillsRegistry: skills.NewRegistry(),
-		TodoFile:       todo.NewTodoFile(workDir),
-		SystemPrompt:   "test",
-	})
+	r, err := runner.NewAgentRunner(
+		agent,
+		runner.WithToolRegistry(registry),
+		runner.WithSkillsRegistry(skills.NewRegistry()),
+		runner.WithTodoFile(todo.NewTodoFile(workDir)),
+		runner.WithSystemPrompt("test"),
+	)
 	if err != nil {
 		t.Fatalf("NewAgentRunner error: %v", err)
 	}
@@ -416,14 +416,14 @@ func TestIntegration_ToolHookCalled(t *testing.T) {
 	collector := &testEventCollector{}
 	registry := tools.NewRegistry("")
 
-	r, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
-		Agent:          agent,
-		Emitter:        collector,
-		ToolRegistry:   registry,
-		SkillsRegistry: skills.NewRegistry(),
-		TodoFile:       todo.NewTodoFile(workDir),
-		SystemPrompt:   "test",
-	})
+	r, err := runner.NewAgentRunner(
+		agent,
+		runner.WithEmitter(collector),
+		runner.WithToolRegistry(registry),
+		runner.WithSkillsRegistry(skills.NewRegistry()),
+		runner.WithTodoFile(todo.NewTodoFile(workDir)),
+		runner.WithSystemPrompt("test"),
+	)
 	if err != nil {
 		t.Fatalf("NewAgentRunner error: %v", err)
 	}

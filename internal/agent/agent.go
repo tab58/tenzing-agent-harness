@@ -44,7 +44,29 @@ type AgentConfig struct {
 	SkillMap     map[string]string
 }
 
-func New(cfg AgentConfig) (*Agent, error) {
+type agentOptions struct {
+	systemPrompt string
+}
+
+type ConfigOption func(*agentOptions)
+
+// WithSystemPrompt configures the Agent with a default system prompt
+func WithSystemPrompt(prompt string) ConfigOption {
+	return func(o *agentOptions) {
+		if prompt != "" {
+			o.systemPrompt = prompt
+		}
+	}
+}
+
+func New(cfg AgentConfig, opts ...ConfigOption) (*Agent, error) {
+	o := &agentOptions{
+		systemPrompt: "", // TODO: insert default system prompt?
+	}
+	for _, opt := range opts {
+		opt(o)
+	}
+
 	systemPrompt := cfg.SystemPrompt
 	skillMap := cfg.SkillMap
 	enrichedPrompt := buildAgentSystemPrompt(systemPrompt, skillMap)
