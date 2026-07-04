@@ -72,6 +72,10 @@ func runnerID() string {
 	return hex.EncodeToString(b)
 }
 
+func (h *AgentRunner) GetCurrentModel() string {
+	return h.agent.GetCurrentModel()
+}
+
 // RunLoop executes a single turn: user input -> agent plan/execute loop -> agent result
 func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error) {
 	inputs := []string{input}

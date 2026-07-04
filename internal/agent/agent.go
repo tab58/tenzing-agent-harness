@@ -8,10 +8,11 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"github.com/tab58/llm-providers/common"
 	agentctx "tenzing-agent/internal/agent/context"
 	"tenzing-agent/internal/harness/runner"
 	"tenzing-agent/internal/harness/tools/tooldef"
+
+	"github.com/tab58/llm-providers/common"
 )
 
 // maxTokensStdResponse caps output tokens per LLM request.
@@ -72,6 +73,10 @@ func buildAgentSystemPrompt(prompt string, skillMap map[string]string) string {
 		systemPrompt.WriteString("\nWhen a task requires specialised knowledge, call load_skill(name) to get full instructions before starting. Do NOT guess.")
 	}
 	return systemPrompt.String()
+}
+
+func (a *Agent) GetCurrentModel() string {
+	return a.model.GetCurrentModel()
 }
 
 func (a *Agent) UpdateSkillMap(skillMap map[string]string) {

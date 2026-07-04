@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/tab58/llm-providers/common"
 	"tenzing-agent/internal/harness/tools/tooldef"
+
+	"github.com/tab58/llm-providers/common"
 )
 
 type Agent interface {
+	GetCurrentModel() string
 	UpdateToolDefinitions(tooldefs []common.ToolDefinition)
 	UpdateSkillMap(skillMap map[string]string)
 	UpdateOffloadFn(fn func(ctx context.Context, input string) (string, error))

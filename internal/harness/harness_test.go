@@ -5,13 +5,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tab58/llm-providers/common"
 	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/runner"
+
+	"github.com/tab58/llm-providers/common"
 )
 
 type stubAgent struct{}
 
+func (s *stubAgent) GetCurrentModel() string                                         { return "stub-model" }
 func (s *stubAgent) UpdateToolDefinitions(_ []common.ToolDefinition)                 {}
 func (s *stubAgent) UpdateSkillMap(_ map[string]string)                              {}
 func (s *stubAgent) UpdateOffloadFn(_ func(context.Context, string) (string, error)) {}

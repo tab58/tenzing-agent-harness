@@ -4,8 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/tab58/llm-providers/common"
 	"tenzing-agent/internal/harness/runner"
+
+	"github.com/tab58/llm-providers/common"
 )
 
 type stubLLM struct{}
@@ -30,6 +31,7 @@ func (s *stubLLM) GetContextWindowSize() int { return 4096 }
 
 type stubAgent struct{}
 
+func (s *stubAgent) GetCurrentModel() string                                         { return "stub" }
 func (s *stubAgent) UpdateToolDefinitions(_ []common.ToolDefinition)                 {}
 func (s *stubAgent) UpdateSkillMap(_ map[string]string)                              {}
 func (s *stubAgent) UpdateOffloadFn(_ func(context.Context, string) (string, error)) {}

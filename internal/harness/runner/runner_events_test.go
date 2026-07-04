@@ -5,12 +5,13 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/tab58/llm-providers/common"
 	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/skills"
 	"tenzing-agent/internal/harness/todo"
 	"tenzing-agent/internal/harness/tools"
 	"tenzing-agent/internal/harness/tools/tooldef"
+
+	"github.com/tab58/llm-providers/common"
 )
 
 type eventCollector struct {
@@ -42,6 +43,7 @@ type minimalAgent struct {
 	idx   int
 }
 
+func (a *minimalAgent) GetCurrentModel() string                                         { return "" }
 func (a *minimalAgent) UpdateToolDefinitions(_ []common.ToolDefinition)                 {}
 func (a *minimalAgent) UpdateSkillMap(_ map[string]string)                              {}
 func (a *minimalAgent) UpdateOffloadFn(_ func(context.Context, string) (string, error)) {}

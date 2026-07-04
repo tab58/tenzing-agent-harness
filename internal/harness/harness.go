@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tab58/llm-providers/common"
 	"tenzing-agent/internal/harness/advisor"
 	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/prompts"
@@ -22,6 +21,8 @@ import (
 	"tenzing-agent/internal/harness/todo"
 	"tenzing-agent/internal/harness/tools"
 	"tenzing-agent/internal/harness/tools/tooldef"
+
+	"github.com/tab58/llm-providers/common"
 )
 
 type Harness struct {
@@ -38,9 +39,20 @@ func (h *Harness) EventBus() *events.EventBus {
 }
 
 type HarnessConfig struct {
-	Agent            runner.Agent
-	OnTextDelta      func(string)
-	OnThinkingDelta  func(string)
+	Agent runner.Agent
+
+	// OnTextDelta is called with incremental text output from the agent.
+	// It is called for each text delta, which may be a single character or
+	// a larger chunk of text. The callback is called from the agent's
+	// goroutine, so it should not block for long.
+	OnTextDelta func(string)
+
+	// OnThinkingDelta is called with incremental thinking output from the
+	// agent. It is called for each thinking delta, which may be a single
+	// character or a larger chunk of text. The callback is called from the
+	// agent's goroutine, so it should not block for long.
+	OnThinkingDelta func(string)
+
 	EventBus         *events.EventBus
 	EventHooks       events.Hooks
 	Cwd              string
@@ -48,8 +60,10 @@ type HarnessConfig struct {
 	ExtraTools       []tooldef.Definition
 	// DisabledTools removes tools by name (case-insensitive) after all
 	// registration, including built-ins like "bash" and "edit".
-	DisabledTools        []string
-	ExtraSkillDirs       []string
+	DisabledTools  []string
+	ExtraSkillDirs []string
+	// RLMModel is the LLM used for reasoning and offloading. It is used
+	// for the main agent and sub-agents unless SubAgentLLM is set.
 	RLMModel             common.LLM
 	RLMDefaultIterations int
 	RLMMaxIterations     int
@@ -57,8 +71,9 @@ type HarnessConfig struct {
 	// reasoning model than the main agent's. The tool is registered only
 	// when EnableAdvisor is also true — disabled by default while the
 	// tool is being improved.
-	AdvisorModel     common.LLM
-	EnableAdvisor    bool
+	AdvisorModel  common.LLM
+	EnableAdvisor bool
+	// SubAgentLLM is the LLM used for sub-agents spawned by the main agent.
 	SubAgentLLM      common.LLM
 	SubAgentMaxDepth int
 	SubAgentMaxIter  int
@@ -185,6 +200,7 @@ func New(cfg HarnessConfig) (*Harness, error) {
 		toolRegistry = toolRegistry.CopyWithout(cfg.DisabledTools...)
 	}
 
+	// validate and set up agent
 	agent := cfg.Agent
 	if agent == nil {
 		return nil, fmt.Errorf("agent must be defined for harness")
@@ -193,11 +209,12 @@ func New(cfg HarnessConfig) (*Harness, error) {
 	agent.UpdateOffloadFn(rlmEngine.Run)
 	agent.SetTodoProvider(todoFile.FormatReminder)
 
+	// create agent runner
 	mainAgentRunner, err := runner.NewAgentRunner(runner.AgentRunnerConfig{
+		Agent:           agent,
 		ToolRegistry:    toolRegistry,
 		SkillsRegistry:  skillsRegistry,
 		TodoFile:        todoFile,
-		Agent:           agent,
 		Emitter:         bus,
 		OnTextDelta:     cfg.OnTextDelta,
 		OnThinkingDelta: cfg.OnThinkingDelta,
@@ -218,6 +235,10 @@ func New(cfg HarnessConfig) (*Harness, error) {
 
 func (h *Harness) Shutdown() {
 	h.todoFile.Cleanup()
+}
+
+func (h *Harness) GetCurrentModel() string {
+	return h.mainAgentRunner.GetCurrentModel()
 }
 
 func (h *Harness) ToolDefinitions() []tooldef.Definition {

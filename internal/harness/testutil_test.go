@@ -10,10 +10,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/tab58/llm-providers/common"
 	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/runner"
 	"tenzing-agent/internal/harness/tools/tooldef"
+
+	"github.com/tab58/llm-providers/common"
 )
 
 // testEventCollector captures emitted events for assertion in tests.
@@ -59,6 +60,7 @@ func newScriptedAgent(steps ...runner.ReasoningResult) *ScriptedAgent {
 	return &ScriptedAgent{steps: steps}
 }
 
+func (s *ScriptedAgent) GetCurrentModel() string                                         { return "scripted-model" }
 func (s *ScriptedAgent) UpdateToolDefinitions(_ []common.ToolDefinition)                 {}
 func (s *ScriptedAgent) UpdateSkillMap(_ map[string]string)                              {}
 func (s *ScriptedAgent) UpdateOffloadFn(_ func(context.Context, string) (string, error)) {}
