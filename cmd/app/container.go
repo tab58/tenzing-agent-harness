@@ -14,6 +14,7 @@ import (
 	"github.com/tab58/llm-providers/common"
 
 	"tenzing-agent/internal/harness"
+	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/runner"
 )
 
@@ -23,18 +24,19 @@ type Config struct {
 }
 
 // AppContainer wires all app-level dependencies for cmd/app: config,
-// logging, the agent harness (which owns the LLM), and the HTTP server.
+// logging, the agent server (which owns the harness and LLM), and the
+// HTTP server it is mounted on.
 type AppContainer struct {
 	cfg     *Config
 	cwd     string
 	logFile *os.File
-	harness *harness.Harness
+	api     *agentServer
 	server  *httpserver.Server[router.MapAuthInfo]
 }
 
 // NewAppContainer builds the container eagerly: config → cwd → logging →
-// LLM → agent → harness → HTTP server. Any failure after the log file
-// opens closes it before returning.
+// agent server (harness + event bus) → HTTP routes. Any failure after the
+// log file opens closes it before returning.
 func NewAppContainer() (*AppContainer, error) {
 	cfg := &Config{}
 	if err := config.Load(cfg); err != nil {
@@ -59,24 +61,25 @@ func NewAppContainer() (*AppContainer, error) {
 		Provider:             common.ProviderOllama,
 	}
 
-	agentHarness, err := harness.New(model)
+	api, err := newAgentServer(model, events.NewEventBus())
 	if err != nil {
 		logFile.Close()
-		return nil, fmt.Errorf("harness init: %w", err)
+		return nil, err
 	}
 
 	server := httpserver.New(httpserver.ServerConfig{
 		ServiceName:    "tenzing-agent",
 		ServiceVersion: "0.1.0",
 	}, router.MapAuthInfoBuilder)
+	api.registerRoutes(server)
 
-	slog.Info("container ready", "model", agentHarness.GetCurrentModel(), "cwd", cwd, "tools", len(agentHarness.ToolDefinitions()))
+	slog.Info("container ready", "model", api.harness.GetCurrentModel(), "cwd", cwd, "tools", len(api.harness.ToolDefinitions()))
 
 	return &AppContainer{
 		cfg:     cfg,
 		cwd:     cwd,
 		logFile: logFile,
-		harness: agentHarness,
+		api:     api,
 		server:  server,
 	}, nil
 }
@@ -101,55 +104,47 @@ func setupLogging(cwd string, debug bool) (*os.File, error) {
 	return logFile, nil
 }
 
-// Start runs the HTTP server and the interactive session concurrently.
-// A server error cancels the session; the server error wins.
+// Start runs the HTTP server until ctx is cancelled or the server fails.
 func (ac *AppContainer) Start(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
 	errCh, err := ac.server.Start(fmt.Sprintf(":%d", ac.cfg.ServerPort))
 	if err != nil {
 		return fmt.Errorf("http server start: %w", err)
 	}
 
-	srvErr := make(chan error, 1)
-	go func() {
-		if e := <-errCh; e != nil {
-			srvErr <- e
-			cancel()
-		}
-	}()
-
-	sessErr := ac.harness.RunSession(ctx, os.Stdin, os.Stdout)
-
 	select {
-	case e := <-srvErr:
-		return fmt.Errorf("http server: %w", e)
-	default:
+	case e := <-errCh:
+		if e != nil {
+			return fmt.Errorf("http server: %w", e)
+		}
+		return nil
+	case <-ctx.Done():
+		return nil
 	}
-	return sessErr
 }
 
-// Shutdown stops the HTTP server, the harness, and closes the log file.
-// Called once from main's defer.
+// Shutdown cancels any in-flight turn, stops the HTTP server, the harness,
+// the event bus (which ends the SSE forwarding goroutine), and closes the
+// log file. Called once from main's defer.
 func (ac *AppContainer) Shutdown() {
+	ac.api.cancelActiveTurn()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := ac.server.Shutdown(shutdownCtx); err != nil {
 		slog.Error("http server shutdown", "error", err)
 	}
-	ac.harness.Shutdown()
+	ac.api.harness.Shutdown()
+	ac.api.bus.Close()
 	ac.logFile.Close()
 }
 
 func (ac *AppContainer) Harness() *harness.Harness {
-	return ac.harness
+	return ac.api.harness
 }
 
 func (ac *AppContainer) Cwd() string {
 	return ac.cwd
 }
 
-func (ac *AppContainer) Server() *httpserver.Server[router.MapAuthInfo] {
-	return ac.server
+func (ac *AppContainer) Addr() string {
+	return fmt.Sprintf(":%d", ac.cfg.ServerPort)
 }

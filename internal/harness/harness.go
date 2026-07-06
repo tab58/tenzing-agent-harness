@@ -1,15 +1,10 @@
 package harness
 
 import (
-	"bufio"
 	"context"
 	_ "embed"
 	"fmt"
-	"io"
-	"log/slog"
 	"os"
-	"strings"
-	"time"
 
 	"tenzing-agent/internal/agent"
 	"tenzing-agent/internal/harness/advisor"
@@ -223,51 +218,6 @@ func (h *Harness) SystemPrompt() string {
 
 func (h *Harness) RunTurn(ctx context.Context, query string) (string, error) {
 	return h.mainAgentRunner.RunLoop(ctx, query)
-}
-
-func (h *Harness) RunSession(ctx context.Context, in io.Reader, out io.Writer) error {
-	sessionStart := time.Now()
-	turnCount := 0
-	h.eventBus.Emit(events.SessionStartedEvent{
-		BaseEvent: events.NewBaseEvent(events.EventSessionStarted, ""),
-	})
-	defer func() {
-		h.eventBus.Emit(events.SessionEndedEvent{
-			BaseEvent: events.NewBaseEvent(events.EventSessionEnded, ""),
-			TurnCount: turnCount,
-			Duration:  time.Since(sessionStart).Round(time.Millisecond),
-		})
-	}()
-
-	scanner := bufio.NewScanner(in)
-
-	for {
-		if ctx.Err() != nil {
-			return fmt.Errorf("context canceled: %w", ctx.Err())
-		}
-
-		if !scanner.Scan() {
-			break
-		}
-
-		query := strings.TrimSpace(scanner.Text())
-		if query == "" {
-			continue
-		}
-		if query == "q" || query == "exit" {
-			break
-		}
-
-		answer, err := h.mainAgentRunner.RunLoop(ctx, query)
-		if err != nil {
-			return fmt.Errorf("agent loop error: %w", err)
-		}
-		turnCount++
-		slog.Info("user output", "len", len(answer))
-		fmt.Fprint(out, answer)
-	}
-
-	return scanner.Err()
 }
 
 // hooksEmpty reports whether no hook callbacks are set in h.

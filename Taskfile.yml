@@ -1,10 +1,6 @@
 version: '3'
 
 tasks:
-  repl:
-    desc: Run the Bubble Tea REPL
-    cmd: go run ./cmd/repl
-
-  http:
-    desc: Run the HTTP/SSE web server
-    cmd: go run ./cmd/http
+  app:
+    desc: Run the agent app (HTTP/SSE server)
+    cmd: go run ./cmd/app

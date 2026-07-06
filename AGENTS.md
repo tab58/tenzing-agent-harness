@@ -15,7 +15,7 @@ go build ./...          # build
 go test ./...           # unit tests
 go test -race ./...     # race detector
 go vet ./...            # static analysis
-task repl               # run interactive REPL
+task app                # run the app (HTTP/SSE server)
 ```
 
 No CI pipeline yet. Run `go build ./...` and `go test ./...` before declaring work done.
@@ -32,7 +32,7 @@ Three layers, strict dependency direction: **Harness → AgentRunner → Agent**
 
 | Layer                                                          | Knows about                              | Does NOT know about                   |
 | -------------------------------------------------------------- | ---------------------------------------- | ------------------------------------- |
-| Harness (`harness.go`, `harness_options.go`, `llm.go`)         | AgentRunner, EventBus, LLM construction/caching, config wiring, session REPL | Tool implementations                  |
+| Harness (`harness.go`, `harness_options.go`, `llm.go`)         | AgentRunner, EventBus, LLM construction/caching, config wiring | Tool implementations                  |
 | AgentRunner (`agent_runner.go`, `loop_fsm.go`)                 | Agent interface, tool registry, FSM, Emitter interface | CLI, sessions, users                  |
 | Agent (`internal/agent/agent.go`, `internal/llmctx/`)          | LLM provider, message types, compression | Filesystem, processes, tools directly |
 
@@ -125,8 +125,7 @@ The FSM is per-runner instance — subagents and concurrent loops don't share st
 | RLM engine               | `internal/harness/rlm/` (Fetcher, Querier, Engine)    |
 | Context management       | `internal/agent/context/` (compression, task graph)   |
 | Context overflow router  | `internal/agent/context/compressor/router.go`         |
-| TUI REPL                 | `cmd/repl/`                                           |
-| HTTP/SSE web server      | `cmd/http/`                                           |
+| App (HTTP/SSE server)    | `cmd/app/`                                            |
 | Test files               | Same directory as source, `*_test.go`                 |
 | Shared test helpers      | `**/testutil_test.go`                                 |
 | Sub-agent system         | `internal/harness/subagent/`                          |

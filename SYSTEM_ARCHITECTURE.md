@@ -12,7 +12,7 @@ The Harness creates an AgentRunner for the main session. A subagent spawns a fre
 
 **Everything that isn't invariant is configurable.** The loop (perception → action → observation), the FSM, and the dispatch pattern (`name → handler(input)`) are structural invariants — they never change. Everything else is injectable via `AgentRunnerConfig`: which agent, which tools, which system prompt, which reminders get injected, how subagents are constructed. This allows piece-by-piece optimization of the harness without touching the loop. Swap the model, swap the reminder strategy, give subagents different tools or a different provider — all through configuration, not code changes.
 
-**`AgentRunnerConfig` is the single DI surface.** All non-invariant runner behavior flows through this struct. The Harness is deliberately thin — it wires a main runner, optionally registers the subagent tool, and owns the session REPL. Nothing else.
+**`AgentRunnerConfig` is the single DI surface.** All non-invariant runner behavior flows through this struct. The Harness is deliberately thin — it wires a main runner and optionally registers the subagent tool. Nothing else.
 
 **The loop never changes.** Perception → action → observation is the single primitive. New capabilities are added by registering tools or wrapping the loop with new mechanisms (planning, subagents, context compression) — never by modifying the loop itself.
 
@@ -49,7 +49,9 @@ Go module: `tenzing-agent` (go 1.25.9)
 
 ```
 cmd/app/main.go                         Entry point — signal handling, banner, exit codes
-cmd/app/container.go                    AppContainer — config, logging, LLM/agent/harness, HTTP server wiring
+cmd/app/container.go                    AppContainer — config, logging, agent server + HTTP server wiring
+cmd/app/server.go                       agentServer — routes (/query, /cancel, /info), SSE broadcast, event forwarding
+cmd/app/index.go                        Embedded chat UI (single-page HTML served at /)
 
 internal/
 ├── agent/                              Concrete Agent implementation
@@ -62,7 +64,7 @@ internal/
     ├── agent.go                        Agent interface + ReasoningResult
     ├── agent_runner.go                 AgentRunner: FSM-driven loop, DI config
     ├── loop_fsm.go                     Per-runner FSM (6 states, 6 transitions)
-    ├── harness.go                      Thin orchestrator, config types, RunSession REPL
+    ├── harness.go                      Thin orchestrator, config types, RunTurn
     ├── subagent_factory.go             SubAgentFactory — builds child AgentRunner+Agent
     ├── defaults.go                     DefaultReminderBuilder, DefaultMainConfig
     ├── prompts/                        System prompt construction
@@ -210,7 +212,7 @@ Two constructors:
 
 ## Harness
 
-Deliberately thin orchestrator. Holds the main runner, optionally registers the subagent tool, owns the session REPL. No loop logic, no tool dispatch, no reminders.
+Deliberately thin orchestrator. Holds the main runner, optionally registers the subagent tool. No loop logic, no tool dispatch, no reminders.
 
 ```go
 type Harness struct {
@@ -240,9 +242,9 @@ The brain defaults to the built-in agent implementation: when no `WithAgentBuild
 
 The RLM (Recursive Language Model) is the sole delegation mechanism, implementing Zhang et al. (2025). The main agent delegates via the `rlm` tool. Inside the REPL, `llm_query()` provides single-shot sub-LM calls, and `rlm_query()` (at depth>1) spawns recursive child RLM loops. At max depth, `rlm_query` falls back to `llm_query`.
 
-### Session
+### Turns
 
-`RunSession(ctx, in io.Reader, out io.Writer)` — line-oriented REPL. Reads stdin, skips empty lines, handles `q`/`exit`, calls `RunLoop`, prints answer. This is the true Harness responsibility — everything below it belongs to AgentRunner.
+`RunTurn(ctx, query)` — runs one agent turn via `RunLoop` and returns the answer. `cmd/app` drives turns over HTTP (`POST /query`) and streams progress via SSE.
 
 ## Tool System
 
@@ -566,7 +568,6 @@ Each provider converts between canonical types and SDK-specific types:
 
 ## What's Not Built Yet
 
-- `cmd/app` HTTP server is a skeleton — no routes registered yet
 - No async execution, multi-agent teams (Phase 3)
 - No permission governance or session persistence (Phase 4); permission gates design: `docs/superpowers/specs/2025-06-25-permission-gates-design.md`
 - No parallel tool execution, prompt caching, MCP integration (Phase 5)

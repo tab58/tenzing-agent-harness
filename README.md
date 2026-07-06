@@ -40,7 +40,7 @@ Provider-agnostic via canonical types (`Message`, `ContentBlock`, `CompletionReq
 ## Prerequisites
 
 - Go 1.25.9+
-- [Task](https://taskfile.dev) (optional, for `task repl`)
+- [Task](https://taskfile.dev) (optional, for `task app`)
 - Python 3 (for the RLM REPL sandbox)
 
 ## Quick Start
@@ -49,12 +49,9 @@ Provider-agnostic via canonical types (`Message`, `ContentBlock`, `CompletionReq
 # Build
 go build ./...
 
-# Run the interactive TUI REPL
-task repl
+# Run the app (HTTP/SSE server with embedded chat UI)
+task app
 # or directly:
-go run ./cmd/repl
-
-# Run headless
 go run ./cmd/app
 ```
 
@@ -72,8 +69,7 @@ go vet ./...            # static analysis
 
 ```
 cmd/
-  app/                  Headless entry point
-  repl/                 Bubble Tea TUI REPL
+  app/                  Entry point — HTTP/SSE server with embedded chat UI
 
 internal/
   agent/                Agent implementation + context management

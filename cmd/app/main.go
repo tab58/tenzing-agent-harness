@@ -29,15 +29,16 @@ func main() {
 	}()
 
 	fmt.Println("tenzing agent harness")
-	fmt.Printf("  model  %s\n", app.Harness().GetCurrentModel())
-	fmt.Printf("  cwd    %s\n", app.Cwd())
-	fmt.Printf("  tools  %d registered\n", len(app.Harness().ToolDefinitions()))
+	fmt.Printf("  model   %s\n", app.Harness().GetCurrentModel())
+	fmt.Printf("  cwd     %s\n", app.Cwd())
+	fmt.Printf("  tools   %d registered\n", len(app.Harness().ToolDefinitions()))
+	fmt.Printf("  listen  http://localhost%s\n", app.Addr())
 	fmt.Println()
 
 	if err := app.Start(ctx); err != nil {
-		slog.Error("session ended with error", "error", err)
-		fmt.Fprintf(os.Stderr, "session error: %v\n", err)
+		slog.Error("server ended with error", "error", err)
+		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
 	}
-	slog.Info("session ended")
+	slog.Info("server stopped")
 }

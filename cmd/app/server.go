@@ -6,13 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
-	"os/signal"
-	"path/filepath"
-	"runtime/debug"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	httpserver "github.com/tab58/huma-http-server"
@@ -21,93 +16,27 @@ import (
 
 	"tenzing-agent/internal/harness"
 	"tenzing-agent/internal/harness/events"
-	"tenzing-agent/internal/harness/runner"
 
 	"github.com/tab58/llm-providers/common"
 )
 
-func main() {
-	cwd, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	logFile, err := os.OpenFile(filepath.Join(cwd, ".tenzing-agent.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error opening log file: %v\n", err)
-		os.Exit(1)
-	}
-	defer logFile.Close()
-	slog.SetDefault(slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: runner.LevelTrace})))
-
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Error("panic", "error", r, "stack", string(debug.Stack()))
-			fmt.Fprintf(os.Stderr, "panic: %v\n", r)
-			os.Exit(1)
-		}
-	}()
-
-	model := common.ModelDefinition{
-		Name:                 "glm-5.2",
-		MaxTokens:            32_768,
-		ContextWindowSize:    131_072,
-		DefaultContextWindow: 32_768,
-		Provider:             common.ProviderOllama,
-	}
-
-	bus := events.NewEventBus()
-
-	s := newServer(model, bus)
-
-	srv := httpserver.New(httpserver.ServerConfig{
-		ServiceName:    "tenzing-agent",
-		ServiceVersion: "0.1.0",
-	}, router.MapAuthInfoBuilder)
-	s.registerRoutes(srv)
-
-	addr := os.Getenv("ADDR")
-	if addr == "" {
-		addr = ":8080"
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-
-	defer s.harness.Shutdown()
-
-	errCh, err := srv.Start(addr)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Fprintf(os.Stderr, "listening on %s\n", addr)
-
-	select {
-	case err := <-errCh:
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "server error: %v\n", err)
-			os.Exit(1)
-		}
-	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		srv.Shutdown(shutdownCtx)
-	}
-}
-
-type server struct {
+// agentServer exposes the harness over HTTP: an index page, an SSE event
+// stream, and JSON endpoints to start/cancel agent turns.
+type agentServer struct {
 	harness *harness.Harness
 	bus     *events.EventBus
 
 	mu       sync.Mutex
 	cancelFn context.CancelFunc
+
+	clients   map[*sseClient]struct{}
+	clientsMu sync.RWMutex
 }
 
-func newServer(model common.ModelDefinition, bus *events.EventBus) *server {
-	s := &server{
-		bus: bus,
+func newAgentServer(model common.ModelDefinition, bus *events.EventBus) (*agentServer, error) {
+	s := &agentServer{
+		bus:     bus,
+		clients: make(map[*sseClient]struct{}),
 	}
 
 	h, err := harness.New(
@@ -117,22 +46,20 @@ func newServer(model common.ModelDefinition, bus *events.EventBus) *server {
 		harness.WithThinkingDeltaHandler(func(text string) { s.broadcastSSE("thinking_delta", text) }),
 	)
 	if err != nil {
-		slog.Error("harness init failed", "error", err)
-		fmt.Fprintf(os.Stderr, "harness init failed: %v\n", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("harness init: %w", err)
 	}
 	s.harness = h
 
 	evCh := bus.Subscribe(256)
 	go s.forwardEvents(evCh)
 
-	return s
+	return s, nil
 }
 
 // registerRoutes mounts the API on the huma server. The index page and SSE
 // stream are raw routes (they bypass huma middleware and the OpenAPI spec);
 // the JSON endpoints are typed routes.
-func (s *server) registerRoutes(srv *httpserver.Server[router.MapAuthInfo]) {
+func (s *agentServer) registerRoutes(srv *httpserver.Server[router.MapAuthInfo]) {
 	srv.Handle("GET /", http.HandlerFunc(s.handleIndex))
 	srv.Handle("GET /events", http.HandlerFunc(s.handleSSE))
 
@@ -165,8 +92,7 @@ func (s *server) registerRoutes(srv *httpserver.Server[router.MapAuthInfo]) {
 // --- SSE broadcast ---
 
 type sseClient struct {
-	ch   chan sseMessage
-	done chan struct{}
+	ch chan sseMessage
 }
 
 type sseMessage struct {
@@ -174,28 +100,23 @@ type sseMessage struct {
 	Data  string `json:"data"`
 }
 
-var (
-	sseClients   = make(map[*sseClient]struct{})
-	sseClientsMu sync.RWMutex
-)
-
-func addSSEClient(c *sseClient) {
-	sseClientsMu.Lock()
-	sseClients[c] = struct{}{}
-	sseClientsMu.Unlock()
+func (s *agentServer) addSSEClient(c *sseClient) {
+	s.clientsMu.Lock()
+	s.clients[c] = struct{}{}
+	s.clientsMu.Unlock()
 }
 
-func removeSSEClient(c *sseClient) {
-	sseClientsMu.Lock()
-	delete(sseClients, c)
-	sseClientsMu.Unlock()
+func (s *agentServer) removeSSEClient(c *sseClient) {
+	s.clientsMu.Lock()
+	delete(s.clients, c)
+	s.clientsMu.Unlock()
 }
 
-func (s *server) broadcastSSE(event, data string) {
+func (s *agentServer) broadcastSSE(event, data string) {
 	msg := sseMessage{Event: event, Data: data}
-	sseClientsMu.RLock()
-	defer sseClientsMu.RUnlock()
-	for c := range sseClients {
+	s.clientsMu.RLock()
+	defer s.clientsMu.RUnlock()
+	for c := range s.clients {
 		select {
 		case c.ch <- msg:
 		default:
@@ -203,7 +124,7 @@ func (s *server) broadcastSSE(event, data string) {
 	}
 }
 
-func (s *server) broadcastSSEJSON(event string, v any) {
+func (s *agentServer) broadcastSSEJSON(event string, v any) {
 	b, err := json.Marshal(v)
 	if err != nil {
 		slog.Error("sse json marshal", "error", err)
@@ -212,7 +133,7 @@ func (s *server) broadcastSSEJSON(event string, v any) {
 	s.broadcastSSE(event, string(b))
 }
 
-func (s *server) forwardEvents(ch <-chan events.Event) {
+func (s *agentServer) forwardEvents(ch <-chan events.Event) {
 	for ev := range ch {
 		switch e := ev.(type) {
 		case events.ToolExecutionStartedEvent:
@@ -250,7 +171,7 @@ func (s *server) forwardEvents(ch <-chan events.Event) {
 
 // --- Handlers ---
 
-func (s *server) handleSSE(w http.ResponseWriter, r *http.Request) {
+func (s *agentServer) handleSSE(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -263,11 +184,10 @@ func (s *server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	client := &sseClient{
-		ch:   make(chan sseMessage, 128),
-		done: make(chan struct{}),
+		ch: make(chan sseMessage, 128),
 	}
-	addSSEClient(client)
-	defer removeSSEClient(client)
+	s.addSSEClient(client)
+	defer s.removeSSEClient(client)
 
 	ctx := r.Context()
 	for {
@@ -300,7 +220,7 @@ type infoOutput struct {
 	}
 }
 
-func (s *server) handleQuery(_ context.Context, _ router.MapAuthInfo, in *queryInput) (*statusOutput, error) {
+func (s *agentServer) handleQuery(_ context.Context, _ router.MapAuthInfo, in *queryInput) (*statusOutput, error) {
 	query := strings.TrimSpace(in.Body.Query)
 	if query == "" {
 		return nil, srverrors.Wrap(srverrors.ErrBadRequest, "empty query")
@@ -324,6 +244,7 @@ func (s *server) handleQuery(_ context.Context, _ router.MapAuthInfo, in *queryI
 				slog.Error("agent panic", "error", rec)
 				s.broadcastSSEJSON("error", map[string]string{"error": fmt.Sprintf("panic: %v", rec)})
 			}
+			cancel()
 			s.mu.Lock()
 			s.cancelFn = nil
 			s.mu.Unlock()
@@ -343,7 +264,17 @@ func (s *server) handleQuery(_ context.Context, _ router.MapAuthInfo, in *queryI
 	return out, nil
 }
 
-func (s *server) handleCancel(_ context.Context, _ router.MapAuthInfo, _ *struct{}) (*statusOutput, error) {
+// cancelActiveTurn cancels the in-flight agent turn, if any. Used by
+// container shutdown so a running turn doesn't outlive the harness.
+func (s *agentServer) cancelActiveTurn() {
+	s.mu.Lock()
+	if s.cancelFn != nil {
+		s.cancelFn()
+	}
+	s.mu.Unlock()
+}
+
+func (s *agentServer) handleCancel(_ context.Context, _ router.MapAuthInfo, _ *struct{}) (*statusOutput, error) {
 	s.mu.Lock()
 	cancel := s.cancelFn
 	s.mu.Unlock()
@@ -357,13 +288,13 @@ func (s *server) handleCancel(_ context.Context, _ router.MapAuthInfo, _ *struct
 	return out, nil
 }
 
-func (s *server) handleInfo(_ context.Context, _ router.MapAuthInfo, _ *struct{}) (*infoOutput, error) {
+func (s *agentServer) handleInfo(_ context.Context, _ router.MapAuthInfo, _ *struct{}) (*infoOutput, error) {
 	out := &infoOutput{}
 	out.Body.Tools = len(s.harness.ToolDefinitions())
 	return out, nil
 }
 
-func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
+func (s *agentServer) handleIndex(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(indexHTML))
 }
