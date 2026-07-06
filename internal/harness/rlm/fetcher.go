@@ -2,11 +2,8 @@ package rlm
 
 import (
 	"context"
-	"fmt"
-	"log/slog"
 
 	"github.com/tab58/llm-providers/common"
-	agentctx "tenzing-agent/internal/agent/context"
 )
 
 // maxTokensStdResponse caps output tokens per LLM request.
@@ -25,52 +22,6 @@ type Fetcher interface {
 
 type FetcherFactory func(systemPrompt string) (Fetcher, error)
 
-type llmFetcher struct {
-	llm          common.LLM
-	history      *agentctx.Context
-	systemPrompt string
-}
-
-func NewLLMFetcherFactory(llm common.LLM) FetcherFactory {
-	return func(systemPrompt string) (Fetcher, error) {
-		history, err := agentctx.NewContext(agentctx.ContextConfig{LLM: llm})
-		if err != nil {
-			return nil, fmt.Errorf("create context: %w", err)
-		}
-		return &llmFetcher{
-			llm:          llm,
-			history:      history,
-			systemPrompt: systemPrompt,
-		}, nil
-	}
-}
-
-func (f *llmFetcher) Send(ctx context.Context, content string) (Response, error) {
-	f.history.AppendMessages(ctx, common.NewUserMessage(content))
-
-	model := f.llm.GetCurrentModel()
-	resp, err := f.llm.SendSyncMessage(ctx, common.CompletionRequest{
-		Model:     model,
-		System:    f.systemPrompt,
-		Messages:  f.history.Messages(),
-		MaxTokens: maxTokensStdResponse,
-	})
-	if err != nil {
-		return Response{}, err
-	}
-
-	if _, err := f.history.AppendMessages(ctx, common.NewAssistantMessage(resp.Text())); err != nil {
-		slog.Warn("[RLM] compression failed", "error", err)
-	}
-
-	return Response{
-		Text:         resp.Text(),
-		Model:        model,
-		InputTokens:  resp.Usage.InputTokens,
-		OutputTokens: resp.Usage.OutputTokens,
-	}, nil
-}
-
 type simpleFetcher struct {
 	llm          common.LLM
 	messages     []common.Message
@@ -78,9 +29,11 @@ type simpleFetcher struct {
 }
 
 // NewSimpleFetcherFactory creates a fetcher that stores conversation history
-// in a plain message slice without context compression. Use this when the RLM's
-// REPL-based context bounding is sufficient and compression would interfere
-// with the intended algorithm behavior.
+// in a plain message slice without context compression. RLM history is bounded
+// structurally (truncated REPL output + iteration cap, per the RLM paper), so
+// compression is unnecessary — and harmful, since lossy summarization can
+// destroy the model's memory of which REPL variables hold what.
+// See AGENTS.md "RLM fetchers must not compress".
 func NewSimpleFetcherFactory(llm common.LLM) FetcherFactory {
 	return func(systemPrompt string) (Fetcher, error) {
 		return &simpleFetcher{

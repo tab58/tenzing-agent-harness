@@ -30,7 +30,8 @@ The Harness creates an AgentRunner for the main session. A subagent spawns a fre
 
 ```
 main.go
-  ├── skills.NewRegistry(skillsDir)     → discovers skill metadata from disk
+  ├── skills.NewRegistry()              → empty registry; RegisterSkillDir(dir)
+  │                                        scans each dir for skill metadata
   ├── tools.NewRegistry(cwd, defs...)   → holds tool implementations
   │     └── includes skill tools that reference skill registry
   │
@@ -71,7 +72,7 @@ internal/
     │   └── registry.go                 Name→Definition map, Execute(), GetDefaultToolDefs()
     ├── rlm/                            Recursive Language Model engine
     │   ├── bootstrap.py                Embedded Python REPL (//go:embed)
-    │   ├── fetcher.go                  Fetcher interface + llmFetcher (LLM + context compression)
+    │   ├── fetcher.go                  Fetcher interface + simpleFetcher (plain history, no compression)
     │   ├── querier.go                  Querier interface + llmQuerier (stateless one-shot LLM calls)
     │   ├── repl.go                     Python subprocess + JSON-line IPC
     │   ├── engine.go                   RLM loop: Fetcher→code→REPL→feedback→repeat
@@ -213,41 +214,31 @@ Deliberately thin orchestrator. Holds the main runner, optionally registers the 
 
 ```go
 type Harness struct {
-    mainRunner *AgentRunner
-}
-
-type HarnessConfig struct {
-    MainRunner        AgentRunnerConfig
-    RLM               *RLMConfig      // nil = rlm tool not registered
-    SubAgentLLM       common.LLM    // nil = use RLMSubLLM
-    SubAgentMaxDepth  int             // 0 = disabled, default 2
-    SubAgentMaxIter   int             // default 30 per child
-    SubAgentBuilder   AgentBuilder    // required if SubAgentMaxDepth > 0
-    DisabledTools     []string        // remove tools by name (case-insensitive) after registration, incl. built-ins
-    AdvisorModel      common.LLM    // backs the advisor tool; should be a stronger reasoning model
-    EnableAdvisor     bool            // default false — advisor tool registered only when true AND AdvisorModel set
-}
-
-type RLMConfig struct {
-    NewFetcher FetcherFactory // creates per-run Fetcher (LLM + context compression)
-    Querier    Querier        // stateless one-shot LLM calls from REPL; nil = sub_lm unavailable
-    MaxDepth   int            // 0=REPL only, 1=llm_query, 2+=rlm_query recursive
-}
-
-type Hooks struct {
-    OnToolCall func(name string, input string, output string)
+    mainAgentRunner *runner.AgentRunner
+    toolRegistry    *tools.Registry
+    skillRegistry   *skills.Registry
+    todoFile        *todo.TodoFile
+    eventBus        *events.EventBus
 }
 ```
 
-Constructor: `New(HarnessConfig) → (*Harness, error)`. If `RLM` config is provided, creates an RLM engine and registers the `rlm` tool in the main runner's registry. Appends RLM guidance to the system prompt. Creates the main `AgentRunner` from `MainRunner` config.
+Constructor: `New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, error)`. `HarnessConfig` no longer exists; behavior is configured via flat `HarnessOption` functions (`internal/harness/harness_options.go`) applied over `defaultHarnessOptions()`:
+
+- `WithAgentBuilder` — replaces the default agent implementation with a custom `runner.AgentBuilder`; the test seam for stub brains.
+- `WithSubagentModel` / `WithRLMModel` / `WithAdvisorModel` — per-role `common.ModelDefinition`; an unset role falls back to `mainModel`. The advisor tool is registered only when `WithAdvisorModel` is set (no advisor by default).
+- `WithSubagentDepth` (default 1, 0 disables `spawn_agent`) / `WithSubagentMaxIterations` (default 100 per child).
+- `WithRLMDefaultIterations` / `WithRLMMaxIterations` — the `rlm` tool is now always registered; RLM's LLM falls back to `mainModel` unless `WithRLMModel` is set.
+- `WithLLMFactory` — replaces the default env-var-based LLM factory (`provider.LLMFromEnv`) entirely; the test seam for injecting fakes.
+- `WithProviderBaseURL(provider, url)` — per-provider base URL override, consumed by the default factory only.
+- `WithDisabledTool`, `WithSkillsDir`, `WithTool`, `WithHooks(events.Hooks)`, `WithSystemPrompt`, `WithEventBus`, `WithTextDeltaHandler`, `WithThinkingDeltaHandler` — remaining registry/observability knobs.
+
+LLM clients are cached per (provider, model, base URL) via an internal `llmCache` (`internal/harness/llm.go`), so roles sharing a model definition share one client and its rate limiter.
+
+The brain defaults to the built-in agent implementation: when no `WithAgentBuilder` is set, `harness.New` falls back to an unexported adapter over `agent.New` (`internal/agent`). This is the one place `internal/harness` imports `internal/agent`; all other harness code depends only on the `runner.Agent` interface.
 
 ### RLM Architecture
 
 The RLM (Recursive Language Model) is the sole delegation mechanism, implementing Zhang et al. (2025). The main agent delegates via the `rlm` tool. Inside the REPL, `llm_query()` provides single-shot sub-LM calls, and `rlm_query()` (at depth>1) spawns recursive child RLM loops. At max depth, `rlm_query` falls back to `llm_query`.
-
-Convenience helpers:
-- `DefaultMainConfig(agent, registry, hooks, cwd)` — default system prompt + default reminders
-- `DefaultReminderBuilder()` — injects todo plan state
 
 ### Session
 
@@ -308,7 +299,7 @@ Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn
 | `Revert` | Restore file | Pops from snapshot store (one-shot) |
 | `rlm` | Recursive Language Model | Python REPL loop with llm_query, rlm_query (recursive), file access, FINAL termination |
 | `spawn_agent` | Delegate operational task | Spawns child AgentRunner with full tools, blocks until complete, returns final answer |
-| `advisor` | Plan review by stronger model | One-shot call to `AdvisorModel` (plan + optional context); returns critique: risks, missing steps, alternatives. Disabled by default — requires `EnableAdvisor` + `AdvisorModel`; not given to subagents |
+| `advisor` | Plan review by stronger model | One-shot call to the advisor model (plan + optional context); returns critique: risks, missing steps, alternatives. Disabled by default — registered only when `WithAdvisorModel` is set; not given to subagents |
 | `list_skills` | List skills | Returns name→description map from skill registry |
 | `load_skill` | Load skill | Lazy-loads full `SKILL.md` content by name |
 | `TodoWrite` | Write plan | Bulk-write tasks with deps-by-index, assigns IDs, persists to `.agent_todo.json` |
@@ -339,16 +330,16 @@ type Definition struct {
 }
 
 type Registry struct {
-    skills    map[string]Definition
-    skillsDir string
+    skills map[string]Definition
 }
 ```
 
-- `NewRegistry(skillsDir)` — scans directory at construction, discovers all skills via frontmatter parsing
+- `NewRegistry()` — creates an empty registry (no args)
+- `RegisterSkillDir(dir)` — tilde-expands `dir` (`~/...` resolves against the home directory) and scans it at registration time, discovering skills via frontmatter parsing; nonexistent or unreadable dirs are skipped silently
 - `Discover()` — returns a copy of the skills map (metadata only, no file content)
 - `Load(name)` — lazy-loads full `SKILL.md` content from disk on demand
 
-Skills are subdirectories of `skillsDir`, each containing a `SKILL.md` with YAML frontmatter (`name`, `description`) between `---` fences. Discovery reads only frontmatter — zero full-body reads at startup.
+Skills are subdirectories of a registered skills dir, each containing a `SKILL.md` with YAML frontmatter (`name`, `description`) between `---` fences. Discovery reads only frontmatter — zero full-body reads at startup.
 
 Skill metadata is passed as data into `AgentConfig` for system prompt injection. The `SkillRegistry` itself is passed to `list_skills`/`load_skill` tool constructors for runtime access.
 
@@ -379,7 +370,7 @@ Plan state is injected from disk after context compression via `TodoProvider fun
 
 ## Context Compression
 
-Three-layer compression in `internal/agent/context/compression.go`. Prevents unbounded history growth during long sessions.
+Three-layer compression in `internal/agent/context/compressor/compressor.go`. Prevents unbounded history growth during long sessions.
 
 ```go
 type Compressor struct { llm common.LLM; memoryFile string }
@@ -397,10 +388,10 @@ Compression is non-fatal: LLM errors are logged, original history preserved.
 
 Full RLM implementation based on Zhang et al. (2025). Processes arbitrarily large inputs by loading them into a Python REPL as a variable. The model writes Python code to programmatically decompose, analyze (via `llm_query()` calls in loops), and aggregate results. Supports recursive depth: `rlm_query()` spawns child RLM loops at depth>1, falling back to `llm_query()` at max depth.
 
-Architecture: Engine (Go) drives a loop — create per-run Fetcher (LLM + context compression) → send user content → extract ```repl code blocks → send to Python subprocess → handle callbacks (llm_query via Querier, rlm_query, read_file, grep_file, list_files) over JSON-line protocol on stdin/stdout → capture stdout → truncate → feed back via Fetcher → repeat until `FINAL()`.
+Architecture: Engine (Go) drives a loop — create per-run Fetcher (LLM + plain history) → send user content → extract ```repl code blocks → send to Python subprocess → handle callbacks (llm_query via Querier, rlm_query, read_file, grep_file, list_files) over JSON-line protocol on stdin/stdout → capture stdout → truncate → feed back via Fetcher → repeat until `FINAL()`.
 
 Two interfaces separate the roles:
-- **Fetcher** — drives the reasoning loop with managed conversation history and context compression. Created per-run via `FetcherFactory`. Default impl (`llmFetcher`) wraps `common.LLM` + `agentctx.Context`.
+- **Fetcher** — drives the reasoning loop with a plain, uncompressed message history. Created per-run via `FetcherFactory`. Default impl (`simpleFetcher`) wraps `common.LLM`; history stays bounded via REPL output truncation and the iteration cap, so no compression is used (see AGENTS.md "RLM fetchers must not compress").
 - **Querier** — handles stateless one-shot LLM calls from the Python REPL (`sub_lm()`). Default impl (`llmQuerier`) wraps a bare `common.LLM`.
 
 Single tool: `rlm` — analytical delegation via the REPL. Depth parameter controls recursion:
@@ -408,7 +399,7 @@ Single tool: `rlm` — analytical delegation via the REPL. Depth parameter contr
 - depth=1: `llm_query()` available (default)
 - depth=2+: `rlm_query()` available, spawning child RLM loops
 
-Wired via `HarnessConfig.RLMLLM`. Python 3 required on PATH.
+Wired via `WithRLMModel` (falls back to `mainModel` when unset) and `WithRLMDefaultIterations`/`WithRLMMaxIterations`; the `rlm` tool is always registered. Python 3 required on PATH.
 
 ## Sub-Agent Architecture
 
@@ -416,13 +407,13 @@ Recursive delegation via full autonomous sub-agents. The main agent delegates op
 
 Architecture: `spawn_agent` tool → `AgentFactory` interface (in `subagent/`) → `SubAgentFactory` (in `harness/`) builds child AgentRunner + Agent per spawn. Coexists with RLM — `spawn_agent` for operational tasks, `rlm` for analytical tasks over large inputs.
 
-Depth control: factory tracks `currentDepth`. At `maxDepth`, child gets all tools except `spawn_agent`. Default max depth is 2 (main → child → grandchild).
+Depth control: factory tracks `currentDepth`. At `maxDepth`, child gets all tools except `spawn_agent`. Default max depth is 1 (main → child; no grandchildren) using the main model.
 
 Tool isolation: each child gets fresh tool instances via `tools.NewRegistry(cwd)`. No tool instance is shared between parent and child. `pathLocks` (package-level `sync.Map`) is the one intentional exception — serializes file writes across all agents in-process.
 
 Children don't get: `TodoFile`, `SkillsRegistry`, or event hooks. Planning is the parent's job.
 
-Wired via `HarnessConfig.SubAgentMaxDepth` (0 = disabled) and `HarnessConfig.SubAgentMaxIter` (default 30 per child). Requires `HarnessConfig.SubAgentBuilder` — an `AgentBuilder` function injected by the caller to avoid import cycles between `harness` and `agent` packages.
+Wired via `WithSubagentDepth` (default 1, 0 = disabled) and `WithSubagentMaxIterations` (default 100 per child). Children are built with the same `runner.AgentBuilder` as the main agent — the default built-in agent, or whatever `WithAgentBuilder` set.
 
 ## Event System
 
@@ -444,7 +435,7 @@ All events embed `BaseEvent` (type, timestamp, runner ID) and are JSON-serializa
 
 Programmatic: `bus.Subscribe(bufSize)` returns `<-chan Event`. Type-switch on concrete event structs.
 
-Hooks: `events.Hooks` struct has one typed `func(XxxEvent)` field per event type (all optional). `NewHooksAdapter(bus, hooks)` subscribes and dispatches in a goroutine.
+Hooks: `events.Hooks` struct has one typed `func(XxxEvent)` field per event type (all optional). `events.StartHooks(bus, hooks)` subscribes with a buffer of 64, dispatches in a goroutine, and returns a `stop func()` that unsubscribes to end dispatch; `Harness.Shutdown` calls it to stop hook dispatch.
 
 ### Emit Sites
 
@@ -456,13 +447,11 @@ Runner (`agent_runner.go`): emits turn, loop, reasoning, tool execution, LLM res
 
 ### Wiring
 
-`HarnessConfig.EventBus` (optional — created internally if nil), `HarnessConfig.EventHooks` (optional typed hooks). `Harness.EventBus()` accessor for programmatic subscription.
-
-Design spec: `docs/superpowers/specs/2026-06-26-event-system-design.md`.
+`WithEventBus` (optional — `defaultHarnessOptions` creates one if not overridden), `WithHooks` (optional typed `events.Hooks`). `Harness.EventBus()` accessor for programmatic subscription.
 
 ## Provider Layer
 
-Lives in the external module `github.com/tab58/llm-providers`. The harness imports canonical types from its `common` package and constructors from the per-provider packages (`anthropic`, `openai`, `cerebras`, `lightning`, `openrouter`, `ollama`). Constructors take a `common.Model` (a `common.ModelDefinition` value, not a string) and return a `common.LLM` wrapped with default client-side rate limiting; `WithNoRateLimit` options opt out.
+Lives in the external module `github.com/tab58/llm-providers`. The harness imports canonical types from its `common` package and, from the module's root package (aliased `provider`), `provider.LLMFromEnv(model, opts...)` — the harness's default LLM factory (`internal/harness/llm.go`). It resolves the API key from the provider's conventional env var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CEREBRAS_API_KEY`, `LIGHTNING_API_KEY`, `OPENROUTER_API_KEY`; Ollama is keyless, `OLLAMA_API_KEY` optional) and dispatches to the matching provider's `NewClient` (`anthropic`, `openai`, `cerebras`, `lightning`, `openrouter`, `ollama`). Constructors take a `common.Model` (a `common.ModelDefinition` value, not a string) and return a `common.LLM` wrapped with default client-side rate limiting; `WithNoRateLimit` options opt out. Callers needing custom key sourcing override the factory with `harness.WithLLMFactory`.
 
 ### LLM Interface
 
@@ -577,7 +566,7 @@ Each provider converts between canonical types and SDK-specific types:
 
 ## What's Not Built Yet
 
-- `cmd/app` HTTP server is a skeleton — no routes registered yet (see `docs/superpowers/specs/2026-07-04-app-container-design.md`)
+- `cmd/app` HTTP server is a skeleton — no routes registered yet
 - No async execution, multi-agent teams (Phase 3)
-- No permission governance, event bus, session persistence (Phase 4)
+- No permission governance or session persistence (Phase 4); permission gates design: `docs/superpowers/specs/2025-06-25-permission-gates-design.md`
 - No parallel tool execution, prompt caching, MCP integration (Phase 5)

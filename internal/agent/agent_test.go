@@ -46,8 +46,9 @@ func (m *mockLLM) ListModels(_ context.Context) ([]common.ModelInfo, error) {
 	return nil, nil
 }
 
-func (m *mockLLM) GetCurrentModel() string   { return "test-model" }
-func (m *mockLLM) GetContextWindowSize() int { return 128000 }
+func (m *mockLLM) GetCurrentModel() string       { return "test-model" }
+func (m *mockLLM) GetContextWindowSize() int     { return 128000 }
+func (m *mockLLM) ProviderName() common.Provider { return common.ProviderOllama }
 
 func newTestAgent(t *testing.T, llm common.LLM) *Agent {
 	t.Helper()
@@ -242,3 +243,4 @@ func (m *recordingLLM) CountTokens(_ context.Context, _ common.CompletionRequest
 func (m *recordingLLM) ListModels(_ context.Context) ([]common.ModelInfo, error) { return nil, nil }
 func (m *recordingLLM) GetCurrentModel() string                                  { return "test-model" }
 func (m *recordingLLM) GetContextWindowSize() int                                { return 128000 }
+func (m *recordingLLM) ProviderName() common.Provider                            { return common.ProviderOllama }

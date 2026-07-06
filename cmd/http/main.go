@@ -19,12 +19,11 @@ import (
 	srverrors "github.com/tab58/huma-http-server/errors"
 	"github.com/tab58/huma-http-server/router"
 
-	"github.com/tab58/llm-providers/common"
-	"github.com/tab58/llm-providers/ollama"
-	"tenzing-agent/internal/agent"
 	"tenzing-agent/internal/harness"
 	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/runner"
+
+	"github.com/tab58/llm-providers/common"
 )
 
 func main() {
@@ -50,30 +49,17 @@ func main() {
 		}
 	}()
 
-	llm := ollama.NewClient(ollama.Config{
-		APIKey: os.Getenv("OLLAMA_API_KEY"),
-		Model: common.ModelDefinition{
-			Name:                 "glm-5.2",
-			MaxTokens:            32_768,
-			ContextWindowSize:    131_072,
-			DefaultContextWindow: 32_768,
-		},
-	})
+	model := common.ModelDefinition{
+		Name:                 "glm-5.2",
+		MaxTokens:            32_768,
+		ContextWindowSize:    131_072,
+		DefaultContextWindow: 32_768,
+		Provider:             common.ProviderOllama,
+	}
 
 	bus := events.NewEventBus()
 
-	mainAgent, err := agent.New(agent.AgentConfig{
-		Model: llm,
-	})
-	if err != nil {
-		slog.Error("agent init failed", "error", err)
-		fmt.Fprintf(os.Stderr, "agent init failed: %v\n", err)
-		os.Exit(1)
-	}
-
-	// create the HTTP server
-
-	s := newServer(cwd, llm, mainAgent, bus)
+	s := newServer(model, bus)
 
 	srv := httpserver.New(httpserver.ServerConfig{
 		ServiceName:    "tenzing-agent",
@@ -119,19 +105,17 @@ type server struct {
 	cancelFn context.CancelFunc
 }
 
-func newServer(cwd string, llm common.LLM, mainAgent runner.Agent, bus *events.EventBus) *server {
+func newServer(model common.ModelDefinition, bus *events.EventBus) *server {
 	s := &server{
 		bus: bus,
 	}
 
-	h, err := harness.New(harness.HarnessConfig{
-		Cwd:             cwd,
-		Agent:           mainAgent,
-		EventBus:        bus,
-		OnTextDelta:     func(text string) { s.broadcastSSE("text_delta", text) },
-		OnThinkingDelta: func(text string) { s.broadcastSSE("thinking_delta", text) },
-		RLMModel:        llm,
-	})
+	h, err := harness.New(
+		model,
+		harness.WithEventBus(bus),
+		harness.WithTextDeltaHandler(func(text string) { s.broadcastSSE("text_delta", text) }),
+		harness.WithThinkingDeltaHandler(func(text string) { s.broadcastSSE("thinking_delta", text) }),
+	)
 	if err != nil {
 		slog.Error("harness init failed", "error", err)
 		fmt.Fprintf(os.Stderr, "harness init failed: %v\n", err)

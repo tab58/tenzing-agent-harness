@@ -122,7 +122,7 @@ func TestRunnerEmitsToolEvents(t *testing.T) {
 	r, err := NewAgentRunner(
 		agent,
 		WithEmitter(collector),
-		WithToolRegistry(tools.NewRegistry("")),
+		WithToolRegistry(registry),
 		WithSkillsRegistry(skills.NewRegistry()),
 		WithTodoFile(todo.NewTodoFile(dir)),
 		WithSystemPrompt("test"),

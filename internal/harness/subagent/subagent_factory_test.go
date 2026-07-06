@@ -26,8 +26,9 @@ func (s *stubLLM) CountTokens(_ context.Context, _ common.CompletionRequest) (co
 func (s *stubLLM) ListModels(_ context.Context) ([]common.ModelInfo, error) {
 	return nil, nil
 }
-func (s *stubLLM) GetCurrentModel() string   { return "stub" }
-func (s *stubLLM) GetContextWindowSize() int { return 4096 }
+func (s *stubLLM) GetCurrentModel() string       { return "stub" }
+func (s *stubLLM) GetContextWindowSize() int     { return 4096 }
+func (s *stubLLM) ProviderName() common.Provider { return common.ProviderOllama }
 
 type stubAgent struct{}
 

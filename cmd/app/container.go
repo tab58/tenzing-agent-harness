@@ -12,17 +12,14 @@ import (
 	"github.com/tab58/huma-http-server/config"
 	"github.com/tab58/huma-http-server/router"
 	"github.com/tab58/llm-providers/common"
-	"github.com/tab58/llm-providers/ollama"
 
-	"tenzing-agent/internal/agent"
 	"tenzing-agent/internal/harness"
 	"tenzing-agent/internal/harness/runner"
 )
 
 type Config struct {
-	APIKeyOllama string `mapstructure:"OLLAMA_API_KEY" sensitive:"true"`
-	ServerPort   int    `mapstructure:"SERVER_PORT" default:"8080"`
-	LogDebug     bool   `mapstructure:"LOG_DEBUG"`
+	ServerPort int  `mapstructure:"SERVER_PORT" default:"8080"`
+	LogDebug   bool `mapstructure:"LOG_DEBUG"`
 }
 
 // AppContainer wires all app-level dependencies for cmd/app: config,
@@ -54,29 +51,15 @@ func NewAppContainer() (*AppContainer, error) {
 		return nil, err
 	}
 
-	llm := ollama.NewClient(ollama.Config{
-		APIKey: cfg.APIKeyOllama,
-		Model: common.ModelDefinition{
-			Name:                 "glm-5.2",
-			MaxTokens:            32_768,
-			ContextWindowSize:    131_072,
-			DefaultContextWindow: 32_768,
-		},
-	})
-
-	mainAgent, err := agent.New(agent.AgentConfig{
-		Model: llm,
-	})
-	if err != nil {
-		logFile.Close()
-		return nil, fmt.Errorf("agent init: %w", err)
+	model := common.ModelDefinition{
+		Name:                 "glm-5.2",
+		MaxTokens:            32_768,
+		ContextWindowSize:    131_072,
+		DefaultContextWindow: 32_768,
+		Provider:             common.ProviderOllama,
 	}
 
-	agentHarness, err := harness.New(harness.HarnessConfig{
-		Cwd:      cwd,
-		Agent:    mainAgent,
-		RLMModel: llm,
-	})
+	agentHarness, err := harness.New(model)
 	if err != nil {
 		logFile.Close()
 		return nil, fmt.Errorf("harness init: %w", err)
@@ -87,7 +70,7 @@ func NewAppContainer() (*AppContainer, error) {
 		ServiceVersion: "0.1.0",
 	}, router.MapAuthInfoBuilder)
 
-	slog.Info("container ready", "model", llm.GetCurrentModel(), "cwd", cwd, "tools", len(agentHarness.ToolDefinitions()))
+	slog.Info("container ready", "model", agentHarness.GetCurrentModel(), "cwd", cwd, "tools", len(agentHarness.ToolDefinitions()))
 
 	return &AppContainer{
 		cfg:     cfg,

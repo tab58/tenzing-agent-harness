@@ -141,7 +141,7 @@ func (f *SubAgentFactory) buildChildToolRegistry() *tools.Registry {
 	registry := tools.NewRegistry(f.cwd)
 
 	rlmEngine, err := rlm.NewEngine(rlm.EngineConfig{
-		NewFetcher: rlm.NewLLMFetcherFactory(f.agentLLM),
+		NewFetcher: rlm.NewSimpleFetcherFactory(f.agentLLM),
 		Querier:    rlm.NewLLMQuerier(f.rlmModel),
 		MaxDepth:   1,
 		WorkingDir: f.cwd,

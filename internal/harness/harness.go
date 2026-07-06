@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"tenzing-agent/internal/agent"
 	"tenzing-agent/internal/harness/advisor"
 	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/rlm"
@@ -27,9 +28,9 @@ import (
 type Harness struct {
 	mainAgentRunner *runner.AgentRunner
 	toolRegistry    *tools.Registry
-	skillRegistry   *skills.Registry
 	todoFile        *todo.TodoFile
 	eventBus        *events.EventBus
+	stopHooks       func()
 }
 
 // EventBus returns the harness event bus. It is always non-nil.
@@ -37,99 +38,67 @@ func (h *Harness) EventBus() *events.EventBus {
 	return h.eventBus
 }
 
-type HarnessConfig struct {
-	Agent runner.Agent
-
-	// OnTextDelta is called with incremental text output from the agent.
-	// It is called for each text delta, which may be a single character or
-	// a larger chunk of text. The callback is called from the agent's
-	// goroutine, so it should not block for long.
-	OnTextDelta func(string)
-
-	// OnThinkingDelta is called with incremental thinking output from the
-	// agent. It is called for each thinking delta, which may be a single
-	// character or a larger chunk of text. The callback is called from the
-	// agent's goroutine, so it should not block for long.
-	OnThinkingDelta func(string)
-
-	EventBus         *events.EventBus
-	EventHooks       events.Hooks
-	Cwd              string
-	MainSystemPrompt string
-	ExtraTools       []tooldef.Definition
-	// DisabledTools removes tools by name (case-insensitive) after all
-	// registration, including built-ins like "bash" and "edit".
-	DisabledTools  []string
-	ExtraSkillDirs []string
-	// RLMModel is the LLM used for reasoning and offloading. It is used
-	// for the main agent and sub-agents unless SubAgentLLM is set.
-	RLMModel             common.LLM
-	RLMDefaultIterations int
-	RLMMaxIterations     int
-	// AdvisorModel backs the "advisor" tool. It should be a stronger
-	// reasoning model than the main agent's. The tool is registered only
-	// when EnableAdvisor is also true — disabled by default while the
-	// tool is being improved.
-	AdvisorModel  common.LLM
-	EnableAdvisor bool
-	// SubAgentLLM is the LLM used for sub-agents spawned by the main agent.
-	SubAgentLLM      common.LLM
-	SubAgentMaxDepth int
-	SubAgentMaxIter  int
-	SubAgentBuilder  runner.AgentBuilder
+// defaultAgentBuilder adapts the built-in agent implementation to the
+// runner.AgentBuilder contract.
+func defaultAgentBuilder(llm common.LLM, systemPrompt string) (runner.Agent, error) {
+	return agent.New(agent.AgentConfig{Model: llm, SystemPrompt: systemPrompt})
 }
 
-// hooksEmpty reports whether no hook callbacks are set in h.
-func hooksEmpty(h events.Hooks) bool {
-	return h.OnSessionStarted == nil &&
-		h.OnSessionEnded == nil &&
-		h.OnTurnStarted == nil &&
-		h.OnTurnCompleted == nil &&
-		h.OnLoopStarted == nil &&
-		h.OnLoopStopped == nil &&
-		h.OnReasoningStarted == nil &&
-		h.OnReasoningFinished == nil &&
-		h.OnToolExecutionStarted == nil &&
-		h.OnToolExecutionFinished == nil &&
-		h.OnLLMResponse == nil &&
-		h.OnToolSucceeded == nil &&
-		h.OnToolFailed == nil &&
-		h.OnToolProgress == nil &&
-		h.OnContextCompressing == nil &&
-		h.OnContextCompressed == nil &&
-		h.OnError == nil &&
-		h.OnSubagentStarted == nil &&
-		h.OnSubagentStopped == nil &&
-		h.OnTaskCreated == nil &&
-		h.OnTaskCompleted == nil
-}
-
-func New(cfg HarnessConfig) (*Harness, error) {
-	cwd := cfg.Cwd
-	if cwd == "" {
-		wkdir, err := os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("could not determine default cwd: %w", err)
-		}
-		cwd = wkdir
+func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, error) {
+	o := defaultHarnessOptions()
+	for _, opt := range opts {
+		opt(o)
 	}
 
-	mainSystemPrompt := cfg.MainSystemPrompt
-
-	bus := cfg.EventBus
-	if bus == nil {
-		bus = events.NewEventBus()
-	}
-	if !hooksEmpty(cfg.EventHooks) {
-		events.NewHooksAdapter(bus, cfg.EventHooks)
+	brain := o.agentBuilder
+	if brain == nil {
+		brain = defaultAgentBuilder
 	}
 
+	factory := o.llmFactory
+	if factory == nil {
+		factory = defaultLLMFactory(o.baseURLs)
+	}
+	llms := newLLMCache(factory, o.baseURLs)
+
+	// resolve role models: unset roles fall back to the main model
+	subagentModel := o.subagentModel
+	if subagentModel.Name == "" {
+		subagentModel = mainModel
+	}
+	rlmModel := o.rlmModel
+	if rlmModel.Name == "" {
+		rlmModel = mainModel
+	}
+
+	mainLLM, err := llms.get(mainModel)
+	if err != nil {
+		return nil, fmt.Errorf("build main LLM: %w", err)
+	}
+	rlmLLM, err := llms.get(rlmModel)
+	if err != nil {
+		return nil, fmt.Errorf("build RLM LLM: %w", err)
+	}
+
+	// get cwd
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("could not determine default cwd: %w", err)
+	}
+
+	// register hooks to event bus
+	var stopHooks func()
+	if !hooksEmpty(o.hooks) {
+		stopHooks = events.StartHooks(o.eventBus, o.hooks)
+	}
+
+	// set up todo file
 	todoFile := todo.NewTodoFile(cwd)
-	todoFile.SetEmitter(bus)
+	todoFile.SetEmitter(o.eventBus)
 
+	// build skills registry
 	skillsRegistry := skills.NewRegistry()
-	skillsRegistry.RegisterSkillDir("~/.claude/skills")
-	for _, skillDir := range cfg.ExtraSkillDirs {
+	for _, skillDir := range o.skillDirs {
 		skillsRegistry.RegisterSkillDir(skillDir)
 	}
 
@@ -138,7 +107,7 @@ func New(cfg HarnessConfig) (*Harness, error) {
 		if ev.Phase == "repl_exec" {
 			detail = ev.CodeBlock
 		}
-		bus.Emit(events.ToolProgressEvent{
+		o.eventBus.Emit(events.ToolProgressEvent{
 			BaseEvent: events.NewBaseEvent(events.EventToolProgress, ""),
 			ToolName:  "rlm",
 			Phase:     ev.Phase,
@@ -150,13 +119,13 @@ func New(cfg HarnessConfig) (*Harness, error) {
 	}
 
 	rlmEngine, err := rlm.NewEngine(rlm.EngineConfig{
-		NewFetcher:        rlm.NewLLMFetcherFactory(cfg.RLMModel),
-		Querier:           rlm.NewLLMQuerier(cfg.RLMModel),
+		NewFetcher:        rlm.NewSimpleFetcherFactory(rlmLLM),
+		Querier:           rlm.NewLLMQuerier(rlmLLM),
 		MaxDepth:          1,
 		WorkingDir:        cwd,
 		OnProgress:        rlmProgressFn,
-		DefaultIterations: cfg.RLMDefaultIterations,
-		MaxIterations:     cfg.RLMMaxIterations,
+		DefaultIterations: o.rlmDefaultIterations,
+		MaxIterations:     o.rlmMaxIterations,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize RLM engine: %w", err)
@@ -167,54 +136,58 @@ func New(cfg HarnessConfig) (*Harness, error) {
 	toolRegistry.RegisterFromProvider(rlmEngine)
 	toolRegistry.RegisterFromProvider(todoFile)
 
-	if cfg.SubAgentMaxDepth > 0 && cfg.SubAgentBuilder != nil {
-		subAgentLLM := cfg.SubAgentLLM
-		if subAgentLLM == nil {
-			subAgentLLM = cfg.RLMModel
+	if o.subagentMaxDepth > 0 {
+		subagentLLM, err := llms.get(subagentModel)
+		if err != nil {
+			return nil, fmt.Errorf("build subagent LLM: %w", err)
 		}
-		factory := subagent.NewSubAgentFactory(subagent.SubAgentFactoryConfig{
-			AgentLLM:      subAgentLLM,
-			RLMModel:      cfg.RLMModel,
-			AgentBuilder:  cfg.SubAgentBuilder,
-			MaxDepth:      cfg.SubAgentMaxDepth,
-			MaxIterations: cfg.SubAgentMaxIter,
+		subagentFactory := subagent.NewSubAgentFactory(subagent.SubAgentFactoryConfig{
+			AgentLLM:      subagentLLM,
+			RLMModel:      rlmLLM,
+			AgentBuilder:  brain,
+			MaxDepth:      o.subagentMaxDepth,
+			MaxIterations: o.subagentMaxIterations,
 			Cwd:           cwd,
-			Emitter:       bus,
+			Emitter:       o.eventBus,
 		})
-		toolRegistry.Register(subagent.NewSpawnAgentTool(factory))
+		toolRegistry.Register(subagent.NewSpawnAgentTool(subagentFactory))
 	}
 
-	if cfg.EnableAdvisor && cfg.AdvisorModel != nil {
-		toolRegistry.Register(advisor.NewAdvisorTool(cfg.AdvisorModel))
+	if o.advisorModel.Name != "" {
+		advisorLLM, err := llms.get(o.advisorModel)
+		if err != nil {
+			return nil, fmt.Errorf("build advisor LLM: %w", err)
+		}
+		toolRegistry.Register(advisor.NewAdvisorTool(advisorLLM))
 	}
 
-	for _, tool := range cfg.ExtraTools {
+	for _, tool := range o.extraTools {
 		toolRegistry.Register(tool)
 	}
 
-	if len(cfg.DisabledTools) > 0 {
-		toolRegistry = toolRegistry.CopyWithout(cfg.DisabledTools...)
+	if len(o.disabledTools) > 0 {
+		toolRegistry = toolRegistry.CopyWithout(o.disabledTools...)
 	}
 
-	// validate and set up agent
-	agent := cfg.Agent
-	if agent == nil {
-		return nil, fmt.Errorf("agent must be defined for harness")
+	// build and wire the main agent
+	mainAgent, err := brain(mainLLM, o.mainSystemPrompt)
+	if err != nil {
+		return nil, fmt.Errorf("build main agent: %w", err)
 	}
-	agent.UpdateToolDefinitions(toolRegistry.ProviderDefinitions())
-	agent.UpdateOffloadFn(rlmEngine.Run)
-	agent.SetTodoProvider(todoFile.FormatReminder)
+	mainAgent.UpdateToolDefinitions(toolRegistry.ProviderDefinitions())
+	mainAgent.UpdateOffloadFn(rlmEngine.Run)
+	mainAgent.SetTodoProvider(todoFile.FormatReminder)
 
 	// create agent runner
 	mainAgentRunner, err := runner.NewAgentRunner(
-		agent,
+		mainAgent,
 		runner.WithToolRegistry(toolRegistry),
 		runner.WithSkillsRegistry(skillsRegistry),
 		runner.WithTodoFile(todoFile),
-		runner.WithEmitter(bus),
-		runner.WithTextDeltaHandler(cfg.OnTextDelta),
-		runner.WithThinkingDeltaHandler(cfg.OnThinkingDelta),
-		runner.WithSystemPrompt(mainSystemPrompt),
+		runner.WithEmitter(o.eventBus),
+		runner.WithTextDeltaHandler(o.onTextDelta),
+		runner.WithThinkingDeltaHandler(o.onThinkingDelta),
+		runner.WithSystemPrompt(o.mainSystemPrompt),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("unable to initialize runner: %w", err)
@@ -223,13 +196,16 @@ func New(cfg HarnessConfig) (*Harness, error) {
 	return &Harness{
 		mainAgentRunner: mainAgentRunner,
 		toolRegistry:    toolRegistry,
-		skillRegistry:   skillsRegistry,
 		todoFile:        todoFile,
-		eventBus:        bus,
+		eventBus:        o.eventBus,
+		stopHooks:       stopHooks,
 	}, nil
 }
 
 func (h *Harness) Shutdown() {
+	if h.stopHooks != nil {
+		h.stopHooks()
+	}
 	h.todoFile.Cleanup()
 }
 
@@ -292,4 +268,29 @@ func (h *Harness) RunSession(ctx context.Context, in io.Reader, out io.Writer) e
 	}
 
 	return scanner.Err()
+}
+
+// hooksEmpty reports whether no hook callbacks are set in h.
+func hooksEmpty(h events.Hooks) bool {
+	return h.OnSessionStarted == nil &&
+		h.OnSessionEnded == nil &&
+		h.OnTurnStarted == nil &&
+		h.OnTurnCompleted == nil &&
+		h.OnLoopStarted == nil &&
+		h.OnLoopStopped == nil &&
+		h.OnReasoningStarted == nil &&
+		h.OnReasoningFinished == nil &&
+		h.OnToolExecutionStarted == nil &&
+		h.OnToolExecutionFinished == nil &&
+		h.OnLLMResponse == nil &&
+		h.OnToolSucceeded == nil &&
+		h.OnToolFailed == nil &&
+		h.OnToolProgress == nil &&
+		h.OnContextCompressing == nil &&
+		h.OnContextCompressed == nil &&
+		h.OnError == nil &&
+		h.OnSubagentStarted == nil &&
+		h.OnSubagentStopped == nil &&
+		h.OnTaskCreated == nil &&
+		h.OnTaskCompleted == nil
 }

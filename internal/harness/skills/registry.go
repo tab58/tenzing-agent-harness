@@ -17,20 +17,30 @@ type Definition struct {
 
 type Registry struct {
 	skills map[string]Definition
-	dirs   []string
 }
 
 func NewRegistry() *Registry {
-	r := &Registry{
+	return &Registry{
 		skills: make(map[string]Definition),
-		dirs:   make([]string, 0),
 	}
-	r.discover()
-	return r
 }
 
 func (r *Registry) RegisterSkillDir(skillDir string) {
-	r.dirs = append(r.dirs, skillDir)
+	r.discoverDir(expandTilde(skillDir))
+}
+
+// expandTilde resolves a leading "~/" against the user's home directory.
+// Paths without the prefix are returned unchanged, as is the input when the
+// home directory cannot be determined.
+func expandTilde(path string) string {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		return filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(path, "~"), "/"))
+	}
+	return path
 }
 
 func (r *Registry) GetTools() []tooldef.Definition {
@@ -66,27 +76,27 @@ func (r *Registry) Load(name string) (string, error) {
 	return fmt.Sprintf("=== SKILL: %s ===\n%s", name, string(data)), nil
 }
 
-func (r *Registry) discover() {
-	for _, skillsDir := range r.dirs {
-		entries, err := os.ReadDir(skillsDir)
-		if err != nil {
-			return
+// discoverDir scans a single skills directory and registers every valid
+// skill found. Unreadable directories are skipped silently.
+func (r *Registry) discoverDir(skillsDir string) {
+	entries, err := os.ReadDir(skillsDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
 		}
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
 
-			path := filepath.Join(skillsDir, entry.Name(), "SKILL.md")
-			name, desc, err := parseFrontmatter(path)
-			if err != nil {
-				continue
-			}
-			r.skills[name] = Definition{
-				Name:        name,
-				Description: desc,
-				path:        path,
-			}
+		path := filepath.Join(skillsDir, entry.Name(), "SKILL.md")
+		name, desc, err := parseFrontmatter(path)
+		if err != nil {
+			continue
+		}
+		r.skills[name] = Definition{
+			Name:        name,
+			Description: desc,
+			path:        path,
 		}
 	}
 }

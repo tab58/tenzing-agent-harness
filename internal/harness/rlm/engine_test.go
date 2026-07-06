@@ -47,8 +47,9 @@ func (s *scriptedLLM) ListModels(context.Context) ([]common.ModelInfo, error) {
 	return nil, common.ErrNotSupported
 }
 
-func (s *scriptedLLM) GetCurrentModel() string   { return "scripted-model" }
-func (s *scriptedLLM) GetContextWindowSize() int { return 128_000 }
+func (s *scriptedLLM) GetCurrentModel() string       { return "scripted-model" }
+func (s *scriptedLLM) GetContextWindowSize() int     { return 128_000 }
+func (s *scriptedLLM) ProviderName() common.Provider { return common.ProviderOllama }
 
 func TestEngineSimpleFinal(t *testing.T) {
 	skipIfNoPython(t)
@@ -58,7 +59,7 @@ func TestEngineSimpleFinal(t *testing.T) {
 	}}
 
 	engine, err := NewEngine(EngineConfig{
-		NewFetcher: NewLLMFetcherFactory(rootLLM),
+		NewFetcher: NewSimpleFetcherFactory(rootLLM),
 		WorkingDir: t.TempDir(),
 	})
 	if err != nil {
@@ -83,7 +84,7 @@ func TestEngineCodeExecution(t *testing.T) {
 	}}
 
 	engine, err := NewEngine(EngineConfig{
-		NewFetcher: NewLLMFetcherFactory(rootLLM),
+		NewFetcher: NewSimpleFetcherFactory(rootLLM),
 		WorkingDir: t.TempDir(),
 	})
 	if err != nil {
@@ -120,7 +121,7 @@ func TestEngineSubLMFromPython(t *testing.T) {
 	querier := &fakeQuerier{response: "a concise summary"}
 
 	engine, err := NewEngine(EngineConfig{
-		NewFetcher: NewLLMFetcherFactory(rootLLM),
+		NewFetcher: NewSimpleFetcherFactory(rootLLM),
 		Querier:    querier,
 		WorkingDir: t.TempDir(),
 	})
@@ -147,7 +148,7 @@ func TestEngineMaxIterations(t *testing.T) {
 	}}
 
 	engine, err := NewEngine(EngineConfig{
-		NewFetcher:        NewLLMFetcherFactory(rootLLM),
+		NewFetcher:        NewSimpleFetcherFactory(rootLLM),
 		WorkingDir:        t.TempDir(),
 		DefaultIterations: 3,
 	})
@@ -166,7 +167,7 @@ func TestEngineMaxIterations(t *testing.T) {
 
 func TestEngineDefaultIterations(t *testing.T) {
 	e, err := NewEngine(EngineConfig{
-		NewFetcher: NewLLMFetcherFactory(&scriptedLLM{}),
+		NewFetcher: NewSimpleFetcherFactory(&scriptedLLM{}),
 		Querier:    &fakeQuerier{},
 	})
 	if err != nil {
@@ -211,7 +212,7 @@ func TestEngineNudgeOnNoCode(t *testing.T) {
 	}}
 
 	engine, err := NewEngine(EngineConfig{
-		NewFetcher: NewLLMFetcherFactory(rootLLM),
+		NewFetcher: NewSimpleFetcherFactory(rootLLM),
 		WorkingDir: t.TempDir(),
 	})
 	if err != nil {
@@ -239,7 +240,7 @@ func TestEnginePromptNotInContext(t *testing.T) {
 	}}
 
 	engine, err := NewEngine(EngineConfig{
-		NewFetcher: NewLLMFetcherFactory(rootLLM),
+		NewFetcher: NewSimpleFetcherFactory(rootLLM),
 		WorkingDir: t.TempDir(),
 	})
 	if err != nil {

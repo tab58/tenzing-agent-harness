@@ -6,6 +6,8 @@ import (
 	"github.com/tab58/llm-providers/common"
 )
 
+// Querier answers single-shot LLM prompts. Implementations must be safe for
+// concurrent use: llm_batch fans out up to 8 Query calls at once.
 type Querier interface {
 	Query(ctx context.Context, prompt string, maxTokens int64) (string, error)
 }

@@ -42,34 +42,36 @@ func (s *stubLLM) CountTokens(_ context.Context, _ common.CompletionRequest) (co
 func (s *stubLLM) ListModels(_ context.Context) ([]common.ModelInfo, error) {
 	return nil, nil
 }
-func (s *stubLLM) GetCurrentModel() string   { return "stub" }
-func (s *stubLLM) GetContextWindowSize() int { return 4096 }
+func (s *stubLLM) GetCurrentModel() string       { return "stub" }
+func (s *stubLLM) GetContextWindowSize() int     { return 4096 }
+func (s *stubLLM) ProviderName() common.Provider { return common.ProviderOllama }
 
-func TestHarnessCreatesRunner(t *testing.T) {
-	_, err := New(HarnessConfig{
-		Agent:            &stubAgent{},
-		RLMModel:         &stubLLM{},
-		MainSystemPrompt: "test prompt",
-	})
+var testModel = common.ModelDefinition{Name: "stub-model", Provider: common.ProviderOllama}
+
+func stubBrain(_ common.LLM, _ string) (runner.Agent, error) { return &stubAgent{}, nil }
+
+func stubFactory(_ common.ModelDefinition) (common.LLM, error) { return &stubLLM{}, nil }
+
+// newTestHarness builds a harness with stubbed LLMs and brain.
+func newTestHarness(t *testing.T, opts ...HarnessOption) *Harness {
+	t.Helper()
+	h, err := New(testModel, append([]HarnessOption{
+		WithAgentBuilder(stubBrain),
+		WithLLMFactory(stubFactory),
+		WithSystemPrompt("test"),
+	}, opts...)...)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
+	return h
 }
 
-func TestHarnessRegistersSpawnAgentWhenEnabled(t *testing.T) {
-	h, err := New(HarnessConfig{
-		Agent:            &stubAgent{},
-		RLMModel:         &stubLLM{},
-		SubAgentMaxDepth: 2,
-		SubAgentBuilder: func(llm common.LLM, sp string) (runner.Agent, error) {
-			return &stubAgent{}, nil
-		},
-		MainSystemPrompt: "test",
-	})
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
+func TestHarnessCreatesRunner(t *testing.T) {
+	newTestHarness(t)
+}
 
+func TestHarnessRegistersSpawnAgentByDefault(t *testing.T) {
+	h := newTestHarness(t)
 	found := false
 	for _, def := range h.ToolDefinitions() {
 		if def.Name() == "spawn_agent" {
@@ -78,53 +80,32 @@ func TestHarnessRegistersSpawnAgentWhenEnabled(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("spawn_agent tool not registered when SubAgentMaxDepth > 0")
+		t.Fatal("spawn_agent tool not registered by default (depth 1)")
 	}
 }
 
-func TestHarnessNoSpawnAgentWhenDisabled(t *testing.T) {
-	h, err := New(HarnessConfig{
-		Agent:            &stubAgent{},
-		RLMModel:         &stubLLM{},
-		MainSystemPrompt: "test",
-	})
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
-
+func TestHarnessNoSpawnAgentWhenDepthZero(t *testing.T) {
+	h := newTestHarness(t, WithSubagentDepth(0))
 	for _, def := range h.ToolDefinitions() {
 		if def.Name() == "spawn_agent" {
-			t.Fatal("spawn_agent tool should not be registered when SubAgentMaxDepth is 0")
+			t.Fatal("spawn_agent tool should not be registered when depth is 0")
 		}
 	}
 }
 
 func TestHarnessAdvisorRegistration(t *testing.T) {
 	tests := []struct {
-		name         string
-		advisorModel common.LLM
-		enabled      bool
-		want         bool
+		name string
+		opts []HarnessOption
+		want bool
 	}{
-		{"enabled with model", &stubLLM{}, true, true},
-		{"model set but not enabled (default off)", &stubLLM{}, false, false},
-		{"enabled but no model", nil, true, false},
-		{"neither", nil, false, false},
+		{"advisor model set", []HarnessOption{WithAdvisorModel(testModel)}, true},
+		{"no advisor model", nil, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h, err := New(HarnessConfig{
-				Agent:            &stubAgent{},
-				RLMModel:         &stubLLM{},
-				AdvisorModel:     tt.advisorModel,
-				EnableAdvisor:    tt.enabled,
-				MainSystemPrompt: "test",
-			})
-			if err != nil {
-				t.Fatalf("New() error: %v", err)
-			}
-
+			h := newTestHarness(t, tt.opts...)
 			found := false
 			for _, def := range h.ToolDefinitions() {
 				if def.Name() == "advisor" {
@@ -140,60 +121,36 @@ func TestHarnessAdvisorRegistration(t *testing.T) {
 }
 
 func TestHarnessDisabledToolsRemovesBuiltins(t *testing.T) {
-	h, err := New(HarnessConfig{
-		Agent:            &stubAgent{},
-		RLMModel:         &stubLLM{},
-		MainSystemPrompt: "test",
-		DisabledTools:    []string{"bash", "edit"},
-	})
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
-
+	h := newTestHarness(t, WithDisabledTool("bash"), WithDisabledTool("edit"))
 	names := make(map[string]bool)
 	for _, def := range h.ToolDefinitions() {
 		names[strings.ToLower(def.Name())] = true
 	}
 	for _, banned := range []string{"bash", "edit"} {
 		if names[banned] {
-			t.Errorf("tool %q present despite DisabledTools", banned)
+			t.Errorf("tool %q present despite WithDisabledTool", banned)
 		}
 	}
 	for _, required := range []string{"read", "grep", "glob"} {
 		if !names[required] {
-			t.Errorf("tool %q missing; DisabledTools removed too much", required)
+			t.Errorf("tool %q missing; WithDisabledTool removed too much", required)
 		}
 	}
 }
 
 func TestHarnessCreatesEventBus(t *testing.T) {
-	h, err := New(HarnessConfig{
-		Agent:            &stubAgent{},
-		RLMModel:         &stubLLM{},
-		MainSystemPrompt: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := newTestHarness(t)
 	if h.EventBus() == nil {
 		t.Fatal("EventBus() should not be nil")
 	}
 }
 
 func TestHarnessEmitsTurnEventsOnRunTurn(t *testing.T) {
-	h, err := New(HarnessConfig{
-		Agent:            &stubAgent{},
-		RLMModel:         &stubLLM{},
-		MainSystemPrompt: "test",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := newTestHarness(t)
 
 	ch := h.EventBus().Subscribe(50)
 
-	_, err = h.RunTurn(context.Background(), "hello")
-	if err != nil {
+	if _, err := h.RunTurn(context.Background(), "hello"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -220,5 +177,32 @@ check:
 	}
 	if !hasType(events.EventTurnCompleted) {
 		t.Error("missing TurnCompleted event")
+	}
+}
+
+func TestHarnessRoleModelsFallBackToMain(t *testing.T) {
+	var built []string
+	factory := func(m common.ModelDefinition) (common.LLM, error) {
+		built = append(built, m.Name)
+		return &stubLLM{}, nil
+	}
+	_, err := New(testModel, WithAgentBuilder(stubBrain), WithLLMFactory(factory), WithSystemPrompt("test"))
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	for _, name := range built {
+		if name != testModel.Name {
+			t.Errorf("built LLM for model %q, want only %q (fallback to main)", name, testModel.Name)
+		}
+	}
+}
+
+func TestHarnessDefaultAgentBuilder(t *testing.T) {
+	h, err := New(testModel, WithLLMFactory(stubFactory), WithSystemPrompt("test"))
+	if err != nil {
+		t.Fatalf("New() without WithAgentBuilder error: %v", err)
+	}
+	if h == nil {
+		t.Fatal("New() returned nil harness")
 	}
 }

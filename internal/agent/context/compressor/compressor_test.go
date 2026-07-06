@@ -47,8 +47,9 @@ func (f *fakeLLM) ListModels(context.Context) ([]common.ModelInfo, error) {
 	return nil, common.ErrNotSupported
 }
 
-func (f *fakeLLM) GetCurrentModel() string   { return "fake-model" }
-func (f *fakeLLM) GetContextWindowSize() int { return 128_000 }
+func (f *fakeLLM) GetCurrentModel() string       { return "fake-model" }
+func (f *fakeLLM) GetContextWindowSize() int     { return 128_000 }
+func (f *fakeLLM) ProviderName() common.Provider { return common.ProviderOllama }
 
 func newTestCompressor(t *testing.T, llm common.LLM, contextWindow int) *Compressor {
 	t.Helper()

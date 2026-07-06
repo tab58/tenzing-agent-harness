@@ -26,34 +26,19 @@ type Hooks struct {
 	OnTaskCompleted         func(TaskCompletedEvent)
 }
 
-// HooksAdapter subscribes to an EventBus and dispatches each received event
-// to the matching typed hook function.
-type HooksAdapter struct {
-	ch   <-chan Event
-	bus  *EventBus
-	done chan struct{}
-}
-
-// NewHooksAdapter subscribes to bus with a buffer of 64 and starts a dispatch
-// goroutine. Call Stop to unsubscribe and wait for the goroutine to exit.
-func NewHooksAdapter(bus *EventBus, hooks Hooks) *HooksAdapter {
+// StartHooks subscribes to bus with a buffer of 64 and dispatches each
+// received event to the matching typed hook function. The returned stop
+// function unsubscribes, which closes the channel and ends the dispatch
+// goroutine; the goroutine also ends when the bus itself is closed. stop is
+// safe to call after the bus is closed.
+func StartHooks(bus *EventBus, hooks Hooks) (stop func()) {
 	ch := bus.Subscribe(64)
-	a := &HooksAdapter{ch: ch, bus: bus, done: make(chan struct{})}
-	go a.run(hooks)
-	return a
-}
-
-// Stop unsubscribes from the bus and waits for the dispatch goroutine to exit.
-func (a *HooksAdapter) Stop() {
-	a.bus.Unsubscribe(a.ch)
-	<-a.done
-}
-
-func (a *HooksAdapter) run(hooks Hooks) {
-	defer close(a.done)
-	for ev := range a.ch {
-		dispatch(ev, hooks)
-	}
+	go func() {
+		for ev := range ch {
+			dispatch(ev, hooks)
+		}
+	}()
+	return func() { bus.Unsubscribe(ch) }
 }
 
 func dispatch(ev Event, h Hooks) {

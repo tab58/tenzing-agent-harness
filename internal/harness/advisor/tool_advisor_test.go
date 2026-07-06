@@ -38,6 +38,7 @@ func (s *stubLLM) CountTokens(_ context.Context, _ common.CompletionRequest) (co
 func (s *stubLLM) ListModels(_ context.Context) ([]common.ModelInfo, error) { return nil, nil }
 func (s *stubLLM) GetCurrentModel() string                                  { return "advisor-model" }
 func (s *stubLLM) GetContextWindowSize() int                                { return 128000 }
+func (s *stubLLM) ProviderName() common.Provider                            { return common.ProviderOllama }
 
 func execute(t *testing.T, llm common.LLM, input string) tooldef.ToolResult {
 	t.Helper()

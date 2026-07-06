@@ -7,12 +7,11 @@ import (
 	"path/filepath"
 	"runtime/debug"
 
-	"github.com/tab58/llm-providers/common"
-	"github.com/tab58/llm-providers/ollama"
-	"tenzing-agent/internal/agent"
 	"tenzing-agent/internal/harness"
 	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/runner"
+
+	"github.com/tab58/llm-providers/common"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -40,15 +39,13 @@ func main() {
 		}
 	}()
 
-	llm := ollama.NewClient(ollama.Config{
-		APIKey: os.Getenv("OLLAMA_API_KEY"),
-		Model: common.ModelDefinition{
-			Name:                 "glm-5.2",
-			MaxTokens:            32_768,
-			ContextWindowSize:    131_072,
-			DefaultContextWindow: 32_768,
-		},
-	})
+	model := common.ModelDefinition{
+		Name:                 "glm-5.2",
+		MaxTokens:            32_768,
+		ContextWindowSize:    131_072,
+		DefaultContextWindow: 32_768,
+		Provider:             common.ProviderOllama,
+	}
 
 	msgQueue := make(chan tea.Msg, 256)
 
@@ -56,25 +53,9 @@ func main() {
 		msgQueue <- msg
 	}
 
-	mainAgent, err := agent.New(agent.AgentConfig{
-		Model: llm,
-	})
-	if err != nil {
-		slog.Error("agent init failed", "error", err)
-		fmt.Fprintf(os.Stderr, "agent init failed: %v\n", err)
-		os.Exit(1)
-	}
-
-	agentHarness, err := harness.New(harness.HarnessConfig{
-		Cwd:   cwd,
-		Agent: mainAgent,
-		OnTextDelta: func(text string) {
-			send(textDeltaMsg{text: text})
-		},
-		OnThinkingDelta: func(text string) {
-			send(thinkingDeltaMsg{text: text})
-		},
-		EventHooks: events.Hooks{
+	agentHarness, err := harness.New(
+		model,
+		harness.WithHooks(events.Hooks{
 			OnToolExecutionStarted: func(ev events.ToolExecutionStartedEvent) {
 				send(toolStartMsg{name: ev.ToolName, input: ev.Input})
 			},
@@ -90,9 +71,10 @@ func main() {
 			OnToolProgress: func(ev events.ToolProgressEvent) {
 				send(toolProgressMsg{tool: ev.ToolName, phase: ev.Phase, detail: ev.Detail})
 			},
-		},
-		RLMModel: llm,
-	})
+		}),
+		harness.WithTextDeltaHandler(func(text string) { send(textDeltaMsg{text: text}) }),
+		harness.WithThinkingDeltaHandler(func(text string) { send(thinkingDeltaMsg{text: text}) }),
+	)
 	if err != nil {
 		slog.Error("harness init failed", "error", err, "stack", string(debug.Stack()))
 		fmt.Fprintf(os.Stderr, "harness init failed: %v\n", err)
@@ -101,7 +83,7 @@ func main() {
 
 	defer agentHarness.Shutdown()
 
-	m := newModel(agentHarness, llm.GetCurrentModel(), cwd, msgQueue)
+	m := newModel(agentHarness, agentHarness.GetCurrentModel(), cwd, msgQueue)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

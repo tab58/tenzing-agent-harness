@@ -32,19 +32,30 @@ Three layers, strict dependency direction: **Harness → AgentRunner → Agent**
 
 | Layer                                                          | Knows about                              | Does NOT know about                   |
 | -------------------------------------------------------------- | ---------------------------------------- | ------------------------------------- |
-| Harness (`harness.go`, `agent.go`, `defaults.go`)              | AgentRunner, EventBus, config wiring, session REPL | LLM, tool implementations             |
+| Harness (`harness.go`, `harness_options.go`, `llm.go`)         | AgentRunner, EventBus, LLM construction/caching, config wiring, session REPL | Tool implementations                  |
 | AgentRunner (`agent_runner.go`, `loop_fsm.go`)                 | Agent interface, tool registry, FSM, Emitter interface | CLI, sessions, users                  |
-| Agent (`internal/agent/agent.go`, `internal/agent/context/`)   | LLM provider, message types, compression | Filesystem, processes, tools directly |
+| Agent (`internal/agent/agent.go`, `internal/llmctx/`)          | LLM provider, message types, compression | Filesystem, processes, tools directly |
 
 **Never import upward.** Tools don't import harness. Agent doesn't import runner. If you need cross-layer communication, use an interface injected via config.
 
+One deliberate exception to "never import upward": `harness.New` imports `internal/agent` in exactly one place — the unexported `defaultAgentBuilder` fallback — so a harness works out of the box with no brain injection. All other harness code talks only to the `runner.Agent` interface. Callers with a custom brain override it via `harness.WithAgentBuilder(builder)`.
+
 RLM offloading: when a single input exceeds half the compression threshold, `DoReasoning` routes it through an injected `OffloadFn` before appending to history. The function is `rlm.Engine.Run`, injected at the `cmd/` layer to respect layer boundaries.
+
+### RLM fetchers must not compress
+
+The RLM loop uses `rlm.NewSimpleFetcherFactory` (plain message slice) everywhere. Do not reintroduce a compressing fetcher backed by `internal/agent/context`. Two reasons, learned the hard way (2026-07):
+
+1. **Compression is the wrong tool inside an RLM.** Per the RLM paper (`docs/recursive-language-models.pdf`, Alg. 1 + §2), sub-loop history is bounded *structurally*: the huge input lives in the REPL as a variable, each turn appends only the code block plus truncated stdout (`TruncateMax`, default 2000 chars), and `MaxIterations` caps the loop. Mid-loop summarization is lossy and can garble the model's memory of which REPL variables hold what — the loop's entire working state. The paper benchmarks compaction as a baseline and beats it by 26% median.
+2. **Shared memory-file contamination.** `agentctx.NewContext` always loads `.agent_memory.md` on construction and overwrites it on compression. A compressing RLM fetcher therefore inherited the main agent's persisted session summary into every throwaway sub-loop, and — worse — clobbered the main agent's memory file with sub-loop summaries.
+
+If RLM history growth ever becomes a real problem, tighten `TruncateMax`/`MaxIterations` on the engine; don't add compression.
 
 ## Adding Tools
 
 1. Create `internal/harness/tools/tooldef/tool_<name>.go`
 2. Implement `tooldef.Definition` interface: `Name()`, `Description()`, `Schema()`, `Execute()`
-3. Register: most tools go in `GetDefaultToolDefs()` in `internal/harness/tools/registry.go`. The `rlm` tool is wired conditionally in `harness.New()` via `HarnessConfig.RLM`
+3. Register: most tools go in `GetDefaultToolDefs()` in `internal/harness/tools/registry.go`. The `rlm` tool is always registered by `harness.New()`; its LLM falls back to the main model unless `WithRLMModel` is set
 4. Tool descriptions are **instructions to the model**, not documentation — precise wording controls tool selection
 5. Tools never throw. Errors return `ToolResult{IsError: true}`. Loop doesn't break on tool errors
 
@@ -67,9 +78,23 @@ If the tool needs external state (skill registry, task graph), define a narrow i
 LLM providers live in the external module `github.com/tab58/llm-providers` (Anthropic, OpenAI, Cerebras, Lightning, OpenRouter, Ollama). This repo imports:
 
 - `github.com/tab58/llm-providers/common` — canonical types (`common.LLM`, `CompletionRequest`, `Message`, `ContentBlock`, `ToolDefinition`) used throughout the harness
-- `github.com/tab58/llm-providers/<provider>` — constructors (`ollama.NewClient(ollama.Config{...})`), used only in `cmd/` mains
+- `github.com/tab58/llm-providers` (root package, aliased `provider`) — `provider.LLMFromEnv(model, opts...)` is `harness.New`'s default LLM factory. It resolves the API key from the provider's conventional env var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CEREBRAS_API_KEY`, `LIGHTNING_API_KEY`, `OPENROUTER_API_KEY`; Ollama is keyless, `OLLAMA_API_KEY` optional) and dispatches to the matching provider's `NewClient`. `cmd/` mains no longer construct provider clients directly — they pass a `common.ModelDefinition` to `harness.New` and let the default factory resolve credentials. Override with `harness.WithLLMFactory` (custom key sourcing / tests) or `harness.WithProviderBaseURL` (per-provider base URL, default factory only).
 
-Models are `common.Model` values (`common.ModelDefinition{Name, MaxTokens, ContextWindowSize, DefaultContextWindow}`), not strings. To add or change a provider, change the external module and bump the dependency.
+Models are `common.Model` values (`common.ModelDefinition{Name, MaxTokens, ContextWindowSize, DefaultContextWindow, Provider}`), not strings. To add or change a provider, change the external module and bump the dependency.
+
+## Constructing a Harness
+
+`harness.New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, error)` is the harness constructor. The brain defaults to the built-in agent implementation (`internal/agent`); override with `WithAgentBuilder`.
+
+`HarnessConfig` no longer exists. Behavior is configured via flat `HarnessOption` functions (`internal/harness/harness_options.go`):
+
+- `WithAgentBuilder` — replaces the default agent implementation with a custom `runner.AgentBuilder` (the test seam for stub brains).
+- `WithSubagentModel` / `WithRLMModel` / `WithAdvisorModel` — per-role `common.ModelDefinition`. An unset role model falls back to the main model. The advisor tool is registered only when `WithAdvisorModel` is set (no advisor by default).
+- `WithLLMFactory` — replaces the default env-var-based LLM factory entirely; the test seam for injecting fakes.
+- `WithProviderBaseURL(provider, url)` — per-provider base URL override consumed by the default factory only (ignored when `WithLLMFactory` is set).
+- Subagents (`spawn_agent` tool) are enabled by default at depth 1 using the main model; `WithSubagentDepth(0)` disables the tool.
+
+LLM clients are cached per (provider, model, base URL) inside `harness.New`, so roles sharing a model definition share one client.
 
 ## Configuration & DI
 

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -19,17 +20,21 @@ func skipIfNoPython(t *testing.T) {
 }
 
 type fakeQuerier struct {
-	response    string
-	err         error
+	response string
+	err      error
+
+	mu          sync.Mutex // llm_batch calls Query concurrently
 	lastPrompt  string
 	lastMaxToks int64
 	callCount   int
 }
 
 func (q *fakeQuerier) Query(_ context.Context, prompt string, maxTokens int64) (string, error) {
+	q.mu.Lock()
 	q.callCount++
 	q.lastPrompt = prompt
 	q.lastMaxToks = maxTokens
+	q.mu.Unlock()
 	if q.err != nil {
 		return "", q.err
 	}

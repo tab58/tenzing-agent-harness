@@ -95,7 +95,7 @@ internal/
   errors/               Error wrapping
 
 skills/                 Skill definitions (SKILL.md files)
-docs/                   Design docs and implementation plans
+docs/                   Forward-looking design docs and reference papers
 ```
 
 ## Docs
@@ -104,3 +104,4 @@ docs/                   Design docs and implementation plans
 - `AGENTS.md` — conventions for contributing (tools, providers, skills, testing)
 - `CLAUDE.md` — AI agent working guidelines
 - `docs/PHASE_3_IMPL.md` — async execution and multi-agent team design (not yet implemented)
+- `docs/superpowers/specs/2025-06-25-permission-gates-design.md` — permission gates design (not yet implemented)
