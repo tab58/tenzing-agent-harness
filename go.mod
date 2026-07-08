@@ -4,11 +4,14 @@ go 1.25.9
 
 replace github.com/tab58/llm-providers v0.1.0 => ../llm-providers
 
+replace github.com/tab58/huma-http-server v0.2.0 => ../huma-http-server
+
 require (
 	github.com/danielgtaylor/huma/v2 v2.38.0
 	github.com/looplab/fsm v1.0.3
 	github.com/tab58/huma-http-server v0.2.0
 	github.com/tab58/llm-providers v0.1.0
+	go.yaml.in/yaml/v3 v3.0.4
 )
 
 require (
@@ -34,7 +37,6 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
-	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect

@@ -50,10 +50,14 @@ Go module: `tenzing-agent` (go 1.25.9)
 ```
 cmd/app/main.go                         Entry point — signal handling, banner, exit codes
 cmd/app/container.go                    AppContainer — config, logging, agent server + HTTP server wiring
-cmd/app/server.go                       agentServer — routes (/query, /cancel, /info), SSE broadcast, event forwarding
+cmd/app/server.go                       agentServer — routes (/query, /cancel, /info, /debug, /ingest/{name}), SSE broadcast, event forwarding
 cmd/app/index.go                        Embedded chat UI (single-page HTML served at /)
 
 internal/
+├── app/                                 App-level wiring shared by cmd/app
+│   ├── logsse.go                        LogBroadcaster — io.Writer teeing slog output to /debug SSE
+│   └── nexus/                          Input channel monitoring (see "Nexus" below)
+│       └── tools/                      Channel tools: list_channels, read_channel, search_channel
 ├── agent/                              Concrete Agent implementation
 │   ├── agent.go                        Agent struct, AgentConfig, DoReasoning, NewWithCompressor
 │   └── context/                        Knowledge & context management
@@ -450,6 +454,40 @@ Runner (`agent_runner.go`): emits turn, loop, reasoning, tool execution, LLM res
 ### Wiring
 
 `WithEventBus` (optional — `defaultHarnessOptions` creates one if not overridden), `WithHooks` (optional typed `events.Hooks`). `Harness.EventBus()` accessor for programmatic subscription.
+
+## Nexus
+
+Input channel monitoring that turns external log/event streams into agent wake-ups. Package: `internal/app/nexus/` (channel runtime), `internal/app/nexus/tools/` (agent-facing tools). Wired into `cmd/app` alongside the harness.
+
+### Config
+
+`nexus.yaml` (path from `NEXUS_CONFIG`, default `nexus.yaml`; a missing file means zero channels — nexus is entirely optional). Each entry under `channels:` configures one channel:
+
+- `type` — `file-tail` (polls a file for new lines, requires `path`), `command` (runs a long-lived subprocess and restarts it with backoff on exit, requires `cmd`), or `webhook` (ingested via HTTP POST, no source goroutine).
+- `error_pattern` — regex tested against each line to classify it as an error; defaults to `(?i)error|panic|fatal`.
+- `buffer_size` — ring buffer capacity per channel; defaults to 1000.
+- `trigger` — whether error lines on this channel wake the agent; defaults to true.
+
+### Ring Buffers
+
+Each channel owns a fixed-size ring buffer (`Ring`) of `Entry{Seq, Text, IsError}`, holding the most recent `buffer_size` lines. Reads (`Nexus.Read`, `Nexus.Search`) and the channel tools operate on this buffer only — nexus does not persist history to disk.
+
+### Error → Debounced Agent Wake
+
+A line matching `error_pattern` emits a `ChannelErrorEvent` and, if the channel has `trigger` enabled, notifies a `Trigger`. `Trigger` (`internal/app/nexus/trigger.go`) debounces per channel (30s cooldown, wired in `cmd/app/container.go`) and holds a global queue-of-one: while a turn is running, newly erroring channels accumulate in a pending set instead of firing again; `TurnEnded()` (called after every turn via `agentServer.onTurnEnd`) flushes the pending set once the agent is free. A successful wake starts a turn with a synthesized investigation prompt (`agentServer.nexusPrompt`) built from each pending channel's recent errors.
+
+### Routes
+
+- `POST /ingest/{name}` — webhook ingest; only mounted when at least one channel is configured. 202 on success, 404 for an unknown or non-webhook channel name.
+- `GET /debug` — SSE stream of `slog` output, fed by `app.LogBroadcaster` (an `io.Writer` teed into the slog handler alongside the log file). Independent of the nexus channels — available whenever the app runs.
+
+### Events
+
+Three SSE event types are forwarded from the nexus event bus by `agentServer.forwardEvents`: `channel_error` (channel, text, seq), `channel_status` (channel, state — channel source goroutine lifecycle), and `nexus_trigger` (channels — emitted when a wake actually starts a turn).
+
+### Channel Tools
+
+`nexustools.NewListChannelsTool`, `NewReadChannelTool`, `NewSearchChannelTool` (package `internal/app/nexus/tools`) wrap `Nexus.ChannelInfos`/`Read`/`Search` as `tooldef.Definition`s. Registered via `harness.WithTool` only when channels are configured — the agent gets no nexus tools when nexus is disabled.
 
 ## Provider Layer
 

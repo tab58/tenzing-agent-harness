@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -13,14 +14,18 @@ import (
 	"github.com/tab58/huma-http-server/router"
 	"github.com/tab58/llm-providers/common"
 
+	"tenzing-agent/internal/app"
+	"tenzing-agent/internal/app/nexus"
+	nexustools "tenzing-agent/internal/app/nexus/tools"
 	"tenzing-agent/internal/harness"
 	"tenzing-agent/internal/harness/events"
 	"tenzing-agent/internal/harness/runner"
 )
 
 type Config struct {
-	ServerPort int  `mapstructure:"SERVER_PORT" default:"8080"`
-	LogDebug   bool `mapstructure:"LOG_DEBUG"`
+	ServerPort  int    `mapstructure:"SERVER_PORT" default:"8080"`
+	LogDebug    bool   `mapstructure:"LOG_DEBUG"`
+	NexusConfig string `mapstructure:"NEXUS_CONFIG" default:"nexus.yaml"`
 }
 
 // AppContainer wires all app-level dependencies for cmd/app: config,
@@ -31,6 +36,7 @@ type AppContainer struct {
 	cwd     string
 	logFile *os.File
 	api     *agentServer
+	nexus   *nexus.Nexus
 	server  *httpserver.Server[router.MapAuthInfo]
 }
 
@@ -48,7 +54,8 @@ func NewAppContainer() (*AppContainer, error) {
 		return nil, fmt.Errorf("get working directory: %w", err)
 	}
 
-	logFile, err := setupLogging(cwd, cfg.LogDebug)
+	logB := app.NewLogBroadcaster()
+	logFile, err := setupLogging(cwd, cfg.LogDebug, logB)
 	if err != nil {
 		return nil, err
 	}
@@ -61,10 +68,50 @@ func NewAppContainer() (*AppContainer, error) {
 		Provider:             common.ProviderOllama,
 	}
 
-	api, err := newAgentServer(model, events.NewEventBus())
+	bus := events.NewEventBus()
+
+	nexusCfg, err := nexus.LoadConfig(cfg.NexusConfig)
+	if err != nil {
+		logFile.Close()
+		return nil, fmt.Errorf("nexus config: %w", err)
+	}
+
+	// api is late-bound: the trigger's wake closure runs only after
+	// nx.Start below, by which time api is set.
+	var api *agentServer
+	trig := nexus.NewTrigger(30*time.Second, func(channels []string) bool {
+		if api == nil {
+			return false
+		}
+		return api.startNexusTurn(channels)
+	})
+
+	var nx *nexus.Nexus
+	if len(nexusCfg.Channels) > 0 {
+		nx, err = nexus.New(nexusCfg, bus.Emit, trig.Notify)
+		if err != nil {
+			logFile.Close()
+			return nil, fmt.Errorf("nexus init: %w", err)
+		}
+	}
+
+	var extraOpts []harness.HarnessOption
+	if nx != nil {
+		extraOpts = append(extraOpts,
+			harness.WithTool(nexustools.NewListChannelsTool(nx)),
+			harness.WithTool(nexustools.NewReadChannelTool(nx)),
+			harness.WithTool(nexustools.NewSearchChannelTool(nx)),
+		)
+	}
+
+	api, err = newAgentServer(model, bus, nx, logB, trig.TurnEnded, extraOpts...)
 	if err != nil {
 		logFile.Close()
 		return nil, err
+	}
+
+	if nx != nil {
+		nx.Start(context.Background())
 	}
 
 	server := httpserver.New(httpserver.ServerConfig{
@@ -80,14 +127,15 @@ func NewAppContainer() (*AppContainer, error) {
 		cwd:     cwd,
 		logFile: logFile,
 		api:     api,
+		nexus:   nx,
 		server:  server,
 	}, nil
 }
 
-// setupLogging opens the log file and installs it as the slog default.
-// Debug runs get a fresh timestamped file at trace level; normal runs
-// append to the standard file at info level.
-func setupLogging(cwd string, debug bool) (*os.File, error) {
+// setupLogging opens the log file and installs it as the slog default,
+// teeing output to the /debug SSE broadcaster. Debug runs get a fresh
+// timestamped file at trace level; normal runs append at info level.
+func setupLogging(cwd string, debug bool, tee io.Writer) (*os.File, error) {
 	name := ".tenzing-agent.log"
 	level := slog.LevelInfo
 	if debug {
@@ -100,13 +148,13 @@ func setupLogging(cwd string, debug bool) (*os.File, error) {
 		return nil, fmt.Errorf("open log file: %w", err)
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: level})))
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.MultiWriter(logFile, tee), &slog.HandlerOptions{Level: level})))
 	return logFile, nil
 }
 
 // Start runs the HTTP server until ctx is cancelled or the server fails.
 func (ac *AppContainer) Start(ctx context.Context) error {
-	errCh, err := ac.server.Start(fmt.Sprintf(":%d", ac.cfg.ServerPort))
+	errCh, err := ac.server.Start(fmt.Sprintf("127.0.0.1:%d", ac.cfg.ServerPort))
 	if err != nil {
 		return fmt.Errorf("http server start: %w", err)
 	}
@@ -122,10 +170,14 @@ func (ac *AppContainer) Start(ctx context.Context) error {
 	}
 }
 
-// Shutdown cancels any in-flight turn, stops the HTTP server, the harness,
-// the event bus (which ends the SSE forwarding goroutine), and closes the
-// log file. Called once from main's defer.
+// Shutdown stops nexus sources (so no new notifies can fire), cancels any
+// in-flight turn, stops the HTTP server, the harness, the event bus (which
+// ends the SSE forwarding goroutine), and closes the log file. Called once
+// from main's defer.
 func (ac *AppContainer) Shutdown() {
+	if ac.nexus != nil {
+		ac.nexus.Stop()
+	}
 	ac.api.cancelActiveTurn()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

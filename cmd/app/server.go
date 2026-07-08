@@ -14,6 +14,8 @@ import (
 	srverrors "github.com/tab58/huma-http-server/errors"
 	"github.com/tab58/huma-http-server/router"
 
+	"tenzing-agent/internal/app"
+	"tenzing-agent/internal/app/nexus"
 	"tenzing-agent/internal/harness"
 	"tenzing-agent/internal/harness/events"
 
@@ -23,28 +25,36 @@ import (
 // agentServer exposes the harness over HTTP: an index page, an SSE event
 // stream, and JSON endpoints to start/cancel agent turns.
 type agentServer struct {
-	harness *harness.Harness
-	bus     *events.EventBus
+	harness   *harness.Harness
+	bus       *events.EventBus
+	nexus     *nexus.Nexus // nil when no channels configured
+	logB      *app.LogBroadcaster
+	onTurnEnd func() // trigger flush hook; called after every turn
 
 	mu       sync.Mutex
 	cancelFn context.CancelFunc
+	closing  bool
 
 	clients   map[*sseClient]struct{}
 	clientsMu sync.RWMutex
 }
 
-func newAgentServer(model common.ModelDefinition, bus *events.EventBus) (*agentServer, error) {
+func newAgentServer(model common.ModelDefinition, bus *events.EventBus, nx *nexus.Nexus, logB *app.LogBroadcaster, onTurnEnd func(), extraOpts ...harness.HarnessOption) (*agentServer, error) {
 	s := &agentServer{
-		bus:     bus,
-		clients: make(map[*sseClient]struct{}),
+		bus:       bus,
+		nexus:     nx,
+		logB:      logB,
+		onTurnEnd: onTurnEnd,
+		clients:   make(map[*sseClient]struct{}),
 	}
 
-	h, err := harness.New(
-		model,
+	opts := append([]harness.HarnessOption{
 		harness.WithEventBus(bus),
 		harness.WithTextDeltaHandler(func(text string) { s.broadcastSSE("text_delta", text) }),
 		harness.WithThinkingDeltaHandler(func(text string) { s.broadcastSSE("thinking_delta", text) }),
-	)
+	}, extraOpts...)
+
+	h, err := harness.New(model, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("harness init: %w", err)
 	}
@@ -87,6 +97,11 @@ func (s *agentServer) registerRoutes(srv *httpserver.Server[router.MapAuthInfo])
 		},
 		Handler: s.handleInfo,
 	})
+
+	srv.Handle("GET /debug", s.logB.SSEHandler())
+	if s.nexus != nil {
+		srv.Handle("POST /ingest/{name}", s.nexus.WebhookHandler())
+	}
 }
 
 // --- SSE broadcast ---
@@ -165,6 +180,21 @@ func (s *agentServer) forwardEvents(ch <-chan events.Event) {
 				"phase":  e.Phase,
 				"detail": e.Detail,
 			})
+		case nexus.ChannelErrorEvent:
+			s.broadcastSSEJSON("channel_error", map[string]any{
+				"channel": e.Channel,
+				"text":    e.Text,
+				"seq":     e.Seq,
+			})
+		case nexus.ChannelStatusEvent:
+			s.broadcastSSEJSON("channel_status", map[string]string{
+				"channel": e.Channel,
+				"state":   e.State,
+			})
+		case nexus.TriggerEvent:
+			s.broadcastSSEJSON("nexus_trigger", map[string]any{
+				"channels": e.Channels,
+			})
 		}
 	}
 }
@@ -220,16 +250,13 @@ type infoOutput struct {
 	}
 }
 
-func (s *agentServer) handleQuery(_ context.Context, _ router.MapAuthInfo, in *queryInput) (*statusOutput, error) {
-	query := strings.TrimSpace(in.Body.Query)
-	if query == "" {
-		return nil, srverrors.Wrap(srverrors.ErrBadRequest, "empty query")
-	}
-
+// startTurn begins an agent turn for query. Returns false when a turn is
+// already running. Used by both the HTTP /query handler and nexus wakes.
+func (s *agentServer) startTurn(query string) bool {
 	s.mu.Lock()
-	if s.cancelFn != nil {
+	if s.closing || s.cancelFn != nil {
 		s.mu.Unlock()
-		return nil, srverrors.Wrap(srverrors.ErrConflict, "agent already running")
+		return false
 	}
 	// the turn outlives the HTTP request, so it gets its own context
 	ctx, cancel := context.WithCancel(context.Background())
@@ -249,6 +276,9 @@ func (s *agentServer) handleQuery(_ context.Context, _ router.MapAuthInfo, in *q
 			s.cancelFn = nil
 			s.mu.Unlock()
 			s.broadcastSSEJSON("status", map[string]string{"state": "idle"})
+			if s.onTurnEnd != nil {
+				s.onTurnEnd()
+			}
 		}()
 
 		answer, err := s.harness.RunTurn(ctx, query)
@@ -258,16 +288,62 @@ func (s *agentServer) handleQuery(_ context.Context, _ router.MapAuthInfo, in *q
 		}
 		s.broadcastSSEJSON("answer", map[string]string{"text": answer})
 	}()
+	return true
+}
 
+func (s *agentServer) handleQuery(_ context.Context, _ router.MapAuthInfo, in *queryInput) (*statusOutput, error) {
+	query := strings.TrimSpace(in.Body.Query)
+	if query == "" {
+		return nil, srverrors.Wrap(srverrors.ErrBadRequest, "empty query")
+	}
+	if !s.startTurn(query) {
+		return nil, srverrors.Wrap(srverrors.ErrConflict, "agent already running")
+	}
 	out := &statusOutput{}
 	out.Body.Status = "started"
 	return out, nil
+}
+
+// startNexusTurn is the trigger wake callback: builds an investigation
+// prompt from recent channel errors and starts a turn. Returns false when
+// the agent is busy (trigger keeps the channels pending).
+func (s *agentServer) startNexusTurn(channels []string) bool {
+	if s.nexus == nil {
+		return false
+	}
+	prompt := s.nexusPrompt(channels)
+	if !s.startTurn(prompt) {
+		return false
+	}
+	s.bus.Emit(nexus.TriggerEvent{
+		BaseEvent: events.NewBaseEvent(nexus.EventTrigger, "nexus"),
+		Channels:  channels,
+	})
+	return true
+}
+
+func (s *agentServer) nexusPrompt(channels []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Error detected in channel(s) %s.\n", strings.Join(channels, ", "))
+	for _, name := range channels {
+		entries, err := s.nexus.Read(name, 5, true)
+		if err != nil {
+			continue
+		}
+		fmt.Fprintf(&b, "\nRecent errors from %q:\n", name)
+		for _, e := range entries {
+			fmt.Fprintf(&b, "  [%d] %s\n", e.Seq, e.Text)
+		}
+	}
+	b.WriteString("\nUse the read_channel and search_channel tools for more context. Investigate the root cause and report what you find.")
+	return b.String()
 }
 
 // cancelActiveTurn cancels the in-flight agent turn, if any. Used by
 // container shutdown so a running turn doesn't outlive the harness.
 func (s *agentServer) cancelActiveTurn() {
 	s.mu.Lock()
+	s.closing = true
 	if s.cancelFn != nil {
 		s.cancelFn()
 	}

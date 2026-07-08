@@ -92,6 +92,7 @@ Models are `common.Model` values (`common.ModelDefinition{Name, MaxTokens, Conte
 - `WithSubagentModel` / `WithRLMModel` / `WithAdvisorModel` — per-role `common.ModelDefinition`. An unset role model falls back to the main model. The advisor tool is registered only when `WithAdvisorModel` is set (no advisor by default).
 - `WithLLMFactory` — replaces the default env-var-based LLM factory entirely; the test seam for injecting fakes.
 - `WithProviderBaseURL(provider, url)` — per-provider base URL override consumed by the default factory only (ignored when `WithLLMFactory` is set).
+- `WithTool` — injects an additional tool implementing `tooldef.Definition` (used by cmd/app to register nexus channel tools).
 - Subagents (`spawn_agent` tool) are enabled by default at depth 1 using the main model; `WithSubagentDepth(0)` disables the tool.
 
 LLM clients are cached per (provider, model, base URL) inside `harness.New`, so roles sharing a model definition share one client.
@@ -131,6 +132,9 @@ The FSM is per-runner instance — subagents and concurrent loops don't share st
 | Sub-agent system         | `internal/harness/subagent/`                          |
 | Event system             | `internal/harness/events/`                            |
 | Embedded assets          | Adjacent to consumer (e.g. `rlm/bootstrap.py`)       |
+| Nexus (input channels)   | `internal/app/nexus/`                                 |
+| Nexus channel tools      | `internal/app/nexus/tools/`                           |
+| App-level wiring helpers | `internal/app/` (log SSE broadcaster)                 |
 
 ## Testing
 
