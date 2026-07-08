@@ -1,6 +1,6 @@
 # Agent Guidelines — tenzing-agent-harness
 
-Go module: `tenzing-agent`
+Go module: `github.com/tab58/tenzing-agent-harness`
 
 ## Key Docs
 
@@ -22,7 +22,7 @@ No CI pipeline yet. Run `go build ./...` and `go test ./...` before declaring wo
 
 ## Module & Imports
 
-- Module path: `tenzing-agent`
+- Module path: `github.com/tab58/tenzing-agent-harness`
 - Use short import aliases only when needed to disambiguate
 - Internal packages import via `tenzing-agent/internal/...`
 

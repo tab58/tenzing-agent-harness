@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"tenzing-agent/internal/harness/events"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 )
 
 func TestWriteAndReadTasks(t *testing.T) {

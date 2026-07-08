@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"tenzing-agent/internal/app/nexus"
-	"tenzing-agent/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/app/nexus"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 )
 
 const defaultLastN = 100

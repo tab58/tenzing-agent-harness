@@ -1,4 +1,4 @@
-module tenzing-agent
+module github.com/tab58/tenzing-agent-harness
 
 go 1.25.9
 

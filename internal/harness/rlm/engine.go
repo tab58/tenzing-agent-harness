@@ -11,7 +11,7 @@ import (
 	"text/template"
 	"time"
 
-	"tenzing-agent/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 )
 
 const levelTrace = slog.Level(-8)

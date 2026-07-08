@@ -5,12 +5,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"tenzing-agent/internal/harness/events"
-	"tenzing-agent/internal/harness/runner"
-	"tenzing-agent/internal/harness/skills"
-	"tenzing-agent/internal/harness/snapshot"
-	"tenzing-agent/internal/harness/todo"
-	"tenzing-agent/internal/harness/tools"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/snapshot"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/todo"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
 )
 
 // ---------------------------------------------------------------------------

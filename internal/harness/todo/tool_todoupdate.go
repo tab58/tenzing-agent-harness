@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"tenzing-agent/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 )
 
 var _ tooldef.Definition = (*TodoUpdateTool)(nil)

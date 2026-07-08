@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"tenzing-agent/internal/harness/events"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 )
 
 func newTestNexus(t *testing.T, cfgs []ChannelConfig, emit func(events.Event), notify func(string)) *Nexus {

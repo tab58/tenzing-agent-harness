@@ -14,10 +14,10 @@ import (
 	srverrors "github.com/tab58/huma-http-server/errors"
 	"github.com/tab58/huma-http-server/router"
 
-	"tenzing-agent/internal/app"
-	"tenzing-agent/internal/app/nexus"
-	"tenzing-agent/internal/harness"
-	"tenzing-agent/internal/harness/events"
+	"github.com/tab58/tenzing-agent-harness/internal/app"
+	"github.com/tab58/tenzing-agent-harness/internal/app/nexus"
+	"github.com/tab58/tenzing-agent-harness/internal/harness"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 
 	"github.com/tab58/llm-providers/common"
 )

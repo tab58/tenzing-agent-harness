@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/tab58/llm-providers/common"
-	"tenzing-agent/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 )
 
 type ToolProvider interface {

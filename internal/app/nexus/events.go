@@ -1,6 +1,6 @@
 package nexus
 
-import "tenzing-agent/internal/harness/events"
+import "github.com/tab58/tenzing-agent-harness/internal/harness/events"
 
 // Nexus event types published on the harness event bus. Defined here (not
 // in the events package) so the harness stays ignorant of nexus.

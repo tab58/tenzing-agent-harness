@@ -8,9 +8,9 @@ import (
 	"runtime/debug"
 	"strings"
 
-	agentctx "tenzing-agent/internal/agent/context"
-	"tenzing-agent/internal/harness/runner"
-	"tenzing-agent/internal/harness/tools/tooldef"
+	agentctx "github.com/tab58/tenzing-agent-harness/internal/agent/context"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 
 	"github.com/tab58/llm-providers/common"
 )

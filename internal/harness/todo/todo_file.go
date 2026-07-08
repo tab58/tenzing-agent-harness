@@ -11,8 +11,8 @@ import (
 	"strings"
 	"sync"
 
-	"tenzing-agent/internal/harness/events"
-	"tenzing-agent/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 )
 
 const TodoFileName = ".agent_todo.json"

@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/tab58/llm-providers/common"
-	"tenzing-agent/internal/harness/events"
-	"tenzing-agent/internal/harness/runner"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 )
 
 type eventCollector struct {

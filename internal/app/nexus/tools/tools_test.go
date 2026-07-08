@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"tenzing-agent/internal/app/nexus"
-	"tenzing-agent/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/app/nexus"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 )
 
 func seededNexus(t *testing.T) *nexus.Nexus {

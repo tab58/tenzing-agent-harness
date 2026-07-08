@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"tenzing-agent/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 )
 
 // captureTool records the ExecutionContext it was executed with.

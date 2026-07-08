@@ -45,7 +45,7 @@ main.go
 
 ---
 
-Go module: `tenzing-agent` (go 1.25.9)
+Go module: `github.com/tab58/tenzing-agent-harness` (go 1.25.9)
 
 ```
 cmd/app/main.go                         Entry point — signal handling, banner, exit codes

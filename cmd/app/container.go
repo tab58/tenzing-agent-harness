@@ -14,12 +14,12 @@ import (
 	"github.com/tab58/huma-http-server/router"
 	"github.com/tab58/llm-providers/common"
 
-	"tenzing-agent/internal/app"
-	"tenzing-agent/internal/app/nexus"
-	nexustools "tenzing-agent/internal/app/nexus/tools"
-	"tenzing-agent/internal/harness"
-	"tenzing-agent/internal/harness/events"
-	"tenzing-agent/internal/harness/runner"
+	"github.com/tab58/tenzing-agent-harness/internal/app"
+	"github.com/tab58/tenzing-agent-harness/internal/app/nexus"
+	nexustools "github.com/tab58/tenzing-agent-harness/internal/app/nexus/tools"
+	"github.com/tab58/tenzing-agent-harness/internal/harness"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 )
 
 type Config struct {

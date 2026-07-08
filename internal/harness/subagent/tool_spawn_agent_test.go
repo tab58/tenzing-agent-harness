@@ -3,7 +3,7 @@ package subagent
 import (
 	"context"
 	"errors"
-	"tenzing-agent/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 	"testing"
 )
 

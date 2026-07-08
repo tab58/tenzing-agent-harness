@@ -8,11 +8,11 @@ import (
 	"log/slog"
 	"time"
 
-	"tenzing-agent/internal/harness/events"
-	"tenzing-agent/internal/harness/prompts"
-	"tenzing-agent/internal/harness/skills"
-	"tenzing-agent/internal/harness/todo"
-	"tenzing-agent/internal/harness/tools"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/prompts"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/todo"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
 )
 
 const logOutputMaxLen = 2000

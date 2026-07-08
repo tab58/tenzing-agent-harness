@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/tab58/llm-providers/common"
-	"tenzing-agent/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 )
 
 // stubLLM returns a canned response (or error) and records the last request.

@@ -8,8 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"tenzing-agent/internal/app/nexus"
-	"tenzing-agent/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/app/nexus"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 )
 
 var _ tooldef.Definition = (*ListChannelsTool)(nil)

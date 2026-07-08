@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"github.com/tab58/llm-providers/common"
 	"log/slog"
-	"tenzing-agent/internal/agent/context/compressor"
+	"github.com/tab58/tenzing-agent-harness/internal/agent/context/compressor"
 )
 
 type Context struct {
