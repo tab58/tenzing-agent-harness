@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
@@ -264,7 +265,7 @@ func TestIntegration_ReadEditRevert_ThroughLoop(t *testing.T) {
 		agent,
 		runner.WithToolRegistry(registry),
 		runner.WithSkillsRegistry(skills.NewRegistry()),
-		runner.WithTodoFile(todo.NewTodoFile(workDir)),
+		runner.WithTodoFile(todo.NewTodoStore()),
 		runner.WithSystemPrompt("test"),
 	)
 	if err != nil {
@@ -289,7 +290,6 @@ func TestIntegration_ReadEditRevert_ThroughLoop(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIntegration_FinalAnswerOnly(t *testing.T) {
-	workDir := t.TempDir()
 	agent := newScriptedAgent(finalStep("direct answer"))
 
 	registry := tools.NewRegistry("")
@@ -297,7 +297,7 @@ func TestIntegration_FinalAnswerOnly(t *testing.T) {
 		agent,
 		runner.WithToolRegistry(registry),
 		runner.WithSkillsRegistry(skills.NewRegistry()),
-		runner.WithTodoFile(todo.NewTodoFile(workDir)),
+		runner.WithTodoFile(todo.NewTodoStore()),
 		runner.WithSystemPrompt("test"),
 	)
 	if err != nil {
@@ -315,7 +315,6 @@ func TestIntegration_FinalAnswerOnly(t *testing.T) {
 }
 
 func TestIntegration_ContextCanceled(t *testing.T) {
-	workDir := t.TempDir()
 	agent := newScriptedAgent(finalStep("should not reach"))
 
 	registry := tools.NewRegistry("")
@@ -323,7 +322,7 @@ func TestIntegration_ContextCanceled(t *testing.T) {
 		agent,
 		runner.WithToolRegistry(registry),
 		runner.WithSkillsRegistry(skills.NewRegistry()),
-		runner.WithTodoFile(todo.NewTodoFile(workDir)),
+		runner.WithTodoFile(todo.NewTodoStore()),
 		runner.WithSystemPrompt("test"),
 	)
 	if err != nil {
@@ -340,7 +339,6 @@ func TestIntegration_ContextCanceled(t *testing.T) {
 }
 
 func TestIntegration_UnknownTool(t *testing.T) {
-	workDir := t.TempDir()
 	agent := newScriptedAgent(
 		toolStep("nonexistent_tool", "{}"),
 	)
@@ -350,7 +348,7 @@ func TestIntegration_UnknownTool(t *testing.T) {
 		agent,
 		runner.WithToolRegistry(registry),
 		runner.WithSkillsRegistry(skills.NewRegistry()),
-		runner.WithTodoFile(todo.NewTodoFile(workDir)),
+		runner.WithTodoFile(todo.NewTodoStore()),
 		runner.WithSystemPrompt("test"),
 	)
 	if err != nil {
@@ -385,7 +383,7 @@ func TestIntegration_MultipleToolCalls(t *testing.T) {
 		agent,
 		runner.WithToolRegistry(registry),
 		runner.WithSkillsRegistry(skills.NewRegistry()),
-		runner.WithTodoFile(todo.NewTodoFile(workDir)),
+		runner.WithTodoFile(todo.NewTodoStore()),
 		runner.WithSystemPrompt("test"),
 	)
 	if err != nil {
@@ -421,7 +419,7 @@ func TestIntegration_ToolHookCalled(t *testing.T) {
 		runner.WithEmitter(collector),
 		runner.WithToolRegistry(registry),
 		runner.WithSkillsRegistry(skills.NewRegistry()),
-		runner.WithTodoFile(todo.NewTodoFile(workDir)),
+		runner.WithTodoFile(todo.NewTodoStore()),
 		runner.WithSystemPrompt("test"),
 	)
 	if err != nil {
@@ -438,5 +436,77 @@ func TestIntegration_ToolHookCalled(t *testing.T) {
 		t.Errorf("expected 1 ToolSucceeded event, got %d", len(succeeded))
 	} else if ev, ok := succeeded[0].(events.ToolSucceededEvent); !ok || ev.ToolName != "Read" {
 		t.Errorf("expected ToolSucceeded for Read, got %v", succeeded[0])
+	}
+}
+
+// Two runners in the same process: each agent's injected system reminder
+// contains only its own plan. Regression for the shared-.agent_todo.json bug
+// (docs/SPEC_TODO_PER_RUNNER_ISOLATION.md): runner B previously saw runner
+// A's plan in its reminder, and vice versa.
+func TestTodoRemindersScopedPerRunner(t *testing.T) {
+	newTodoRunner := func(store *todo.TodoFile, agent *ScriptedAgent) *runner.AgentRunner {
+		t.Helper()
+		registry := tools.NewRegistry("")
+		registry.RegisterFromProvider(store)
+		r, err := runner.NewAgentRunner(
+			agent,
+			runner.WithToolRegistry(registry),
+			runner.WithSkillsRegistry(skills.NewRegistry()),
+			runner.WithTodoFile(store),
+			runner.WithSystemPrompt("test"),
+		)
+		if err != nil {
+			t.Fatalf("NewAgentRunner error: %v", err)
+		}
+		return r
+	}
+
+	storeA := todo.NewTodoStore()
+	storeB := todo.NewTodoStore()
+
+	agentA := newScriptedAgent(
+		toolStep("TodoWrite", jsonInput(map[string]any{"tasks": []map[string]any{{"task": "alpha work"}}})),
+		finalStep("done A"),
+	)
+	agentB := newScriptedAgent(
+		toolStep("TodoWrite", jsonInput(map[string]any{"tasks": []map[string]any{{"task": "beta work"}}})),
+		finalStep("done B"),
+	)
+
+	runnerA := newTodoRunner(storeA, agentA)
+	runnerB := newTodoRunner(storeB, agentB)
+
+	// A writes its plan first, then B runs. With the old shared file, B's
+	// very first reminder would already contain A's "alpha work" plan.
+	if _, err := runnerA.RunLoop(context.Background(), "plan A"); err != nil {
+		t.Fatalf("runner A: %v", err)
+	}
+	if _, err := runnerB.RunLoop(context.Background(), "plan B"); err != nil {
+		t.Fatalf("runner B: %v", err)
+	}
+
+	for i, call := range agentB.capturedCalls() {
+		joined := strings.Join(call.Reminders, "\n")
+		if strings.Contains(joined, "alpha work") {
+			t.Errorf("runner B call %d reminder leaked runner A's plan:\n%s", i, joined)
+		}
+	}
+
+	// A's second call (after its TodoWrite) must see its own plan.
+	callsA := agentA.capturedCalls()
+	if len(callsA) < 2 {
+		t.Fatalf("agent A captured %d calls, want >= 2", len(callsA))
+	}
+	joinedA := strings.Join(callsA[1].Reminders, "\n")
+	if !strings.Contains(joinedA, "alpha work") {
+		t.Errorf("runner A's reminder missing its own plan:\n%s", joinedA)
+	}
+	if strings.Contains(joinedA, "beta work") {
+		t.Errorf("runner A's reminder leaked runner B's plan:\n%s", joinedA)
+	}
+
+	// And B's write must not have clobbered A's store.
+	if r := storeA.FormatReminder(); !strings.Contains(r, "alpha work") || strings.Contains(r, "beta work") {
+		t.Errorf("store A contaminated after B's write:\n%s", r)
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
@@ -16,6 +18,29 @@ import (
 )
 
 const logOutputMaxLen = 2000
+
+// maxInvalidFinalRetries bounds how many times an invalid final answer (empty,
+// or a tool call written as plain text) is bounced back to the model before
+// the loop gives up and returns it as-is.
+const maxInvalidFinalRetries = 2
+
+// toolCallTextRe matches text that is a malformed tool-call attempt emitted as
+// prose — e.g. "<|tool_call>...", "call:graph_cypher{...}" — which smaller
+// models produce under context pressure instead of a real tool invocation.
+var toolCallTextRe = regexp.MustCompile(`(?s)^\s*(<\|+/?tool_call|call:[A-Za-z_]+\s*[{(])`)
+
+// invalidFinalAnswerReason returns a non-empty reason when the answer should
+// not be handed to the caller.
+func invalidFinalAnswerReason(answer string) string {
+	trimmed := strings.TrimSpace(answer)
+	if trimmed == "" {
+		return "the response was empty"
+	}
+	if toolCallTextRe.MatchString(trimmed) {
+		return "the response looks like a tool call written as plain text"
+	}
+	return ""
+}
 
 // AgentRunner executes a single agent's reasoning and tool execution loop.
 // It receives the environment configured in the harness.
@@ -151,6 +176,7 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 	inputs := []string{input}
 	var loopErr error
 	iteration := 0
+	invalidFinalRetries := 0
 	loopStart := time.Now()
 
 	// prepare loop
@@ -243,6 +269,22 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 
 		if reasoningResult.ToolCall == nil {
 			finalAnswer := reasoningResult.FinalAnswer
+			if reason := invalidFinalAnswerReason(finalAnswer); reason != "" && invalidFinalRetries < maxInvalidFinalRetries {
+				invalidFinalRetries++
+				slog.Warn("invalid final answer, retrying", "runner", h.id, "iter", iteration, "reason", reason, "answer_len", len(finalAnswer), "retry", invalidFinalRetries)
+				if err := h.fsm.TransitionStates(ctx, LoopTransitionStartToolExecution); err != nil {
+					loopErr = fmt.Errorf("fsm start retry after invalid final answer: %w", err)
+					break
+				}
+				if err := h.fsm.TransitionStates(ctx, LoopTransitionFinishToolExecution); err != nil {
+					loopErr = fmt.Errorf("fsm finish retry after invalid final answer: %w", err)
+					break
+				}
+				inputs = []string{fmt.Sprintf(
+					"Your previous response was rejected: %s. If you intended to call a tool, use the tool-calling mechanism — never write a tool call as text. Otherwise, reply with your final answer as plain prose.",
+					reason)}
+				continue
+			}
 			if err := h.fsm.TransitionStates(ctx, LoopTransitionStop); err != nil {
 				return "", fmt.Errorf("fsm stop: %w", err)
 			}

@@ -108,8 +108,8 @@ internal/harness/tools/tooldef/         Tool implementations
 ├── tool_rlm.go                         RLM tool (Python REPL loop wrapper)
 ├── tool_list_skills.go                 List available skills (interface: SkillLister)
 ├── tool_load_skill.go                  Load skill content (interface: SkillContentLoader)
-├── todo/                               Persistent planning system
-│   ├── todo_file.go                    TodoFile — persistent JSON with IDs, deps, priorities, topo sort
+├── todo/                               In-memory planning system
+│   ├── todo_file.go                    TodoFile — per-instance in-memory store with IDs, deps, priorities, topo sort
 │   ├── tool_todowrite.go              Bulk-write plan with dependency-by-index
 │   ├── tool_todocreate.go             Add single task mid-execution
 │   ├── tool_todoupdate.go             Update task status by ID
@@ -308,7 +308,7 @@ Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn
 | `advisor` | Plan review by stronger model | One-shot call to the advisor model (plan + optional context); returns critique: risks, missing steps, alternatives. Disabled by default — registered only when `WithAdvisorModel` is set; not given to subagents |
 | `list_skills` | List skills | Returns name→description map from skill registry |
 | `load_skill` | Load skill | Lazy-loads full `SKILL.md` content by name |
-| `TodoWrite` | Write plan | Bulk-write tasks with deps-by-index, assigns IDs, persists to `.agent_todo.json` |
+| `TodoWrite` | Write plan | Bulk-write tasks with deps-by-index, assigns IDs, replaces the store's plan |
 | `TodoCreate` | Add task | Append single task mid-execution with deps-by-ID |
 | `TodoUpdate` | Update status | By ID or prefix: `pending`, `in_progress`, `done` |
 | `TodoNext` | Next task | Highest-priority pending with all deps done |
@@ -322,7 +322,7 @@ Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn
 
 **fsutil** — per-path mutex locks (`sync.Map`) for concurrent file access. `writeFileAtomic` uses temp-file + rename for crash safety.
 
-**todo.go** — `ReadTodoReminder(workingDir)` reads `.agent_todo.json`, formats as `<system-reminder>` block. Returns `""` if no file. Called by harness after each tool execution and in `buildSystemReminders()`.
+**Todo reminders** — `TodoFile.FormatReminder()` formats the runner's own plan as a `<system-reminder>` block; returns `""` when the plan is empty. Wired per runner via `runner.WithTodoFile` and injected in `buildSystemReminders()`.
 
 ## Skill System
 
@@ -351,7 +351,7 @@ Skill metadata is passed as data into `AgentConfig` for system prompt injection.
 
 ## Unified Todo System
 
-Persistent planning system in `internal/harness/todo/`. Persists to `.agent_todo.json` in the working directory. Survives context compression and session restarts.
+In-memory planning system in `internal/harness/todo/`. Each `TodoFile` instance (constructed with `todo.NewTodoStore()`) holds its own plan — one per harness or subagent, never shared — so concurrent runners in one process cannot clobber or observe each other's plans. State survives context compression (it lives in-process, outside the message history) but not process restarts.
 
 ```go
 type Task struct {
@@ -360,7 +360,7 @@ type Task struct {
     DependsOn   []string           // task IDs
 }
 
-type TodoFile struct { file string; mu sync.Mutex; emitter events.Emitter }
+type TodoFile struct { mu sync.Mutex; tasks []Task; emitter events.Emitter }
 ```
 
 - `WriteTasks(tasks)` — bulk write, replaces existing plan
@@ -372,7 +372,7 @@ type TodoFile struct { file string; mu sync.Mutex; emitter events.Emitter }
 
 Five tools (`TodoWrite`, `TodoCreate`, `TodoUpdate`, `TodoNext`, `TodoRead`). `TodoWrite` accepts dependency-by-index for bulk planning; `TodoCreate` uses dependency-by-ID for mid-execution additions. Display always topologically sorted.
 
-Plan state is injected from disk after context compression via `TodoProvider func() string` wired through the compressor. The agent cannot lose its plan regardless of summary quality.
+Plan state is re-injected from the in-memory store after context compression via `TodoProvider func() string` wired through the compressor. The agent cannot lose its plan regardless of summary quality.
 
 ## Context Compression
 
@@ -417,7 +417,7 @@ Depth control: factory tracks `currentDepth`. At `maxDepth`, child gets all tool
 
 Tool isolation: each child gets fresh tool instances via `tools.NewRegistry(cwd)`. No tool instance is shared between parent and child. `pathLocks` (package-level `sync.Map`) is the one intentional exception — serializes file writes across all agents in-process.
 
-Children don't get: `TodoFile`, `SkillsRegistry`, or event hooks. Planning is the parent's job.
+Children get their own empty `TodoFile` (`todo.NewTodoStore()`) and an empty `SkillsRegistry` — nothing is shared with the parent. No event hooks.
 
 Wired via `WithSubagentDepth` (default 1, 0 = disabled) and `WithSubagentMaxIterations` (default 100 per child). Children are built with the same `runner.AgentBuilder` as the main agent — the default built-in agent, or whatever `WithAgentBuilder` set.
 

@@ -87,8 +87,8 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		stopHooks = events.StartHooks(o.eventBus, o.hooks)
 	}
 
-	// set up todo file
-	todoFile := todo.NewTodoFile(cwd)
+	// set up todo store
+	todoFile := todo.NewTodoStore()
 	todoFile.SetEmitter(o.eventBus)
 
 	// build skills registry
@@ -201,7 +201,6 @@ func (h *Harness) Shutdown() {
 	if h.stopHooks != nil {
 		h.stopHooks()
 	}
-	h.todoFile.Cleanup()
 }
 
 func (h *Harness) GetCurrentModel() string {

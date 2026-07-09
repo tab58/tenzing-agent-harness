@@ -61,7 +61,6 @@ func (a *minimalAgent) DoReasoning(_ context.Context, _ []string, _ []string) (R
 
 func TestRunnerEmitsTurnAndLoopEvents(t *testing.T) {
 	collector := &eventCollector{}
-	dir := t.TempDir()
 
 	agent := &minimalAgent{steps: []ReasoningResult{
 		{FinalAnswer: "done"},
@@ -72,7 +71,7 @@ func TestRunnerEmitsTurnAndLoopEvents(t *testing.T) {
 		WithEmitter(collector),
 		WithToolRegistry(tools.NewRegistry("")),
 		WithSkillsRegistry(skills.NewRegistry()),
-		WithTodoFile(todo.NewTodoFile(dir)),
+		WithTodoFile(todo.NewTodoStore()),
 		WithSystemPrompt("test"),
 	)
 	if err != nil {
@@ -109,7 +108,6 @@ func TestRunnerEmitsTurnAndLoopEvents(t *testing.T) {
 
 func TestRunnerEmitsToolEvents(t *testing.T) {
 	collector := &eventCollector{}
-	dir := t.TempDir()
 
 	registry := tools.NewRegistry("")
 	registry.Register(&echoTool{})
@@ -124,7 +122,7 @@ func TestRunnerEmitsToolEvents(t *testing.T) {
 		WithEmitter(collector),
 		WithToolRegistry(registry),
 		WithSkillsRegistry(skills.NewRegistry()),
-		WithTodoFile(todo.NewTodoFile(dir)),
+		WithTodoFile(todo.NewTodoStore()),
 		WithSystemPrompt("test"),
 	)
 	if err != nil {

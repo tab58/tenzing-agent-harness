@@ -259,12 +259,34 @@ def _sandbox_linux():
 
 _apply_os_sandbox()
 
+# Pure-computation stdlib only; no filesystem, process, or network access.
+# Gating on the top-level name (name.split(".")[0]) covers dotted imports;
+# the real __import__ handles fromlist/level semantics.
+_ALLOWED_IMPORTS = frozenset({
+    "json", "re", "math", "statistics", "collections", "itertools",
+    "functools", "string", "textwrap", "datetime", "random", "csv",
+    "unicodedata", "difflib", "heapq", "bisect",
+})
+
+_real_import = __builtins__.__dict__["__import__"]
+
+def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+    top = name.split(".")[0]
+    if top not in _ALLOWED_IMPORTS:
+        raise ImportError(
+            f"import of '{name}' is not allowed in this sandbox. "
+            f"Allowed: {', '.join(sorted(_ALLOWED_IMPORTS))}. "
+            "json and re are already available without import."
+        )
+    return _real_import(name, globals, locals, fromlist, level)
+
 _blocked_builtins = frozenset({
     "open", "__import__", "exec", "eval", "compile",
     "breakpoint", "exit", "quit", "input",
 })
 _safe_builtins = {k: v for k, v in __builtins__.__dict__.items()
                   if k not in _blocked_builtins}
+_safe_builtins["__import__"] = _safe_import
 
 _namespace["__builtins__"] = _safe_builtins
 _namespace["print"] = _print

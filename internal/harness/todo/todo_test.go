@@ -1,6 +1,7 @@
 package todo
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -9,8 +10,7 @@ import (
 )
 
 func TestWriteAndReadTasks(t *testing.T) {
-	dir := t.TempDir()
-	tf := NewTodoFile(dir)
+	tf := NewTodoStore()
 
 	tasks := []Task{
 		{ID: "aaa", Description: "first", Status: "pending", Priority: PriorityHigh, DependsOn: []string{}},
@@ -33,8 +33,7 @@ func TestWriteAndReadTasks(t *testing.T) {
 }
 
 func TestCreateTaskAppends(t *testing.T) {
-	dir := t.TempDir()
-	tf := NewTodoFile(dir)
+	tf := NewTodoStore()
 
 	t1, err := tf.CreateTask("first task", nil, PriorityHigh)
 	if err != nil {
@@ -63,8 +62,7 @@ func TestCreateTaskAppends(t *testing.T) {
 }
 
 func TestCreateTaskValidatesDependency(t *testing.T) {
-	dir := t.TempDir()
-	tf := NewTodoFile(dir)
+	tf := NewTodoStore()
 
 	_, err := tf.CreateTask("orphan", []string{"nonexistent"}, PriorityMedium)
 	if err == nil {
@@ -73,8 +71,7 @@ func TestCreateTaskValidatesDependency(t *testing.T) {
 }
 
 func TestUpdateTask(t *testing.T) {
-	dir := t.TempDir()
-	tf := NewTodoFile(dir)
+	tf := NewTodoStore()
 
 	task, _ := tf.CreateTask("do thing", nil, PriorityMedium)
 
@@ -92,8 +89,7 @@ func TestUpdateTask(t *testing.T) {
 }
 
 func TestUpdateTaskByPrefix(t *testing.T) {
-	dir := t.TempDir()
-	tf := NewTodoFile(dir)
+	tf := NewTodoStore()
 
 	task, _ := tf.CreateTask("do thing", nil, PriorityMedium)
 	prefix := task.ID[:4]
@@ -109,8 +105,7 @@ func TestUpdateTaskByPrefix(t *testing.T) {
 }
 
 func TestNextTaskRespectsDepOrder(t *testing.T) {
-	dir := t.TempDir()
-	tf := NewTodoFile(dir)
+	tf := NewTodoStore()
 
 	t1, _ := tf.CreateTask("first", nil, PriorityMedium)
 	tf.CreateTask("second", []string{t1.ID}, PriorityHigh)
@@ -128,8 +123,7 @@ func TestNextTaskRespectsDepOrder(t *testing.T) {
 }
 
 func TestNextTaskReturnsPriorityOrder(t *testing.T) {
-	dir := t.TempDir()
-	tf := NewTodoFile(dir)
+	tf := NewTodoStore()
 
 	tf.CreateTask("low task", nil, PriorityLow)
 	high, _ := tf.CreateTask("high task", nil, PriorityHigh)
@@ -144,8 +138,7 @@ func TestNextTaskReturnsPriorityOrder(t *testing.T) {
 }
 
 func TestNextTaskSkipsDone(t *testing.T) {
-	dir := t.TempDir()
-	tf := NewTodoFile(dir)
+	tf := NewTodoStore()
 
 	t1, _ := tf.CreateTask("done task", nil, PriorityHigh)
 	t2, _ := tf.CreateTask("pending task", nil, PriorityMedium)
@@ -161,8 +154,7 @@ func TestNextTaskSkipsDone(t *testing.T) {
 }
 
 func TestNextTaskNoneAvailable(t *testing.T) {
-	dir := t.TempDir()
-	tf := NewTodoFile(dir)
+	tf := NewTodoStore()
 
 	_, ok, err := tf.NextTask()
 	if err != nil {
@@ -174,8 +166,7 @@ func TestNextTaskNoneAvailable(t *testing.T) {
 }
 
 func TestFormatReminderTopologicalOrder(t *testing.T) {
-	dir := t.TempDir()
-	tf := NewTodoFile(dir)
+	tf := NewTodoStore()
 
 	t1, _ := tf.CreateTask("foundation", nil, PriorityMedium)
 	tf.CreateTask("depends on foundation", []string{t1.ID}, PriorityHigh)
@@ -204,8 +195,7 @@ func TestFormatReminderTopologicalOrder(t *testing.T) {
 }
 
 func TestEmptyReadReturnsEmpty(t *testing.T) {
-	dir := t.TempDir()
-	tf := NewTodoFile(dir)
+	tf := NewTodoStore()
 
 	tasks, err := tf.ReadTasks()
 	if err != nil {
@@ -217,8 +207,7 @@ func TestEmptyReadReturnsEmpty(t *testing.T) {
 }
 
 func TestFormatReminderEmptyReturnsEmpty(t *testing.T) {
-	dir := t.TempDir()
-	tf := NewTodoFile(dir)
+	tf := NewTodoStore()
 
 	if r := tf.FormatReminder(); r != "" {
 		t.Errorf("expected empty reminder, got %q", r)
@@ -250,8 +239,7 @@ func (c *eventCollector) byType(et events.EventType) []events.Event {
 
 func TestEmitsTaskCreatedEvent(t *testing.T) {
 	collector := &eventCollector{}
-	dir := t.TempDir()
-	tf := NewTodoFile(dir)
+	tf := NewTodoStore()
 	tf.SetEmitter(collector)
 
 	tf.CreateTask("new task", nil, PriorityMedium)
@@ -264,8 +252,7 @@ func TestEmitsTaskCreatedEvent(t *testing.T) {
 
 func TestEmitsTaskCompletedEvent(t *testing.T) {
 	collector := &eventCollector{}
-	dir := t.TempDir()
-	tf := NewTodoFile(dir)
+	tf := NewTodoStore()
 	tf.SetEmitter(collector)
 
 	task, _ := tf.CreateTask("task", nil, PriorityMedium)
@@ -275,6 +262,107 @@ func TestEmitsTaskCompletedEvent(t *testing.T) {
 	if len(completed) != 1 {
 		t.Fatalf("expected 1 TaskCompleted, got %d", len(completed))
 	}
+}
+
+// Spec test 1: two stores are fully isolated.
+func TestStoreIsolation(t *testing.T) {
+	a := NewTodoStore()
+	b := NewTodoStore()
+
+	taskA, err := a.CreateTask("plan A work", nil, PriorityHigh)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bTasks, err := b.ReadTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bTasks) != 0 {
+		t.Fatalf("store B sees %d tasks, want 0", len(bTasks))
+	}
+	if r := b.FormatReminder(); r != "" {
+		t.Errorf("store B reminder = %q, want empty", r)
+	}
+
+	err = b.UpdateTask(taskA.ID, "done", "")
+	if err == nil {
+		t.Fatal("expected not-found error updating A's task via store B")
+	}
+	// Spec §3.1 defense-in-depth: error must guide the LLM to recover.
+	for _, want := range []string{"not found in current plan", "TodoRead", "TodoWrite"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to contain %q", err.Error(), want)
+		}
+	}
+}
+
+// Spec test 4: regression for the production log failure — store A's update
+// on its own task succeeds even after store B writes a different plan
+// (previously failed because B's TodoWrite clobbered the shared file).
+func TestUpdateSucceedsAfterOtherStoreWrite(t *testing.T) {
+	a := NewTodoStore()
+	b := NewTodoStore()
+
+	taskA, err := a.CreateTask("plan P1 task", nil, PriorityMedium)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p2 := []Task{{ID: "p2task01", Description: "plan P2 task", Status: "pending", Priority: PriorityMedium, DependsOn: []string{}}}
+	if err := b.WriteTasks(p2); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.UpdateTask(taskA.ID, "done", "finished"); err != nil {
+		t.Fatalf("A's update failed after B's write: %v", err)
+	}
+
+	aTasks, _ := a.ReadTasks()
+	if len(aTasks) != 1 || aTasks[0].Status != "done" {
+		t.Errorf("store A tasks = %+v, want single done task", aTasks)
+	}
+}
+
+// Spec test 2: N goroutines with their own stores; run with -race.
+func TestConcurrentStoresStayIsolated(t *testing.T) {
+	const runners = 8
+	const tasksPerRunner = 50
+
+	var wg sync.WaitGroup
+	for i := 0; i < runners; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			s := NewTodoStore()
+			for j := 0; j < tasksPerRunner; j++ {
+				task, err := s.CreateTask(fmt.Sprintf("runner-%d-task-%d", i, j), nil, PriorityMedium)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if err := s.UpdateTask(task.ID, "done", ""); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+			tasks, err := s.ReadTasks()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if len(tasks) != tasksPerRunner {
+				t.Errorf("runner %d: got %d tasks, want %d", i, len(tasks), tasksPerRunner)
+			}
+			prefix := fmt.Sprintf("runner-%d-", i)
+			for _, task := range tasks {
+				if !strings.HasPrefix(task.Description, prefix) {
+					t.Errorf("runner %d sees foreign task %q", i, task.Description)
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
 }
 
 // helpers

@@ -84,7 +84,7 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 		return "", fmt.Errorf("create child agent: %w", err)
 	}
 
-	todoFile := todo.NewTodoFile(f.cwd)
+	todoFile := todo.NewTodoStore()
 	skillsReg := skills.NewRegistry()
 
 	childRunner, err := runner.NewAgentRunner(

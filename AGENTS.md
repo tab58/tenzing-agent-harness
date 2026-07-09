@@ -84,7 +84,7 @@ Models are `common.Model` values (`common.ModelDefinition{Name, MaxTokens, Conte
 
 ## Constructing a Harness
 
-`harness.New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, error)` is the harness constructor. The brain defaults to the built-in agent implementation (`internal/agent`); override with `WithAgentBuilder`.
+`harness.New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, error)` is the harness constructor. External consumers use the public facade `pkg/tenzing` — pure type/func aliases over `internal/harness` (plus the `runner`, `tooldef`, and `events` types its options reference) exposing `tenzing.New` + `Harness.RunTurn` for a single programmatic loop. `pkg/tenzing/models.go` re-exports `common.Model`/`ModelDefinition`/`Provider` and the standard llm-providers models (provider-prefixed, asserted to `ModelDefinition`). `pkg/tenzing/llm.go` re-exports the LLM client layer so consumers never import llm-providers directly: `LLM` (= `common.LLM`) and every type its methods touch (`CompletionRequest`/`CompletionResponse`, `ContentBlock`, `Message`, role/content-type/streaming/stop-reason types with their consts, `Usage`/`TokenCount`/`ModelInfo`), message/content constructors, `CombinedText`, the sentinel errors, and the client constructors `LLMFromModel` (explicit API key) / `LLMFromEnv` with `ClientOption`/`WithBaseURL`. Naming: `common.ToolDefinition` is aliased as `LLMToolDefinition` because `tenzing.ToolDefinition` is the harness-side `tooldef.Definition`. New harness options, Hooks event types, llm-providers standard models, or additions to the `common.LLM` surface must be re-exported there in the same change. The brain defaults to the built-in agent implementation (`internal/agent`); override with `WithAgentBuilder`.
 
 `HarnessConfig` no longer exists. Behavior is configured via flat `HarnessOption` functions (`internal/harness/harness_options.go`):
 
@@ -127,6 +127,7 @@ The FSM is per-runner instance — subagents and concurrent loops don't share st
 | Context management       | `internal/agent/context/` (compression, task graph)   |
 | Context overflow router  | `internal/agent/context/compressor/router.go`         |
 | App (HTTP/SSE server)    | `cmd/app/`                                            |
+| Public API facade        | `pkg/tenzing/` (aliases over `internal/harness`)      |
 | Test files               | Same directory as source, `*_test.go`                 |
 | Shared test helpers      | `**/testutil_test.go`                                 |
 | Sub-agent system         | `internal/harness/subagent/`                          |

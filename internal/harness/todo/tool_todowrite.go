@@ -25,7 +25,7 @@ func (t *TodoWriteTool) Description() string {
 	return "Write a plan of tasks before executing. ALWAYS call this tool first before starting any multi-step work. " +
 		"Input: tasks array. Each task has a 'task' string (required), optional 'depends_on' array of indices (0-based, " +
 		"referencing other tasks in this list), and optional 'priority' (high/medium/low, default medium). " +
-		"Your plan persists to disk and survives context compression and session restarts."
+		"Your plan persists for the lifetime of this session and survives context compression."
 }
 
 func (t *TodoWriteTool) Schema() tooldef.Schema {

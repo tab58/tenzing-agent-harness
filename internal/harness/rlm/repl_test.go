@@ -505,3 +505,49 @@ func TestREPLClose(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 }
+
+func TestREPLSafeImportAllowlist(t *testing.T) {
+	skipIfNoPython(t)
+	r, err := NewREPL(nil, t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("NewREPL: %v", err)
+	}
+	defer r.Close()
+
+	tests := []struct {
+		name    string
+		code    string
+		want    string // substring expected in stdout
+		blocked bool
+	}{
+		{"preloaded_json", `import json; print(json.dumps([1]))`, "[1]", false},
+		{"preloaded_re", `import re; print(re.findall(r'\d+', 'a1'))`, "['1']", false},
+		{"allowlisted_math", `import math; print(math.pi)`, "3.14", false},
+		{"from_import", `from collections import Counter; print(Counter('aa')['a'])`, "2", false},
+		{"dotted", `import json.decoder; print(json.decoder.__name__)`, "json.decoder", false},
+		{"blocked_os", `import os`, "not allowed in this sandbox", true},
+		{"blocked_subprocess", `import subprocess`, "not allowed in this sandbox", true},
+		{"blocked_from_os", `from os import path`, "not allowed in this sandbox", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stdout, done, _, err := r.Execute(context.Background(), tt.code)
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if done {
+				t.Fatal("unexpected done")
+			}
+			if tt.blocked && !strings.Contains(stdout, "[Python Error]") {
+				t.Fatalf("expected python error, got stdout = %q", stdout)
+			}
+			if !tt.blocked && strings.Contains(stdout, "[Python Error]") {
+				t.Fatalf("unexpected python error: %q", stdout)
+			}
+			if !strings.Contains(stdout, tt.want) {
+				t.Fatalf("stdout = %q, want substring %q", stdout, tt.want)
+			}
+		})
+	}
+}

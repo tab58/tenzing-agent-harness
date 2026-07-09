@@ -3,10 +3,7 @@ package todo
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -14,8 +11,6 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 )
-
-const TodoFileName = ".agent_todo.json"
 
 type TaskPriority string
 
@@ -34,16 +29,17 @@ type Task struct {
 	Result      string       `json:"result,omitempty"`
 }
 
+// TodoFile is an in-memory, per-instance todo store. Each harness or
+// subagent constructs its own via NewTodoStore, so concurrent runners in
+// one process never share (or clobber) each other's plans.
 type TodoFile struct {
-	file    string
 	mu      sync.Mutex
+	tasks   []Task
 	emitter events.Emitter
 }
 
-func NewTodoFile(cwd string) *TodoFile {
-	return &TodoFile{
-		file: filepath.Join(cwd, TodoFileName),
-	}
+func NewTodoStore() *TodoFile {
+	return &TodoFile{}
 }
 
 func (f *TodoFile) SetEmitter(e events.Emitter) {
@@ -63,23 +59,21 @@ func (f *TodoFile) GetTools() []tooldef.Definition {
 func (f *TodoFile) ReadTasks() ([]Task, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.load()
+	return f.load(), nil
 }
 
 func (f *TodoFile) WriteTasks(tasks []Task) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.save(tasks)
+	f.save(tasks)
+	return nil
 }
 
 func (f *TodoFile) CreateTask(desc string, dependsOn []string, priority TaskPriority) (Task, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	tasks, err := f.load()
-	if err != nil {
-		return Task{}, err
-	}
+	tasks := f.load()
 
 	if priority == "" {
 		priority = PriorityMedium
@@ -103,9 +97,7 @@ func (f *TodoFile) CreateTask(desc string, dependsOn []string, priority TaskPrio
 	}
 
 	tasks = append(tasks, task)
-	if err := f.save(tasks); err != nil {
-		return Task{}, err
-	}
+	f.save(tasks)
 
 	if f.emitter != nil {
 		f.emitter.Emit(events.TaskCreatedEvent{
@@ -122,10 +114,7 @@ func (f *TodoFile) UpdateTask(taskID string, status string, result string) error
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	tasks, err := f.load()
-	if err != nil {
-		return err
-	}
+	tasks := f.load()
 
 	found := false
 	updated := make([]Task, len(tasks))
@@ -146,12 +135,10 @@ func (f *TodoFile) UpdateTask(taskID string, status string, result string) error
 	}
 
 	if !found {
-		return fmt.Errorf("task %q not found", taskID)
+		return fmt.Errorf("task %q not found in current plan; call TodoRead to see valid task IDs or TodoWrite to create a plan", taskID)
 	}
 
-	if err := f.save(updated); err != nil {
-		return err
-	}
+	f.save(updated)
 
 	if f.emitter != nil && status == "done" {
 		f.emitter.Emit(events.TaskCompletedEvent{
@@ -167,10 +154,7 @@ func (f *TodoFile) NextTask() (Task, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	tasks, err := f.load()
-	if err != nil {
-		return Task{}, false, err
-	}
+	tasks := f.load()
 
 	doneIDs := make(map[string]struct{})
 	for _, t := range tasks {
@@ -206,8 +190,8 @@ func (f *TodoFile) FormatReminder() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	tasks, err := f.load()
-	if err != nil || len(tasks) == 0 {
+	tasks := f.load()
+	if len(tasks) == 0 {
 		return ""
 	}
 
@@ -226,53 +210,26 @@ func (f *TodoFile) FormatReminder() string {
 	return b.String()
 }
 
-func (f *TodoFile) Cleanup() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	tasks, err := f.load()
-	if err != nil {
-		return
-	}
-
-	var remaining []Task
-	for _, t := range tasks {
-		if t.Status != "done" {
-			remaining = append(remaining, t)
-		}
-	}
-
-	if len(remaining) == 0 {
-		os.Remove(f.file)
-		return
-	}
-
-	f.save(remaining)
-}
-
 // --- internal helpers ---
 
-func (f *TodoFile) load() ([]Task, error) {
-	data, err := os.ReadFile(f.file)
-	if os.IsNotExist(err) {
-		return []Task{}, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read tasks: %w", err)
-	}
-	var tasks []Task
-	if err := json.Unmarshal(data, &tasks); err != nil {
-		return nil, fmt.Errorf("parse tasks: %w", err)
-	}
-	return tasks, nil
+// load returns a deep copy of the task list; callers may mutate it (including
+// DependsOn) without affecting the store. Callers must hold f.mu.
+func (f *TodoFile) load() []Task {
+	return copyTasks(f.tasks)
 }
 
-func (f *TodoFile) save(tasks []Task) error {
-	data, err := json.MarshalIndent(tasks, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal tasks: %w", err)
+// save replaces the task list with a deep copy of tasks. Callers must hold f.mu.
+func (f *TodoFile) save(tasks []Task) {
+	f.tasks = copyTasks(tasks)
+}
+
+func copyTasks(tasks []Task) []Task {
+	out := make([]Task, len(tasks))
+	for i, t := range tasks {
+		out[i] = t
+		out[i].DependsOn = append([]string(nil), t.DependsOn...)
 	}
-	return os.WriteFile(f.file, data, 0644)
+	return out
 }
 
 func taskExists(tasks []Task, id string) bool {

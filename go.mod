@@ -2,15 +2,11 @@ module github.com/tab58/tenzing-agent-harness
 
 go 1.25.9
 
-replace github.com/tab58/llm-providers v0.1.0 => ../llm-providers
-
-replace github.com/tab58/huma-http-server v0.2.0 => ../huma-http-server
-
 require (
 	github.com/danielgtaylor/huma/v2 v2.38.0
 	github.com/looplab/fsm v1.0.3
-	github.com/tab58/huma-http-server v0.2.0
-	github.com/tab58/llm-providers v0.1.0
+	github.com/tab58/huma-http-server v0.3.0
+	github.com/tab58/llm-providers v0.3.0
 	go.yaml.in/yaml/v3 v3.0.4
 )
 
