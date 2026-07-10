@@ -72,6 +72,28 @@ func TestRunLoop_RetriesInvalidFinalAnswer(t *testing.T) {
 	}
 }
 
+func TestRunLoop_RetriesTruncatedFinalAnswer(t *testing.T) {
+	// A response cut off at the output token limit (stop_reason=max_tokens)
+	// must not be returned as the final answer — the loop bounces it back.
+	agent := &minimalAgent{steps: []ReasoningResult{
+		{FinalAnswer: "I can see there are two values. There could", Meta: ResponseMeta{StopReason: "max_tokens"}},
+		{FinalAnswer: `{"metricName": "Total Assets", "value": {"2020": "$1,051,999"}}`, Meta: ResponseMeta{StopReason: "end_turn"}},
+	}}
+
+	r := newGuardTestRunner(t, agent)
+
+	answer, err := r.RunLoop(context.Background(), "total assets 2020")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer != `{"metricName": "Total Assets", "value": {"2020": "$1,051,999"}}` {
+		t.Errorf("answer = %q, want the second (complete) response", answer)
+	}
+	if agent.idx != 2 {
+		t.Errorf("DoReasoning called %d times, want 2", agent.idx)
+	}
+}
+
 func TestRunLoop_GivesUpAfterMaxRetries(t *testing.T) {
 	// All responses invalid: after maxInvalidFinalRetries bounces, the loop
 	// must return the last answer rather than spin forever.

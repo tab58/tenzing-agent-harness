@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tab58/llm-providers/common"
+
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/prompts"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
@@ -20,8 +22,9 @@ import (
 const logOutputMaxLen = 2000
 
 // maxInvalidFinalRetries bounds how many times an invalid final answer (empty,
-// or a tool call written as plain text) is bounced back to the model before
-// the loop gives up and returns it as-is.
+// a tool call written as plain text, or a response truncated at the output
+// token limit) is bounced back to the model before the loop gives up and
+// returns it as-is.
 const maxInvalidFinalRetries = 2
 
 // toolCallTextRe matches text that is a malformed tool-call attempt emitted as
@@ -269,7 +272,12 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 
 		if reasoningResult.ToolCall == nil {
 			finalAnswer := reasoningResult.FinalAnswer
-			if reason := invalidFinalAnswerReason(finalAnswer); reason != "" && invalidFinalRetries < maxInvalidFinalRetries {
+			reason := invalidFinalAnswerReason(finalAnswer)
+			truncated := reason == "" && reasoningResult.Meta.StopReason == string(common.StopReasonMaxTokens)
+			if truncated {
+				reason = "the response was cut off by the output token limit before it finished"
+			}
+			if reason != "" && invalidFinalRetries < maxInvalidFinalRetries {
 				invalidFinalRetries++
 				slog.Warn("invalid final answer, retrying", "runner", h.id, "iter", iteration, "reason", reason, "answer_len", len(finalAnswer), "retry", invalidFinalRetries)
 				if err := h.fsm.TransitionStates(ctx, LoopTransitionStartToolExecution); err != nil {
@@ -280,9 +288,13 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 					loopErr = fmt.Errorf("fsm finish retry after invalid final answer: %w", err)
 					break
 				}
-				inputs = []string{fmt.Sprintf(
+				retryMsg := fmt.Sprintf(
 					"Your previous response was rejected: %s. If you intended to call a tool, use the tool-calling mechanism — never write a tool call as text. Otherwise, reply with your final answer as plain prose.",
-					reason)}
+					reason)
+				if truncated {
+					retryMsg = "Your previous response was cut off by the output token limit before it finished. Write the complete final answer again from the start, more concisely, so it fits within the limit."
+				}
+				inputs = []string{retryMsg}
 				continue
 			}
 			if err := h.fsm.TransitionStates(ctx, LoopTransitionStop); err != nil {
