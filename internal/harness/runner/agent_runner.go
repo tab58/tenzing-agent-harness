@@ -61,6 +61,7 @@ type AgentRunner struct {
 }
 
 type agentRunnerOptions struct {
+	id              string
 	toolRegistry    *tools.Registry
 	skillsRegistry  *skills.Registry
 	todoFile        *todo.TodoFile
@@ -75,6 +76,17 @@ type AgentRunnerOption func(*agentRunnerOptions)
 func WithEmitter(emitter events.Emitter) AgentRunnerOption {
 	return func(o *agentRunnerOptions) {
 		o.emitter = emitter
+	}
+}
+
+// WithID assigns a pre-generated runner ID (see NewID) instead of a random
+// one. Used when the ID must be known before the runner exists — e.g.
+// hierarchical sub-agent IDs that double as blackboard slot names.
+func WithID(id string) AgentRunnerOption {
+	return func(o *agentRunnerOptions) {
+		if id != "" {
+			o.id = id
+		}
 	}
 }
 
@@ -144,9 +156,13 @@ func NewAgentRunner(agent Agent, opts ...AgentRunnerOption) (*AgentRunner, error
 		return nil, fmt.Errorf("no todo file defined")
 	}
 
+	if o.id == "" {
+		o.id = NewID()
+	}
+
 	return &AgentRunner{
 		agent:           agent,
-		id:              runnerID(),
+		id:              o.id,
 		fsm:             createNewLoopFSM(),
 		toolRegistry:    o.toolRegistry,
 		skillsRegistry:  o.skillsRegistry,
@@ -164,7 +180,9 @@ func (h *AgentRunner) emit(e events.Event) {
 	}
 }
 
-func runnerID() string {
+// NewID returns a fresh 8-hex-char runner ID (e.g. "438314ea"). Exported so
+// callers can pre-generate an ID and pass it via WithID.
+func NewID() string {
 	b := make([]byte, 4)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
@@ -240,7 +258,7 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 			InputTokens:  reasoningResult.Meta.InputTokens,
 			OutputTokens: reasoningResult.Meta.OutputTokens,
 			StopReason:   reasoningResult.Meta.StopReason,
-			HasToolCall:  reasoningResult.ToolCall != nil,
+			HasToolCall:  len(reasoningResult.ToolCalls) > 0,
 		})
 		h.emit(events.LLMResponseEvent{
 			BaseEvent:    events.NewBaseEvent(events.EventLLMResponse, h.id),
@@ -260,8 +278,10 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 			})
 		}
 
-		if reasoningResult.ToolCall != nil {
-			slog.Debug("reasoning result", "runner", h.id, "iter", iteration, "tool", reasoningResult.ToolCall.Name, "tool_use_id", reasoningResult.ToolCall.ID, "input", reasoningResult.ToolCall.Input)
+		if len(reasoningResult.ToolCalls) > 0 {
+			for _, tc := range reasoningResult.ToolCalls {
+				slog.Debug("reasoning result", "runner", h.id, "iter", iteration, "tool", tc.Name, "tool_use_id", tc.ID, "input", tc.Input)
+			}
 		} else {
 			slog.Debug("reasoning result", "runner", h.id, "iter", iteration, "final_answer_len", len(reasoningResult.FinalAnswer))
 		}
@@ -270,7 +290,7 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 			break
 		}
 
-		if reasoningResult.ToolCall == nil {
+		if len(reasoningResult.ToolCalls) == 0 {
 			finalAnswer := reasoningResult.FinalAnswer
 			reason := invalidFinalAnswerReason(finalAnswer)
 			truncated := reason == "" && reasoningResult.Meta.StopReason == string(common.StopReasonMaxTokens)
@@ -325,56 +345,67 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 			loopErr = fmt.Errorf("fsm start tool execution: %w", err)
 			break
 		}
-		toolCall := reasoningResult.ToolCall
-		h.emit(events.ToolExecutionStartedEvent{
-			BaseEvent: events.NewBaseEvent(events.EventToolExecutionStarted, h.id),
-			ToolName:  toolCall.Name,
-			Input:     toolCall.Input,
-		})
-		toolStart := time.Now()
-		toolResult, err := h.toolRegistry.Execute(ctx, toolCall.Name, toolCall.Input)
-		toolDuration := time.Since(toolStart)
-		if err != nil {
-			loopErr = fmt.Errorf("tool execution error: %w", err)
+		// Execute every tool call from the response, in order. Results are
+		// fed back in the same order so each pairs with its tool_use id —
+		// skipping any would poison the history with "not executed" results.
+		// ponytail: sequential execution; parallelize per-call when tools are
+		// proven safe to run concurrently.
+		outputs := make([]string, 0, len(reasoningResult.ToolCalls))
+		for _, toolCall := range reasoningResult.ToolCalls {
+			h.emit(events.ToolExecutionStartedEvent{
+				BaseEvent: events.NewBaseEvent(events.EventToolExecutionStarted, h.id),
+				ToolName:  toolCall.Name,
+				Input:     toolCall.Input,
+			})
+			toolStart := time.Now()
+			toolResult, err := h.toolRegistry.Execute(ctx, toolCall.Name, toolCall.Input)
+			toolDuration := time.Since(toolStart)
+			if err != nil {
+				loopErr = fmt.Errorf("tool execution error: %w", err)
+				break
+			}
+			if toolResult.IsError {
+				slog.Warn("tool error", "runner", h.id, "iter", iteration, "tool", toolCall.Name, "output", truncateLog(toolResult.Output, logOutputMaxLen))
+			}
+			slog.Debug("tool result", "runner", h.id, "iter", iteration, "tool", toolCall.Name, "is_error", toolResult.IsError, "duration", toolDuration.Round(time.Millisecond), "output_len", len(toolResult.Output), "output", truncateLog(toolResult.Output, logOutputMaxLen))
+			slog.Log(ctx, LevelTrace, "tool result full", "runner", h.id, "iter", iteration, "tool", toolCall.Name, "output", toolResult.Output)
+
+			h.emit(events.ToolExecutionFinishedEvent{
+				BaseEvent: events.NewBaseEvent(events.EventToolExecutionFinished, h.id),
+				ToolName:  toolCall.Name,
+				Duration:  toolDuration.Round(time.Millisecond),
+			})
+			if toolResult.IsError {
+				h.emit(events.ToolFailedEvent{
+					BaseEvent: events.NewBaseEvent(events.EventToolFailed, h.id),
+					ToolName:  toolCall.Name,
+					Input:     toolCall.Input,
+					Error:     toolResult.Output,
+					Duration:  toolDuration.Round(time.Millisecond),
+				})
+			} else {
+				h.emit(events.ToolSucceededEvent{
+					BaseEvent: events.NewBaseEvent(events.EventToolSucceeded, h.id),
+					ToolName:  toolCall.Name,
+					Input:     toolCall.Input,
+					Output:    toolResult.Output,
+					Duration:  toolDuration.Round(time.Millisecond),
+				})
+			}
+			outputs = append(outputs, toolResult.Output)
+		}
+		if loopErr != nil {
 			break
 		}
 		if err := h.fsm.TransitionStates(ctx, LoopTransitionFinishToolExecution); err != nil {
 			loopErr = fmt.Errorf("fsm finish tool execution: %w", err)
 			break
 		}
-		if toolResult.IsError {
-			slog.Warn("tool error", "runner", h.id, "iter", iteration, "tool", toolCall.Name, "output", truncateLog(toolResult.Output, logOutputMaxLen))
-		}
-		slog.Debug("tool result", "runner", h.id, "iter", iteration, "tool", toolCall.Name, "is_error", toolResult.IsError, "duration", toolDuration.Round(time.Millisecond), "output_len", len(toolResult.Output), "output", truncateLog(toolResult.Output, logOutputMaxLen))
-		slog.Log(ctx, LevelTrace, "tool result full", "runner", h.id, "iter", iteration, "tool", toolCall.Name, "output", toolResult.Output)
 
-		h.emit(events.ToolExecutionFinishedEvent{
-			BaseEvent: events.NewBaseEvent(events.EventToolExecutionFinished, h.id),
-			ToolName:  toolCall.Name,
-			Duration:  toolDuration.Round(time.Millisecond),
-		})
-		if toolResult.IsError {
-			h.emit(events.ToolFailedEvent{
-				BaseEvent: events.NewBaseEvent(events.EventToolFailed, h.id),
-				ToolName:  toolCall.Name,
-				Input:     toolCall.Input,
-				Error:     toolResult.Output,
-				Duration:  toolDuration.Round(time.Millisecond),
-			})
-		} else {
-			h.emit(events.ToolSucceededEvent{
-				BaseEvent: events.NewBaseEvent(events.EventToolSucceeded, h.id),
-				ToolName:  toolCall.Name,
-				Input:     toolCall.Input,
-				Output:    toolResult.Output,
-				Duration:  toolDuration.Round(time.Millisecond),
-			})
-		}
-
-		// Loop: feed only the new tool result to the next reasoning cycle.
+		// Loop: feed only the new tool results to the next reasoning cycle.
 		// The agent keeps its own history; re-sending earlier inputs would
 		// duplicate them in the context every iteration.
-		inputs = []string{toolResult.Output}
+		inputs = outputs
 	}
 
 	if err := h.fsm.TransitionStates(ctx, LoopTransitionReset); err != nil {

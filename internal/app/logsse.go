@@ -16,10 +16,22 @@ import (
 type LogBroadcaster struct {
 	mu   sync.RWMutex
 	subs map[chan string]struct{}
+	done chan struct{} // closed by Close; unblocks SSE handlers
 }
 
 func NewLogBroadcaster() *LogBroadcaster {
-	return &LogBroadcaster{subs: make(map[chan string]struct{})}
+	return &LogBroadcaster{
+		subs: make(map[chan string]struct{}),
+		done: make(chan struct{}),
+	}
+}
+
+// Close ends all open SSE streams so http.Server.Shutdown can drain —
+// graceful shutdown waits for handlers but never cancels their request
+// contexts. Writes after Close are still safe (they just fan out to no
+// one). Idempotent is not needed: called once from container shutdown.
+func (b *LogBroadcaster) Close() {
+	close(b.done)
 }
 
 // Write implements io.Writer. Always returns len(p), nil so an
@@ -75,6 +87,8 @@ func (b *LogBroadcaster) SSEHandler() http.Handler {
 		for {
 			select {
 			case <-ctx.Done():
+				return
+			case <-b.done:
 				return
 			case msg := <-ch:
 				data := strings.ReplaceAll(msg, "\n", "\ndata: ")

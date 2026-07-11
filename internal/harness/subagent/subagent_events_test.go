@@ -2,6 +2,7 @@ package subagent
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -39,13 +40,13 @@ func TestSubAgentFactoryEmitsLifecycleEvents(t *testing.T) {
 
 	factory := NewSubAgentFactory(SubAgentFactoryConfig{
 		AgentLLM: &stubLLM{},
-		RLMModel: &stubLLM{},
 		AgentBuilder: func(_ common.LLM, _ string) (runner.Agent, error) {
 			return &stubAgent{}, nil
 		},
 		MaxDepth: 1,
 		Cwd:      dir,
 		Emitter:  collector,
+		ParentID: "deadbeef",
 	})
 
 	result, err := factory.SpawnAgent(context.Background(), "do something", "")
@@ -60,8 +61,25 @@ func TestSubAgentFactoryEmitsLifecycleEvents(t *testing.T) {
 	if len(started) != 1 {
 		t.Fatalf("expected 1 SubagentStarted, got %d", len(started))
 	}
+	ev := started[0].(events.SubagentStartedEvent)
+	if !strings.HasPrefix(ev.AgentID, "deadbeef_") {
+		t.Errorf("agent ID %q not derived from parent ID", ev.AgentID)
+	}
+	if ev.RunnerID != ev.AgentID {
+		t.Errorf("runner ID %q != agent ID %q; they must be unified", ev.RunnerID, ev.AgentID)
+	}
 	stopped := collector.byType(events.EventSubagentStopped)
 	if len(stopped) != 1 {
 		t.Fatalf("expected 1 SubagentStopped, got %d", len(stopped))
+	}
+
+	// The child runner shares the factory's emitter, so its own loop events
+	// must land on the same collector (this is what surfaces sub-agent
+	// activity in the UI).
+	if got := collector.byType(events.EventLoopStarted); len(got) != 1 {
+		t.Fatalf("expected 1 child LoopStarted, got %d", len(got))
+	}
+	if got := collector.byType(events.EventLoopStopped); len(got) != 1 {
+		t.Fatalf("expected 1 child LoopStopped, got %d", len(got))
 	}
 }

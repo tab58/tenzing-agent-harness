@@ -76,15 +76,13 @@ internal/
     │   └── registry.go                 Discover frontmatter at startup, Load on demand
     ├── tools/                          Tool dispatch system
     │   └── registry.go                 Name→Definition map, Execute(), GetDefaultToolDefs()
-    ├── rlm/                            Recursive Language Model engine
+    ├── blackboard/                     Shared Python REPL package (Blackboard, REPL, Querier)
+    │   ├── blackboard.go               Blackboard: lazy-start REPL, Execute/Deposit
     │   ├── bootstrap.py                Embedded Python REPL (//go:embed)
-    │   ├── fetcher.go                  Fetcher interface + simpleFetcher (plain history, no compression)
+    │   ├── preview.go                  Preview (fixed-truncation summaries)
     │   ├── querier.go                  Querier interface + llmQuerier (stateless one-shot LLM calls)
     │   ├── repl.go                     Python subprocess + JSON-line IPC
-    │   ├── engine.go                   RLM loop: Fetcher→code→REPL→feedback→repeat
-    │   ├── truncate.go                 First/last-half truncation
-    │   └── prompts/
-    │       └── system.md.tmpl          RLM system prompt template
+    │   └── tool_repl.go                repl tool (REPLTool)
     └── subagent/                       Sub-agent delegation
         └── tool_spawn_agent.go         spawn_agent tool + AgentFactory interface
 
@@ -105,7 +103,6 @@ internal/harness/tools/tooldef/         Tool implementations
 ├── tool_grep.go                        Regex search across files (cap 500)
 ├── tool_glob.go                        File pattern matching
 ├── tool_revert.go                      Restore file from snapshot
-├── tool_rlm.go                         RLM tool (Python REPL loop wrapper)
 ├── tool_list_skills.go                 List available skills (interface: SkillLister)
 ├── tool_load_skill.go                  Load skill content (interface: SkillContentLoader)
 ├── todo/                               In-memory planning system
@@ -171,15 +168,15 @@ RunLoop(ctx, input string) → (string, error)
    a. Check ctx cancellation
    b. Build system reminders via BuildReminders (injectable)
    c. StartReasoning → agent.DoReasoning(inputs, reminders) → FinishReasoning
-   d. If ToolCall == nil → Stop → return FinalAnswer
-   e. StartToolExecution → registry.Execute(toolName, args) → FinishToolExecution
-   f. Fire hooks.OnToolCall(name, input, output)
-   g. Set inputs to the new tool result only (agent history holds earlier turns)
+   d. If ToolCalls is empty → Stop → return FinalAnswer
+   e. StartToolExecution → registry.Execute for EVERY tool call, in order → FinishToolExecution
+   f. Fire hooks.OnToolCall(name, input, output) per call
+   g. Set inputs to the new tool results only, in call order (agent history holds earlier turns)
    h. Loop to 2a
 3. On error: Reset FSM, return error
 ```
 
-Exit: model produces `ReasoningResult{ToolCall: nil}` (final answer).
+Exit: model produces `ReasoningResult{ToolCalls: nil}` (final answer).
 Error: ctx canceled, DoReasoning error, or tool execution error.
 
 ## Agent Interface
@@ -190,12 +187,12 @@ type Agent interface {
 }
 
 type ReasoningResult struct {
-    ToolCall    *tooldef.ToolCall   // nil → final answer ready
-    FinalAnswer string              // populated when ToolCall is nil
+    ToolCalls   []tooldef.ToolCall  // empty → final answer ready
+    FinalAnswer string              // populated when ToolCalls is empty
 }
 ```
 
-The AgentRunner owns the loop; `Agent` owns the LLM interaction. `inputs` carries the user message on the first iteration and only the newest tool result afterwards — the Agent keeps the conversation history itself, and pairs tool outputs with the pending `tool_use` ids from the previous response as `tool_result` blocks (required by the Anthropic API). `systemReminders` carries the current todo plan state.
+The AgentRunner owns the loop; `Agent` owns the LLM interaction. `inputs` carries the user message on the first iteration and only the newest tool results afterwards — the Agent keeps the conversation history itself, and pairs tool outputs (by position) with the pending `tool_use` ids from the previous response as `tool_result` blocks (required by the Anthropic API). `systemReminders` carries the current todo plan state.
 
 The concrete implementation lives in `internal/agent/`. Tool definitions are injected at construction via `AgentConfig` — the tool registry converts its definitions to `[]common.ToolDefinition` via `Registry.ProviderDefinitions()`.
 
@@ -231,20 +228,16 @@ type Harness struct {
 Constructor: `New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, error)`. `HarnessConfig` no longer exists; behavior is configured via flat `HarnessOption` functions (`internal/harness/harness_options.go`) applied over `defaultHarnessOptions()`:
 
 - `WithAgentBuilder` — replaces the default agent implementation with a custom `runner.AgentBuilder`; the test seam for stub brains.
-- `WithSubagentModel` / `WithRLMModel` / `WithAdvisorModel` — per-role `common.ModelDefinition`; an unset role falls back to `mainModel`. The advisor tool is registered only when `WithAdvisorModel` is set (no advisor by default).
+- `WithSubagentModel` / `WithBlackboardModel` / `WithAdvisorModel` — per-role `common.ModelDefinition`; an unset role falls back to `mainModel`. The advisor tool is registered only when `WithAdvisorModel` is set (no advisor by default). `WithBlackboardModel` sets the model used for `llm_query`/`llm_batch` sub-LM calls inside the shared blackboard REPL.
 - `WithSubagentDepth` (default 1, 0 disables `spawn_agent`) / `WithSubagentMaxIterations` (default 100 per child).
-- `WithRLMDefaultIterations` / `WithRLMMaxIterations` — the `rlm` tool is now always registered; RLM's LLM falls back to `mainModel` unless `WithRLMModel` is set.
 - `WithLLMFactory` — replaces the default env-var-based LLM factory (`provider.LLMFromEnv`) entirely; the test seam for injecting fakes.
 - `WithProviderBaseURL(provider, url)` — per-provider base URL override, consumed by the default factory only.
+- `WithBlackboardDisabled` — the shared blackboard REPL (`repl` tool, see "Blackboard (Shared REPL)" under Tool System) is on by default; this disables it.
 - `WithDisabledTool`, `WithSkillsDir`, `WithTool`, `WithHooks(events.Hooks)`, `WithSystemPrompt`, `WithEventBus`, `WithTextDeltaHandler`, `WithThinkingDeltaHandler` — remaining registry/observability knobs.
 
 LLM clients are cached per (provider, model, base URL) via an internal `llmCache` (`internal/harness/llm.go`), so roles sharing a model definition share one client and its rate limiter.
 
 The brain defaults to the built-in agent implementation: when no `WithAgentBuilder` is set, `harness.New` falls back to an unexported adapter over `agent.New` (`internal/agent`). This is the one place `internal/harness` imports `internal/agent`; all other harness code depends only on the `runner.Agent` interface.
-
-### RLM Architecture
-
-The RLM (Recursive Language Model) is the sole delegation mechanism, implementing Zhang et al. (2025). The main agent delegates via the `rlm` tool. Inside the REPL, `llm_query()` provides single-shot sub-LM calls, and `rlm_query()` (at depth>1) spawns recursive child RLM loops. At max depth, `rlm_query` falls back to `llm_query`.
 
 ### Turns
 
@@ -292,7 +285,7 @@ type ToolResult struct {
 
 Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn't break on tool errors.
 
-### Tool Inventory (20 tools)
+### Tool Inventory (19 tools)
 
 | Tool | Description | Key behavior |
 |------|-------------|--------------|
@@ -303,8 +296,8 @@ Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn
 | `Grep` | Regex search | Caps at 500 matches |
 | `Glob` | File patterns | Supports `**` wildcard |
 | `Revert` | Restore file | Pops from snapshot store (one-shot) |
-| `rlm` | Recursive Language Model | Python REPL loop with llm_query, rlm_query (recursive), file access, FINAL termination |
 | `spawn_agent` | Delegate operational task | Spawns child AgentRunner with full tools, blocks until complete, returns final answer |
+| `repl` | Shared persistent REPL (blackboard) | Slot `main` for the main agent, `a1`/`a2`/… for subagents; single mutex serializes all access; output truncated at 2000 chars |
 | `advisor` | Plan review by stronger model | One-shot call to the advisor model (plan + optional context); returns critique: risks, missing steps, alternatives. Disabled by default — registered only when `WithAdvisorModel` is set; not given to subagents |
 | `list_skills` | List skills | Returns name→description map from skill registry |
 | `load_skill` | Load skill | Lazy-loads full `SKILL.md` content by name |
@@ -323,6 +316,18 @@ Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn
 **fsutil** — per-path mutex locks (`sync.Map`) for concurrent file access. `writeFileAtomic` uses temp-file + rename for crash safety.
 
 **Todo reminders** — `TodoFile.FormatReminder()` formats the runner's own plan as a `<system-reminder>` block; returns `""` when the plan is empty. Wired per runner via `runner.WithTodoFile` and injected in `buildSystemReminders()`.
+
+### Blackboard (Shared REPL)
+
+Package `internal/harness/blackboard/`. A `Blackboard` is one persistent Python REPL per harness, shared by the main agent and every subagent. It wraps `NewREPL` (`repl.go`, `Querier`, and `bootstrap.py` in the same package host the sandboxed Python REPL subprocess machinery — there is no separate model-facing `rlm` tool). `bootstrap.py` carries no blackboard-specific logic — the shared namespace (`bb` dict) and helpers (`peek`, `bb_grep`) are injected via a one-time setup `Execute` call when the process lazily starts on first use. (`bootstrap.py`'s only blackboard-relevant feature is a transport-level stdout cap of 100k chars.) A single `sync.Mutex` serializes all access — the entire concurrency contract. If the REPL transport fails or a call is cancelled mid-execution, `Blackboard` closes and discards it so the next call restarts fresh (blackboard contents are lost); agents must tolerate a slot they expect being missing.
+
+- **`repl` tool** (`blackboard.NewREPLTool`) — one instance per agent, bound to a slot ID: `main` for the main agent, `a1`, `a2`, … for subagents (assigned from a package-level `atomic.Int64` counter in `subagent.nextAgentID`). Convention (not enforced in code): an agent writes only inside `bb['<its slot>']`, reads anything, never busy-waits on another slot. REPL stdout returned to the calling agent is truncated to `DefaultHeadChars`+`DefaultTailChars` (1500+500 = 2000) chars.
+- **Deposit/preview flow** (`SubAgentFactory.SpawnAgent`, `internal/harness/subagent/subagent_factory.go`) — a subagent's final answer up to `inlineResultMax` (2000) chars is returned inline, prefixed with `"Sub-agent <id> completed (blackboard slot bb['<id>'])."` so the orchestrator knows the slot even when nothing was deposited (the sub-agent may have written to its slot itself). Longer results are deposited via `Blackboard.Deposit` to `bb['<agent_id>']['result']` (agent ID validated against `[A-Za-z0-9_]+`, value passed through `SetVar`, never spliced into generated code) and the tool returns `"Sub-agent <id> completed."` plus a `Preview`: a 1500-char head / 500-char tail summary with a hint to inspect the full value via `peek()`/`bb_grep()`. If the deposit itself fails, `SpawnAgent` falls back to returning the full result inline.
+- **Logging** — every `exec`/`deposit` op is logged via `slog` at info level (so it lands in `.tenzing-agent.log`): agent, code (capped 500 chars), `stdout_len`, stdout head (capped 200 chars); transport failures log at error level. This is the only visibility into blackboard state since it never appears in transcripts.
+- **Options** — `WithBlackboardDisabled()` skips registering the blackboard and the `repl` tool entirely (subagent results are then always inline). On by default and re-exported from `pkg/tenzing`.
+- **Shutdown** — `Harness.Shutdown()` closes the blackboard's Python subprocess (`Blackboard.Close`) alongside stopping hook dispatch.
+
+Known limit: `llm_query`/`llm_batch` inside the blackboard hold the REPL mutex for all agents while they run — keep individual calls small and prefer `llm_batch` for fan-out work.
 
 ## Skill System
 
@@ -390,28 +395,15 @@ Integrated in `Agent.DoReasoning` — runs after each assistant response. `NewWi
 
 Compression is non-fatal: LLM errors are logged, original history preserved.
 
-## Recursive Language Model (RLM) Engine
+## Sandboxed Python REPL
 
-Full RLM implementation based on Zhang et al. (2025). Processes arbitrarily large inputs by loading them into a Python REPL as a variable. The model writes Python code to programmatically decompose, analyze (via `llm_query()` calls in loops), and aggregate results. Supports recursive depth: `rlm_query()` spawns child RLM loops at depth>1, falling back to `llm_query()` at max depth.
-
-Architecture: Engine (Go) drives a loop — create per-run Fetcher (LLM + plain history) → send user content → extract ```repl code blocks → send to Python subprocess → handle callbacks (llm_query via Querier, rlm_query, read_file, grep_file, list_files) over JSON-line protocol on stdin/stdout → capture stdout → truncate → feed back via Fetcher → repeat until `FINAL()`.
-
-Two interfaces separate the roles:
-- **Fetcher** — drives the reasoning loop with a plain, uncompressed message history. Created per-run via `FetcherFactory`. Default impl (`simpleFetcher`) wraps `common.LLM`; history stays bounded via REPL output truncation and the iteration cap, so no compression is used (see AGENTS.md "RLM fetchers must not compress").
-- **Querier** — handles stateless one-shot LLM calls from the Python REPL (`sub_lm()`). Default impl (`llmQuerier`) wraps a bare `common.LLM`.
-
-Single tool: `rlm` — analytical delegation via the REPL. Depth parameter controls recursion:
-- depth=0: REPL only, no sub-LLM calls
-- depth=1: `llm_query()` available (default)
-- depth=2+: `rlm_query()` available, spawning child RLM loops
-
-Wired via `WithRLMModel` (falls back to `mainModel` when unset) and `WithRLMDefaultIterations`/`WithRLMMaxIterations`; the `rlm` tool is always registered. Python 3 required on PATH.
+`internal/harness/blackboard/` hosts the sandboxed Python REPL subprocess machinery alongside the blackboard that builds on it (see "Blackboard (Shared REPL)" under Tool System): `repl.go` (subprocess + JSON-line IPC over stdin/stdout, callbacks for `llm_query`/`llm_batch`, `read_file`, `grep_file`, `list_files`), `bootstrap.py` (the embedded Python side of the protocol), and `querier.go` (the `Querier` interface + `llmQuerier`, a stateless one-shot LLM caller used for `llm_query`/`llm_batch`). There is no standalone model-facing tool here — REPL access reaches the model only through the blackboard's `repl` tool.
 
 ## Sub-Agent Architecture
 
 Recursive delegation via full autonomous sub-agents. The main agent delegates operational tasks (file editing, commands, investigations) to child agents that run their own AgentRunner loop. Children can themselves spawn sub-agents up to a configurable max depth.
 
-Architecture: `spawn_agent` tool → `AgentFactory` interface (in `subagent/`) → `SubAgentFactory` (in `harness/`) builds child AgentRunner + Agent per spawn. Coexists with RLM — `spawn_agent` for operational tasks, `rlm` for analytical tasks over large inputs.
+Architecture: `spawn_agent` tool → `AgentFactory` interface (in `subagent/`) → `SubAgentFactory` (in `harness/`) builds child AgentRunner + Agent per spawn. Children share the blackboard REPL with their parent when one is configured, so analytical work over large inputs can run there via `llm_query`/`llm_batch`.
 
 Depth control: factory tracks `currentDepth`. At `maxDepth`, child gets all tools except `spawn_agent`. Default max depth is 1 (main → child; no grandchildren) using the main model.
 
@@ -445,7 +437,7 @@ Hooks: `events.Hooks` struct has one typed `func(XxxEvent)` field per event type
 
 ### Emit Sites
 
-Runner (`agent_runner.go`): emits turn, loop, reasoning, tool execution, LLM response, compression, and error events. Harness (`harness.go`): emits session events, bridges RLM progress to `ToolProgressEvent`. Subagent (`subagent_factory.go`): emits subagent lifecycle events. Todo (`todo_file.go`): emits task lifecycle events.
+Runner (`agent_runner.go`): emits turn, loop, reasoning, tool execution, LLM response, compression, and error events. Harness (`harness.go`): emits session events. Subagent (`subagent_factory.go`): emits subagent lifecycle events. Todo (`todo_file.go`): emits task lifecycle events.
 
 ### Streaming
 

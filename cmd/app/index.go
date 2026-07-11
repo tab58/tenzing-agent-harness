@@ -43,6 +43,8 @@ const indexHTML = `<!DOCTYPE html>
   .msg.thinking { color: var(--fg-dim); font-style: italic; }
   .msg.thinking::before { content: '💭 '; }
   .msg.tool { color: var(--yellow); font-size: 0.85em; opacity: 0.8; }
+  .msg.tool.sub { padding-left: 1rem; opacity: 0.65; }
+  .msg.subagent { color: var(--green); font-size: 0.85em; }
   .msg.tool-progress { color: var(--fg-dim); font-size: 0.8em; padding-left: 1rem; }
   .msg.error { color: var(--red); }
   .msg.error::before { content: '✗ '; }
@@ -161,19 +163,34 @@ es.addEventListener('thinking_delta', e => {
   chat.scrollTop = chat.scrollHeight;
 });
 
+function agentTag(d) {
+  return d.agent ? '[' + d.agent + '] ' : '';
+}
+
 es.addEventListener('tool_start', e => {
   finalizeStream();
   const d = JSON.parse(e.data);
-  const inp = d.input.length > 120 ? d.input.slice(0, 120) + '…' : d.input;
-  addMsg('tool', '⚙ ' + d.name + ' ' + inp);
+  const inp = d.input.length > 500 ? d.input.slice(0, 500) + '…' : d.input;
+  addMsg('tool' + (d.agent ? ' sub' : ''), '⚙ ' + agentTag(d) + d.name + ' ' + inp);
 });
 
 es.addEventListener('tool_result', e => {
   const d = JSON.parse(e.data);
   const lines = (d.output || '').split('\n').slice(0, 10);
   const prefix = d.error === 'true' ? '✗ ' : '✓ ';
-  const inp = d.input.length > 120 ? d.input.slice(0, 120) + '…' : d.input;
-  addMsg('tool', prefix + d.name + ' ' + inp + '\n' + lines.join('\n'));
+  const inp = d.input.length > 500 ? d.input.slice(0, 500) + '…' : d.input;
+  addMsg('tool' + (d.agent ? ' sub' : ''), prefix + agentTag(d) + d.name + ' ' + inp + '\n' + lines.join('\n'));
+});
+
+es.addEventListener('subagent', e => {
+  finalizeStream();
+  const d = JSON.parse(e.data);
+  if (d.state === 'started') {
+    const p = d.prompt.length > 200 ? d.prompt.slice(0, 200) + '…' : d.prompt;
+    addMsg('subagent', '⧉ ' + d.agent + ' spawned: ' + p);
+  } else {
+    addMsg('subagent', '⧉ ' + d.agent + ' done (' + d.duration + ')');
+  }
 });
 
 es.addEventListener('tool_progress', e => {

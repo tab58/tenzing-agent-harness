@@ -1,4 +1,4 @@
-package rlm
+package blackboard
 
 import (
 	"bufio"
@@ -30,17 +30,12 @@ const darwinSandboxProfile = `(version 1)` +
 //go:embed bootstrap.py
 var bootstrapScript string
 
-// RLMQueryFunc spawns a child RLM engine to process a prompt recursively.
-// nil means rlm_query is not available (max depth reached).
-type RLMQueryFunc func(ctx context.Context, prompt string) (string, error)
-
 type REPL struct {
 	cmd        *exec.Cmd
 	stdin      *json.Encoder
 	scanner    *bufio.Scanner
 	workingDir string
 	querier    Querier
-	rlmQueryFn RLMQueryFunc
 }
 
 type message struct {
@@ -77,7 +72,7 @@ func newPythonCmd(script, workingDir string) *exec.Cmd {
 	return cmd
 }
 
-func NewREPL(querier Querier, workingDir string, rlmQueryFn RLMQueryFunc) (*REPL, error) {
+func NewREPL(querier Querier, workingDir string) (*REPL, error) {
 	cmd := newPythonCmd(bootstrapScript, workingDir)
 	cmd.Stderr = os.Stderr
 
@@ -103,14 +98,6 @@ func NewREPL(querier Querier, workingDir string, rlmQueryFn RLMQueryFunc) (*REPL
 		scanner:    scanner,
 		workingDir: workingDir,
 		querier:    querier,
-		rlmQueryFn: rlmQueryFn,
-	}
-
-	if rlmQueryFn != nil {
-		if err := repl.send(message{Type: "enable_rlm_query"}); err != nil {
-			cmd.Process.Kill()
-			return nil, fmt.Errorf("enable rlm_query: %w", err)
-		}
 	}
 
 	return repl, nil
@@ -147,6 +134,10 @@ func (r *REPL) readUntilResult(ctx context.Context) (string, bool, string, error
 			return "", false, "", ctx.Err()
 		}
 		if !r.scanner.Scan() {
+			if err := r.scanner.Err(); err != nil {
+				r.cmd.Process.Kill()
+				return "", false, "", fmt.Errorf("read from python: %w", err)
+			}
 			return "", false, "", fmt.Errorf("python process exited unexpectedly")
 		}
 		line := r.scanner.Text()
@@ -185,8 +176,6 @@ func (r *REPL) handleCallback(ctx context.Context, funcName string, args map[str
 		return r.callbackSubLM(ctx, args)
 	case "sub_lm_batch":
 		return r.callbackSubLMBatch(ctx, args)
-	case "rlm_query":
-		return r.callbackRLMQuery(ctx, args)
 	case "read_file":
 		return r.callbackReadFile(args)
 	case "grep_file":
@@ -196,21 +185,6 @@ func (r *REPL) handleCallback(ctx context.Context, funcName string, args map[str
 	default:
 		return "", fmt.Errorf("unknown callback: %s", funcName)
 	}
-}
-
-func (r *REPL) callbackRLMQuery(ctx context.Context, args map[string]any) (string, error) {
-	prompt, _ := args["prompt"].(string)
-	if prompt == "" {
-		return "", fmt.Errorf("rlm_query requires a non-empty prompt")
-	}
-	if r.rlmQueryFn != nil {
-		return r.rlmQueryFn(ctx, prompt)
-	}
-	if r.querier == nil {
-		return "", fmt.Errorf("rlm_query not available: no querier configured")
-	}
-	slog.Info("[RLM] rlm_query falling back to llm_query (max depth reached)", "prompt_len", len(prompt))
-	return r.querier.Query(ctx, prompt, 4096)
 }
 
 func (r *REPL) callbackSubLM(ctx context.Context, args map[string]any) (string, error) {

@@ -40,22 +40,19 @@ Three layers, strict dependency direction: **Harness → AgentRunner → Agent**
 
 One deliberate exception to "never import upward": `harness.New` imports `internal/agent` in exactly one place — the unexported `defaultAgentBuilder` fallback — so a harness works out of the box with no brain injection. All other harness code talks only to the `runner.Agent` interface. Callers with a custom brain override it via `harness.WithAgentBuilder(builder)`.
 
-RLM offloading: when a single input exceeds half the compression threshold, `DoReasoning` routes it through an injected `OffloadFn` before appending to history. The function is `rlm.Engine.Run`, injected at the `cmd/` layer to respect layer boundaries.
+### Blackboard REPL
 
-### RLM fetchers must not compress
+`internal/harness/blackboard/` hosts the sandboxed Python REPL subprocess machinery (`repl.go`, `bootstrap.py`) plus the `Querier` interface and its LLM-backed implementation (`querier.go`) — the model-facing `rlm` tool and its offload path have been removed — alongside the `Blackboard` that builds on it: one persistent REPL per harness, shared by the main agent and all subagents through the `repl` tool. A single mutex serializes all access; write-own-slot/read-anything is enforced by prompt convention, not code. The blackboard's helpers (`bb`, `peek`, `bb_grep`) are injected via a setup exec (no blackboard-specific logic in `bootstrap.py`); `bootstrap.py`'s only related feature is a transport-level stdout cap (100k chars).
 
-The RLM loop uses `rlm.NewSimpleFetcherFactory` (plain message slice) everywhere. Do not reintroduce a compressing fetcher backed by `internal/agent/context`. Two reasons, learned the hard way (2026-07):
+Known limit: `llm_query` inside the blackboard holds the REPL lock for all agents while it runs; keep individual calls small and prefer `llm_batch` for fan-out work. If this hurts, the upgrade path is an async callback queue — don't reach for it speculatively.
 
-1. **Compression is the wrong tool inside an RLM.** Per the RLM paper (`docs/recursive-language-models.pdf`, Alg. 1 + §2), sub-loop history is bounded *structurally*: the huge input lives in the REPL as a variable, each turn appends only the code block plus truncated stdout (`TruncateMax`, default 2000 chars), and `MaxIterations` caps the loop. Mid-loop summarization is lossy and can garble the model's memory of which REPL variables hold what — the loop's entire working state. The paper benchmarks compaction as a baseline and beats it by 26% median.
-2. **Shared memory-file contamination.** `agentctx.NewContext` always loads `.agent_memory.md` on construction and overwrites it on compression. A compressing RLM fetcher therefore inherited the main agent's persisted session summary into every throwaway sub-loop, and — worse — clobbered the main agent's memory file with sub-loop summaries.
-
-If RLM history growth ever becomes a real problem, tighten `TruncateMax`/`MaxIterations` on the engine; don't add compression.
+Cancellation or transport failure mid-call resets the blackboard (contents lost, lazily restarted empty); agents must tolerate missing slots.
 
 ## Adding Tools
 
 1. Create `internal/harness/tools/tooldef/tool_<name>.go`
 2. Implement `tooldef.Definition` interface: `Name()`, `Description()`, `Schema()`, `Execute()`
-3. Register: most tools go in `GetDefaultToolDefs()` in `internal/harness/tools/registry.go`. The `rlm` tool is always registered by `harness.New()`; its LLM falls back to the main model unless `WithRLMModel` is set
+3. Register: most tools go in `GetDefaultToolDefs()` in `internal/harness/tools/registry.go`. The `repl` tool (shared blackboard) is registered by `harness.New()` unless `WithBlackboardDisabled` is set; its sub-LM queries fall back to the main model unless `WithBlackboardModel` is set
 4. Tool descriptions are **instructions to the model**, not documentation — precise wording controls tool selection
 5. Tools never throw. Errors return `ToolResult{IsError: true}`. Loop doesn't break on tool errors
 
@@ -89,11 +86,12 @@ Models are `common.Model` values (`common.ModelDefinition{Name, MaxTokens, Conte
 `HarnessConfig` no longer exists. Behavior is configured via flat `HarnessOption` functions (`internal/harness/harness_options.go`):
 
 - `WithAgentBuilder` — replaces the default agent implementation with a custom `runner.AgentBuilder` (the test seam for stub brains).
-- `WithSubagentModel` / `WithRLMModel` / `WithAdvisorModel` — per-role `common.ModelDefinition`. An unset role model falls back to the main model. The advisor tool is registered only when `WithAdvisorModel` is set (no advisor by default).
+- `WithSubagentModel` / `WithBlackboardModel` / `WithAdvisorModel` — per-role `common.ModelDefinition`. An unset role model falls back to the main model. The advisor tool is registered only when `WithAdvisorModel` is set (no advisor by default).
 - `WithLLMFactory` — replaces the default env-var-based LLM factory entirely; the test seam for injecting fakes.
 - `WithProviderBaseURL(provider, url)` — per-provider base URL override consumed by the default factory only (ignored when `WithLLMFactory` is set).
 - `WithTool` — injects an additional tool implementing `tooldef.Definition` (used by cmd/app to register nexus channel tools).
 - Subagents (`spawn_agent` tool) are enabled by default at depth 1 using the main model; `WithSubagentDepth(0)` disables the tool.
+- `WithBlackboardDisabled` — the shared blackboard REPL is on by default: main agent and subagents share one persistent Python process (`repl` tool); subagent results over 2000 chars are deposited to `bb['<agent_id>']['result']` and returned as a 1500/500-char head/tail preview. Blackboard execs/deposits are logged via `slog` at info level (code capped 500 chars, stdout head 200).
 
 LLM clients are cached per (provider, model, base URL) inside `harness.New`, so roles sharing a model definition share one client.
 
@@ -123,16 +121,16 @@ The FSM is per-runner instance — subagents and concurrent loops don't share st
 | Tool implementations     | `internal/harness/tools/tooldef/tool_*.go`            |
 | Provider implementations | external: `github.com/tab58/llm-providers`            |
 | Prompt templates         | `internal/harness/prompts/*.gotmpl`                   |
-| RLM engine               | `internal/harness/rlm/` (Fetcher, Querier, Engine)    |
+| REPL subprocess machinery | `internal/harness/blackboard/` (Python REPL, Querier) |
 | Context management       | `internal/agent/context/` (compression, task graph)   |
-| Context overflow router  | `internal/agent/context/compressor/router.go`         |
 | App (HTTP/SSE server)    | `cmd/app/`                                            |
 | Public API facade        | `pkg/tenzing/` (aliases over `internal/harness`)      |
 | Test files               | Same directory as source, `*_test.go`                 |
 | Shared test helpers      | `**/testutil_test.go`                                 |
 | Sub-agent system         | `internal/harness/subagent/`                          |
+| Blackboard (shared REPL)  | `internal/harness/blackboard/` (persistent REPL, repl tool) |
 | Event system             | `internal/harness/events/`                            |
-| Embedded assets          | Adjacent to consumer (e.g. `rlm/bootstrap.py`)       |
+| Embedded assets          | Adjacent to consumer (e.g. `blackboard/bootstrap.py`) |
 | Nexus (input channels)   | `internal/app/nexus/`                                 |
 | Nexus channel tools      | `internal/app/nexus/tools/`                           |
 | App-level wiring helpers | `internal/app/` (log SSE broadcaster)                 |

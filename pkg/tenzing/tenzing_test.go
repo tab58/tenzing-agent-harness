@@ -15,7 +15,6 @@ type stubAgent struct{}
 func (s *stubAgent) GetCurrentModel() string                                         { return "stub-model" }
 func (s *stubAgent) UpdateToolDefinitions(_ []tenzing.LLMToolDefinition)             {}
 func (s *stubAgent) UpdateSkillMap(_ map[string]string)                              {}
-func (s *stubAgent) UpdateOffloadFn(_ func(context.Context, string) (string, error)) {}
 func (s *stubAgent) UpdateStreamCallback(_ func(string))                             {}
 func (s *stubAgent) UpdateThinkingCallback(_ func(string))                           {}
 func (s *stubAgent) SetTodoProvider(_ func() string)                                 {}

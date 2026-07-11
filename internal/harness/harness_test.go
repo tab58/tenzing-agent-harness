@@ -16,7 +16,6 @@ type stubAgent struct{}
 func (s *stubAgent) GetCurrentModel() string                                         { return "stub-model" }
 func (s *stubAgent) UpdateToolDefinitions(_ []common.ToolDefinition)                 {}
 func (s *stubAgent) UpdateSkillMap(_ map[string]string)                              {}
-func (s *stubAgent) UpdateOffloadFn(_ func(context.Context, string) (string, error)) {}
 func (s *stubAgent) UpdateStreamCallback(_ func(string))                             {}
 func (s *stubAgent) UpdateThinkingCallback(_ func(string))                           {}
 func (s *stubAgent) SetTodoProvider(_ func() string)                                 {}
@@ -204,5 +203,30 @@ func TestHarnessDefaultAgentBuilder(t *testing.T) {
 	}
 	if h == nil {
 		t.Fatal("New() returned nil harness")
+	}
+}
+
+func hasTool(h *Harness, name string) bool {
+	for _, def := range h.ToolDefinitions() {
+		if def.Name() == name {
+			return true
+		}
+	}
+	return false
+}
+
+func TestHarnessRegistersREPLToolByDefault(t *testing.T) {
+	h := newTestHarness(t)
+	defer h.Shutdown()
+	if !hasTool(h, "repl") {
+		t.Error("repl tool should be registered by default")
+	}
+}
+
+func TestHarnessBlackboardDisabled(t *testing.T) {
+	h := newTestHarness(t, WithBlackboardDisabled())
+	defer h.Shutdown()
+	if hasTool(h, "repl") {
+		t.Error("repl tool should not be registered when blackboard is disabled")
 	}
 }

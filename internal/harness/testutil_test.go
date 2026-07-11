@@ -63,7 +63,6 @@ func newScriptedAgent(steps ...runner.ReasoningResult) *ScriptedAgent {
 func (s *ScriptedAgent) GetCurrentModel() string                                         { return "scripted-model" }
 func (s *ScriptedAgent) UpdateToolDefinitions(_ []common.ToolDefinition)                 {}
 func (s *ScriptedAgent) UpdateSkillMap(_ map[string]string)                              {}
-func (s *ScriptedAgent) UpdateOffloadFn(_ func(context.Context, string) (string, error)) {}
 func (s *ScriptedAgent) UpdateStreamCallback(_ func(string))                             {}
 func (s *ScriptedAgent) UpdateThinkingCallback(_ func(string))                           {}
 func (s *ScriptedAgent) SetTodoProvider(_ func() string)                                 {}
@@ -104,7 +103,7 @@ func (s *ScriptedAgent) capturedCalls() []capturedCall {
 
 func toolStep(name, input string) runner.ReasoningResult {
 	return runner.ReasoningResult{
-		ToolCall: &tooldef.ToolCall{Name: name, Input: input},
+		ToolCalls: []tooldef.ToolCall{{Name: name, Input: input}},
 	}
 }
 

@@ -24,12 +24,15 @@ func NewSpawnAgentTool(factory AgentFactory) *SpawnAgentTool {
 func (t *SpawnAgentTool) Name() string { return "spawn_agent" }
 
 func (t *SpawnAgentTool) Description() string {
-	return "Delegate a task to an autonomous sub-agent that runs its own " +
-		"reasoning loop with full tool access (bash, read, edit, grep, glob, rlm). " +
-		"Use for tasks requiring actions — editing files, running commands, investigating " +
-		"failures. For analytical tasks over large inputs (summarization, extraction, " +
-		"aggregation), prefer the rlm tool instead. The sub-agent runs to completion " +
-		"and returns its final answer."
+	return "Delegate a task to an autonomous sub-agent that runs its own reasoning loop " +
+		"with full tool access (bash, read, edit, grep, glob, repl). Use for tasks requiring " +
+		"actions — editing files, running commands, investigating failures — and for " +
+		"analytical work over large inputs: the sub-agent shares the blackboard REPL and " +
+		"can process big data there with llm_query/llm_batch. The sub-agent runs to " +
+		"completion. Every result is prefixed with the sub-agent's blackboard slot " +
+		"(bb['<agent_id>']); short results are returned inline, long results are deposited " +
+		"at bb['<agent_id>']['result'] and returned as a truncated preview — use the repl " +
+		"tool to inspect the full text."
 }
 
 func (t *SpawnAgentTool) Schema() tooldef.Schema {

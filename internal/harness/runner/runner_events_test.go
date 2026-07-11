@@ -38,22 +38,23 @@ func (c *eventCollector) byType(t events.EventType) []events.Event {
 }
 
 type minimalAgent struct {
-	mu    sync.Mutex
-	steps []ReasoningResult
-	idx   int
+	mu     sync.Mutex
+	steps  []ReasoningResult
+	idx    int
+	inputs [][]string
 }
 
 func (a *minimalAgent) GetCurrentModel() string                                         { return "" }
 func (a *minimalAgent) UpdateToolDefinitions(_ []common.ToolDefinition)                 {}
 func (a *minimalAgent) UpdateSkillMap(_ map[string]string)                              {}
-func (a *minimalAgent) UpdateOffloadFn(_ func(context.Context, string) (string, error)) {}
 func (a *minimalAgent) UpdateStreamCallback(_ func(string))                             {}
 func (a *minimalAgent) UpdateThinkingCallback(_ func(string))                           {}
 func (a *minimalAgent) SetTodoProvider(_ func() string)                                 {}
 
-func (a *minimalAgent) DoReasoning(_ context.Context, _ []string, _ []string) (ReasoningResult, error) {
+func (a *minimalAgent) DoReasoning(_ context.Context, inputs []string, _ []string) (ReasoningResult, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.inputs = append(a.inputs, inputs)
 	r := a.steps[a.idx]
 	a.idx++
 	return r, nil
@@ -113,7 +114,7 @@ func TestRunnerEmitsToolEvents(t *testing.T) {
 	registry.Register(&echoTool{})
 
 	agent := &minimalAgent{steps: []ReasoningResult{
-		{ToolCall: &tooldef.ToolCall{ID: "1", Name: "echo", Input: `{"text":"hi"}`}},
+		{ToolCalls: []tooldef.ToolCall{{ID: "1", Name: "echo", Input: `{"text":"hi"}`}}},
 		{FinalAnswer: "done"},
 	}}
 
@@ -142,6 +143,63 @@ func TestRunnerEmitsToolEvents(t *testing.T) {
 	}
 	if len(collector.byType(events.EventToolExecutionFinished)) != 1 {
 		t.Errorf("expected 1 ToolExecutionFinished, got %d", len(collector.byType(events.EventToolExecutionFinished)))
+	}
+}
+
+// TestRunnerExecutesAllToolCallsInBatch verifies that when the model issues
+// several tool calls in one response, every call is executed and all results
+// are fed back to the next reasoning cycle in order — none may be dropped
+// with a "tool call was not executed" placeholder.
+func TestRunnerExecutesAllToolCallsInBatch(t *testing.T) {
+	collector := &eventCollector{}
+
+	registry := tools.NewRegistry("")
+	registry.Register(&echoTool{})
+
+	agent := &minimalAgent{steps: []ReasoningResult{
+		{ToolCalls: []tooldef.ToolCall{
+			{ID: "1", Name: "echo", Input: `{"text":"one"}`},
+			{ID: "2", Name: "echo", Input: `{"text":"two"}`},
+			{ID: "3", Name: "echo", Input: `{"text":"three"}`},
+		}},
+		{FinalAnswer: "done"},
+	}}
+
+	r, err := NewAgentRunner(
+		agent,
+		WithEmitter(collector),
+		WithToolRegistry(registry),
+		WithSkillsRegistry(skills.NewRegistry()),
+		WithTodoFile(todo.NewTodoStore()),
+		WithSystemPrompt("test"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.RunLoop(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := len(collector.byType(events.EventToolExecutionStarted)); got != 3 {
+		t.Errorf("expected 3 ToolExecutionStarted, got %d", got)
+	}
+	if got := len(collector.byType(events.EventToolSucceeded)); got != 3 {
+		t.Errorf("expected 3 ToolSucceeded, got %d", got)
+	}
+
+	if len(agent.inputs) != 2 {
+		t.Fatalf("expected 2 reasoning calls, got %d", len(agent.inputs))
+	}
+	second := agent.inputs[1]
+	want := []string{`echo: {"text":"one"}`, `echo: {"text":"two"}`, `echo: {"text":"three"}`}
+	if len(second) != len(want) {
+		t.Fatalf("second reasoning inputs = %v, want %v", second, want)
+	}
+	for i := range want {
+		if second[i] != want[i] {
+			t.Errorf("input[%d] = %q, want %q", i, second[i], want[i])
+		}
 	}
 }
 

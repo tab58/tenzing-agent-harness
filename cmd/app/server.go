@@ -34,6 +34,7 @@ type agentServer struct {
 	mu       sync.Mutex
 	cancelFn context.CancelFunc
 	closing  bool
+	done     chan struct{} // closed on shutdown; unblocks SSE handlers
 
 	clients   map[*sseClient]struct{}
 	clientsMu sync.RWMutex
@@ -45,6 +46,7 @@ func newAgentServer(model common.ModelDefinition, bus *events.EventBus, nx *nexu
 		nexus:     nx,
 		logB:      logB,
 		onTurnEnd: onTurnEnd,
+		done:      make(chan struct{}),
 		clients:   make(map[*sseClient]struct{}),
 	}
 
@@ -149,18 +151,38 @@ func (s *agentServer) broadcastSSEJSON(event string, v any) {
 }
 
 func (s *agentServer) forwardEvents(ch <-chan events.Event) {
+	// Sub-agent runners share the bus; map their runner IDs to blackboard
+	// slot names ("a1", ...) so tool events can be labeled per agent. Only
+	// this goroutine touches the map.
+	subagents := make(map[string]string)
 	for ev := range ch {
 		switch e := ev.(type) {
+		case events.SubagentStartedEvent:
+			subagents[e.RunnerID] = e.AgentID
+			s.broadcastSSEJSON("subagent", map[string]string{
+				"agent":  e.AgentID,
+				"state":  "started",
+				"prompt": e.Prompt,
+			})
+		case events.SubagentStoppedEvent:
+			delete(subagents, e.RunnerID)
+			s.broadcastSSEJSON("subagent", map[string]string{
+				"agent":    e.AgentID,
+				"state":    "stopped",
+				"duration": e.Duration.String(),
+			})
 		case events.ToolExecutionStartedEvent:
 			s.broadcastSSEJSON("tool_start", map[string]string{
 				"name":  e.ToolName,
 				"input": e.Input,
+				"agent": subagents[e.RunnerID],
 			})
 		case events.ToolSucceededEvent:
 			s.broadcastSSEJSON("tool_result", map[string]string{
 				"name":   e.ToolName,
 				"input":  e.Input,
 				"output": e.Output,
+				"agent":  subagents[e.RunnerID],
 			})
 		case events.ToolFailedEvent:
 			s.broadcastSSEJSON("tool_result", map[string]string{
@@ -168,6 +190,7 @@ func (s *agentServer) forwardEvents(ch <-chan events.Event) {
 				"input":  e.Input,
 				"output": e.Error,
 				"error":  "true",
+				"agent":  subagents[e.RunnerID],
 			})
 		case events.LLMResponseEvent:
 			s.broadcastSSEJSON("llm_meta", map[string]int64{
@@ -223,6 +246,10 @@ func (s *agentServer) handleSSE(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-s.done:
+			// server shutdown: end the stream so http.Server.Shutdown can
+			// drain — it waits for handlers but never cancels r.Context().
 			return
 		case msg := <-client.ch:
 			data := strings.ReplaceAll(msg.Data, "\n", "\ndata: ")
@@ -339,11 +366,15 @@ func (s *agentServer) nexusPrompt(channels []string) string {
 	return b.String()
 }
 
-// cancelActiveTurn cancels the in-flight agent turn, if any. Used by
-// container shutdown so a running turn doesn't outlive the harness.
+// cancelActiveTurn cancels the in-flight agent turn, if any, and closes
+// done so open SSE streams end. Used by container shutdown so a running
+// turn doesn't outlive the harness. Idempotent.
 func (s *agentServer) cancelActiveTurn() {
 	s.mu.Lock()
-	s.closing = true
+	if !s.closing {
+		s.closing = true
+		close(s.done)
+	}
 	if s.cancelFn != nil {
 		s.cancelFn()
 	}

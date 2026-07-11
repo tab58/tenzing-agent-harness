@@ -1,23 +1,15 @@
-package rlm
+package blackboard
 
 import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
 )
-
-func skipIfNoPython(t *testing.T) {
-	t.Helper()
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 not found on PATH")
-	}
-}
 
 type fakeQuerier struct {
 	response string
@@ -56,8 +48,8 @@ func (q *multiResponseQuerier) Query(_ context.Context, _ string, _ int64) (stri
 }
 
 func TestREPLPrint(t *testing.T) {
-	skipIfNoPython(t)
-	r, err := NewREPL(nil, t.TempDir(), nil)
+	requirePython(t)
+	r, err := NewREPL(nil, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -79,8 +71,8 @@ func TestREPLPrint(t *testing.T) {
 }
 
 func TestREPLPromptVariable(t *testing.T) {
-	skipIfNoPython(t)
-	r, err := NewREPL(nil, t.TempDir(), nil)
+	requirePython(t)
+	r, err := NewREPL(nil, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -100,9 +92,9 @@ func TestREPLPromptVariable(t *testing.T) {
 }
 
 func TestREPLSubLM(t *testing.T) {
-	skipIfNoPython(t)
+	requirePython(t)
 	q := &fakeQuerier{response: "the answer is 42"}
-	r, err := NewREPL(q, t.TempDir(), nil)
+	r, err := NewREPL(q, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -121,9 +113,9 @@ func TestREPLSubLM(t *testing.T) {
 }
 
 func TestREPLSubLMInLoop(t *testing.T) {
-	skipIfNoPython(t)
+	requirePython(t)
 	q := &multiResponseQuerier{responses: []string{"summary-a", "summary-b", "summary-c"}}
-	r, err := NewREPL(q, t.TempDir(), nil)
+	r, err := NewREPL(q, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -143,9 +135,9 @@ print("|".join(results))`)
 }
 
 func TestREPLSubLMError(t *testing.T) {
-	skipIfNoPython(t)
+	requirePython(t)
 	q := &fakeQuerier{err: fmt.Errorf("api down")}
-	r, err := NewREPL(q, t.TempDir(), nil)
+	r, err := NewREPL(q, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -166,11 +158,11 @@ except RuntimeError as e:
 }
 
 func TestREPLReadFile(t *testing.T) {
-	skipIfNoPython(t)
+	requirePython(t)
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "test.txt"), []byte("line1\nline2\nline3\n"), 0644)
 
-	r, err := NewREPL(nil, dir, nil)
+	r, err := NewREPL(nil, dir)
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -187,11 +179,11 @@ print(content)`)
 }
 
 func TestREPLReadFileLineRange(t *testing.T) {
-	skipIfNoPython(t)
+	requirePython(t)
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "test.txt"), []byte("line0\nline1\nline2\nline3\nline4\n"), 0644)
 
-	r, err := NewREPL(nil, dir, nil)
+	r, err := NewREPL(nil, dir)
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -209,9 +201,9 @@ print(content)`)
 }
 
 func TestREPLReadFilePathTraversal(t *testing.T) {
-	skipIfNoPython(t)
+	requirePython(t)
 	dir := t.TempDir()
-	r, err := NewREPL(nil, dir, nil)
+	r, err := NewREPL(nil, dir)
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -232,8 +224,8 @@ except RuntimeError as e:
 }
 
 func TestREPLFinal(t *testing.T) {
-	skipIfNoPython(t)
-	r, err := NewREPL(nil, t.TempDir(), nil)
+	requirePython(t)
+	r, err := NewREPL(nil, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -252,8 +244,8 @@ func TestREPLFinal(t *testing.T) {
 }
 
 func TestREPLFinalVar(t *testing.T) {
-	skipIfNoPython(t)
-	r, err := NewREPL(nil, t.TempDir(), nil)
+	requirePython(t)
+	r, err := NewREPL(nil, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -273,8 +265,8 @@ func TestREPLFinalVar(t *testing.T) {
 }
 
 func TestREPLStatePersists(t *testing.T) {
-	skipIfNoPython(t)
-	r, err := NewREPL(nil, t.TempDir(), nil)
+	requirePython(t)
+	r, err := NewREPL(nil, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -291,8 +283,8 @@ func TestREPLStatePersists(t *testing.T) {
 }
 
 func TestREPLPythonError(t *testing.T) {
-	skipIfNoPython(t)
-	r, err := NewREPL(nil, t.TempDir(), nil)
+	requirePython(t)
+	r, err := NewREPL(nil, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -311,8 +303,8 @@ func TestREPLPythonError(t *testing.T) {
 }
 
 func TestREPLBlocksImport(t *testing.T) {
-	skipIfNoPython(t)
-	r, err := NewREPL(nil, t.TempDir(), nil)
+	requirePython(t)
+	r, err := NewREPL(nil, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -347,12 +339,12 @@ func TestREPLBlocksImport(t *testing.T) {
 }
 
 func TestREPLOSSandboxBlocksFileCreate(t *testing.T) {
-	skipIfNoPython(t)
+	requirePython(t)
 	if runtime.GOOS != "darwin" {
 		t.Skip("OS-level sandbox test only runs on macOS")
 	}
 
-	r, err := NewREPL(nil, t.TempDir(), nil)
+	r, err := NewREPL(nil, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -389,16 +381,10 @@ else:
 	}
 }
 
-type echoQuerier struct{}
-
-func (q *echoQuerier) Query(_ context.Context, prompt string, _ int64) (string, error) {
-	return "echo:" + prompt, nil
-}
-
 func TestREPLBatchSubLM(t *testing.T) {
-	skipIfNoPython(t)
-	q := &echoQuerier{}
-	r, err := NewREPL(q, t.TempDir(), nil)
+	requirePython(t)
+	q := stubQuerier{}
+	r, err := NewREPL(q, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -417,9 +403,9 @@ print("|".join(results))
 }
 
 func TestREPLBatchSubLMEmpty(t *testing.T) {
-	skipIfNoPython(t)
-	q := &echoQuerier{}
-	r, err := NewREPL(q, t.TempDir(), nil)
+	requirePython(t)
+	q := stubQuerier{}
+	r, err := NewREPL(q, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -437,10 +423,28 @@ print(len(results))
 	}
 }
 
+func TestREPLBatchSubLMPromptSizeGuard(t *testing.T) {
+	requirePython(t)
+	q := stubQuerier{}
+	r, err := NewREPL(q, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewREPL: %v", err)
+	}
+	defer r.Close()
+
+	stdout, _, _, err := r.Execute(context.Background(), `llm_batch(['x' * 100_000] * 3)`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(stdout, "llm_batch prompts total") {
+		t.Fatalf("expected prompt-size guard message, got stdout = %q", stdout)
+	}
+}
+
 func TestREPLBatchSubLMError(t *testing.T) {
-	skipIfNoPython(t)
+	requirePython(t)
 	q := &fakeQuerier{err: fmt.Errorf("api down")}
-	r, err := NewREPL(q, t.TempDir(), nil)
+	r, err := NewREPL(q, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -461,14 +465,14 @@ except RuntimeError as e:
 }
 
 func TestREPLExecTimeout(t *testing.T) {
-	skipIfNoPython(t)
+	requirePython(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("signal.alarm not available on Windows")
 	}
 	if testing.Short() {
 		t.Skip("timeout test requires 30s wait")
 	}
-	r, err := NewREPL(nil, t.TempDir(), nil)
+	r, err := NewREPL(nil, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -496,8 +500,8 @@ func TestREPLExecTimeout(t *testing.T) {
 }
 
 func TestREPLClose(t *testing.T) {
-	skipIfNoPython(t)
-	r, err := NewREPL(nil, t.TempDir(), nil)
+	requirePython(t)
+	r, err := NewREPL(nil, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -506,9 +510,29 @@ func TestREPLClose(t *testing.T) {
 	}
 }
 
+func TestREPLCapsOversizedStdout(t *testing.T) {
+	requirePython(t)
+	r, err := NewREPL(nil, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewREPL: %v", err)
+	}
+	defer r.Close()
+
+	stdout, _, _, err := r.Execute(context.Background(), `print('y' * 2_000_000)`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(stdout) >= 110_000 {
+		t.Fatalf("stdout not bounded: %d chars", len(stdout))
+	}
+	if !strings.Contains(stdout, "[stdout truncated") {
+		t.Fatalf("stdout missing truncation notice: %q", stdout[:200])
+	}
+}
+
 func TestREPLSafeImportAllowlist(t *testing.T) {
-	skipIfNoPython(t)
-	r, err := NewREPL(nil, t.TempDir(), nil)
+	requirePython(t)
+	r, err := NewREPL(nil, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewREPL: %v", err)
 	}
@@ -549,5 +573,39 @@ func TestREPLSafeImportAllowlist(t *testing.T) {
 				t.Fatalf("stdout = %q, want substring %q", stdout, tt.want)
 			}
 		})
+	}
+}
+
+func TestREPLSurvivesSIGINT(t *testing.T) {
+	requirePython(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("SIGINT not supported on windows")
+	}
+	r, err := NewREPL(nil, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewREPL: %v", err)
+	}
+	defer r.Close()
+
+	// Ensure the interpreter is up and the SIGINT handler installed.
+	if _, _, _, err := r.Execute(context.Background(), `x = 1`); err != nil {
+		t.Fatalf("warmup Execute: %v", err)
+	}
+
+	// Terminal ^C signals the whole process group; the REPL must ignore it
+	// and keep serving until the parent closes stdin or sends shutdown.
+	if err := r.cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatalf("signal: %v", err)
+	}
+
+	stdout, _, _, err := r.Execute(context.Background(), `print("alive")`)
+	if err != nil {
+		t.Fatalf("Execute after SIGINT: %v", err)
+	}
+	if strings.TrimSpace(stdout) != "alive" {
+		t.Fatalf("stdout = %q, want %q", stdout, "alive")
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("Close after SIGINT: %v", err)
 	}
 }

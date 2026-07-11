@@ -45,6 +45,7 @@ var (
 
 	OpenRouter_Gemma4_31B = openrouter.Model_Gemma4_31B.(ModelDefinition)
 
+	Ollama_GLM5_2_Cloud = ollama.Model_GLM5_2_Cloud.(ModelDefinition)
 	Ollama_Qwen3_5_9B   = ollama.Model_Qwen3_5_9B.(ModelDefinition)
 	Ollama_Qwen3_5_35B  = ollama.Model_Qwen3_5_35B.(ModelDefinition)
 	Ollama_Qwen3_5_122B = ollama.Model_Qwen3_5_122B.(ModelDefinition)

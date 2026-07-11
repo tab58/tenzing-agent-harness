@@ -35,7 +35,12 @@ func main() {
 	fmt.Printf("  listen  http://localhost%s\n", app.Addr())
 	fmt.Println()
 
-	if err := app.Start(ctx); err != nil {
+	err = app.Start(ctx)
+	// Restore default signal handling before cleanup: a second Ctrl+C now
+	// kills the process instead of being swallowed by NotifyContext.
+	stop()
+	fmt.Println("shutting down (Ctrl+C again to force)")
+	if err != nil {
 		slog.Error("server ended with error", "error", err)
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)

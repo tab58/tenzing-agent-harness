@@ -96,7 +96,7 @@ func (t *ReadTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRes
 
 	endLine := offset + len(visible)
 	if truncated {
-		fmt.Fprintf(&sb, "\n[Showing lines %d-%d of %d. For full-file analysis use rlm; to page use Read with offset=%d.]",
+		fmt.Fprintf(&sb, "\n[Showing lines %d-%d of %d. For full-file analysis use the repl tool (read_file + llm_query); to page use Read with offset=%d.]",
 			offset+1, endLine, totalLines, endLine)
 	} else {
 		fmt.Fprintf(&sb, "\n[%d lines]", totalLines)

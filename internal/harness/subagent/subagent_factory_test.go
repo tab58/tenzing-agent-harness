@@ -2,8 +2,12 @@ package subagent
 
 import (
 	"context"
+	"os/exec"
+	"regexp"
+	"strings"
 	"testing"
 
+	"github.com/tab58/tenzing-agent-harness/internal/harness/blackboard"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 
 	"github.com/tab58/llm-providers/common"
@@ -35,7 +39,6 @@ type stubAgent struct{}
 func (s *stubAgent) GetCurrentModel() string                                         { return "stub" }
 func (s *stubAgent) UpdateToolDefinitions(_ []common.ToolDefinition)                 {}
 func (s *stubAgent) UpdateSkillMap(_ map[string]string)                              {}
-func (s *stubAgent) UpdateOffloadFn(_ func(context.Context, string) (string, error)) {}
 func (s *stubAgent) UpdateStreamCallback(_ func(string))                             {}
 func (s *stubAgent) UpdateThinkingCallback(_ func(string))                           {}
 func (s *stubAgent) SetTodoProvider(_ func() string)                                 {}
@@ -100,7 +103,7 @@ func TestSubAgentFactoryChildAtMaxDepthHasNoSpawnAgent(t *testing.T) {
 		Cwd:           t.TempDir(),
 	})
 
-	registry := factory.buildChildToolRegistry()
+	registry := factory.buildChildToolRegistry("a0")
 	for _, def := range registry.Definitions() {
 		if def.Name() == "spawn_agent" {
 			t.Fatal("child at max depth should not have spawn_agent tool")
@@ -119,7 +122,7 @@ func TestSubAgentFactoryChildBelowMaxDepthHasSpawnAgent(t *testing.T) {
 		},
 	})
 
-	registry := factory.buildChildToolRegistry()
+	registry := factory.buildChildToolRegistry("a0")
 	found := false
 	for _, def := range registry.Definitions() {
 		if def.Name() == "spawn_agent" {
@@ -132,27 +135,6 @@ func TestSubAgentFactoryChildBelowMaxDepthHasSpawnAgent(t *testing.T) {
 	}
 }
 
-func TestSubAgentFactoryChildHasRLMTool(t *testing.T) {
-	factory := NewSubAgentFactory(SubAgentFactoryConfig{
-		AgentLLM:      &stubLLM{},
-		MaxDepth:      1,
-		MaxIterations: 5,
-		Cwd:           t.TempDir(),
-	})
-
-	registry := factory.buildChildToolRegistry()
-	found := false
-	for _, def := range registry.Definitions() {
-		if def.Name() == "rlm" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatal("child should have rlm tool")
-	}
-}
-
 func TestSubAgentFactoryImmutability(t *testing.T) {
 	factory := NewSubAgentFactory(SubAgentFactoryConfig{
 		AgentLLM:      &stubLLM{},
@@ -162,9 +144,138 @@ func TestSubAgentFactoryImmutability(t *testing.T) {
 	})
 
 	depthBefore := factory.currentDepth
-	_ = factory.buildChildToolRegistry()
+	_ = factory.buildChildToolRegistry("a0")
 
 	if factory.currentDepth != depthBefore {
 		t.Fatalf("factory currentDepth mutated: was %d, now %d", depthBefore, factory.currentDepth)
+	}
+}
+
+// fixedAnswerAgent returns a canned final answer of any size.
+type fixedAnswerAgent struct{ answer string }
+
+func (s *fixedAnswerAgent) GetCurrentModel() string                                         { return "stub" }
+func (s *fixedAnswerAgent) UpdateToolDefinitions(_ []common.ToolDefinition)                 {}
+func (s *fixedAnswerAgent) UpdateSkillMap(_ map[string]string)                              {}
+func (s *fixedAnswerAgent) UpdateStreamCallback(_ func(string))                             {}
+func (s *fixedAnswerAgent) UpdateThinkingCallback(_ func(string))                           {}
+func (s *fixedAnswerAgent) SetTodoProvider(_ func() string)                                 {}
+func (s *fixedAnswerAgent) DoReasoning(_ context.Context, _ []string, _ []string) (runner.ReasoningResult, error) {
+	return runner.ReasoningResult{FinalAnswer: s.answer}, nil
+}
+
+func newTestBlackboard(t *testing.T) *blackboard.Blackboard {
+	t.Helper()
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not found on PATH")
+	}
+	bb := blackboard.New(blackboard.Config{WorkingDir: t.TempDir()})
+	t.Cleanup(func() { _ = bb.Close() })
+	return bb
+}
+
+func factoryWithAnswer(t *testing.T, bb *blackboard.Blackboard, answer string) *SubAgentFactory {
+	t.Helper()
+	return NewSubAgentFactory(SubAgentFactoryConfig{
+		AgentLLM:      &stubLLM{},
+		MaxDepth:      1,
+		MaxIterations: 5,
+		Cwd:           t.TempDir(),
+		Blackboard:    bb,
+		AgentBuilder: func(llm common.LLM, sp string) (runner.Agent, error) {
+			return &fixedAnswerAgent{answer: answer}, nil
+		},
+	})
+}
+
+func TestSpawnAgentSmallResultReturnedInline(t *testing.T) {
+	bb := newTestBlackboard(t)
+	factory := factoryWithAnswer(t, bb, "short answer")
+
+	result, err := factory.SpawnAgent(context.Background(), "task", "")
+	if err != nil {
+		t.Fatalf("SpawnAgent: %v", err)
+	}
+	if !strings.HasSuffix(result, "short answer") {
+		t.Errorf("small result should end with the verbatim answer, got %q", result)
+	}
+	m := regexp.MustCompile(`^Sub-agent ([0-9a-f_]+) completed \(blackboard slot bb\['([0-9a-f_]+)'\]\)\. `).FindStringSubmatch(result)
+	if m == nil {
+		t.Fatalf("inline result missing slot prefix: %q", result)
+	}
+	if m[1] != m[2] {
+		t.Errorf("agent id %q != slot %q in prefix", m[1], m[2])
+	}
+}
+
+func TestSpawnAgentLargeResultDepositedWithPreview(t *testing.T) {
+	bb := newTestBlackboard(t)
+	long := strings.Repeat("HEAD", 500) + strings.Repeat("TAIL", 500) // 4000 chars
+	factory := factoryWithAnswer(t, bb, long)
+
+	result, err := factory.SpawnAgent(context.Background(), "task", "")
+	if err != nil {
+		t.Fatalf("SpawnAgent: %v", err)
+	}
+	if len(result) >= len(long) {
+		t.Errorf("result not truncated: %d chars", len(result))
+	}
+	if !strings.Contains(result, "4000 chars") {
+		t.Errorf("preview missing size: %q", result)
+	}
+
+	m := regexp.MustCompile(`bb\["([0-9a-f_]+)"\]`).FindStringSubmatch(result)
+	if m == nil {
+		t.Fatalf("preview does not reference a bb slot: %q", result)
+	}
+	out, err := bb.Execute(context.Background(), "main",
+		"print(len(bb['"+m[1]+"']['result']))")
+	if err != nil {
+		t.Fatalf("readback: %v", err)
+	}
+	if strings.TrimSpace(out) != "4000" {
+		t.Errorf("deposited length = %q, want 4000", out)
+	}
+}
+
+func TestSpawnAgentNilBlackboardReturnsFullResult(t *testing.T) {
+	long := strings.Repeat("x", 5000)
+	factory := factoryWithAnswer(t, nil, long)
+
+	result, err := factory.SpawnAgent(context.Background(), "task", "")
+	if err != nil {
+		t.Fatalf("SpawnAgent: %v", err)
+	}
+	if result != long {
+		t.Errorf("nil blackboard must inline full result, got %d chars", len(result))
+	}
+}
+
+func TestChildRegistryHasREPLToolWhenBlackboardSet(t *testing.T) {
+	bb := newTestBlackboard(t)
+	factory := factoryWithAnswer(t, bb, "x")
+
+	registry := factory.buildChildToolRegistry("a99")
+	found := false
+	for _, def := range registry.Definitions() {
+		if def.Name() == "repl" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("child registry missing repl tool when blackboard is set")
+	}
+}
+
+func TestChildRegistryHasNoREPLToolWithoutBlackboard(t *testing.T) {
+	factory := NewSubAgentFactory(SubAgentFactoryConfig{
+		AgentLLM: &stubLLM{},
+		Cwd:      t.TempDir(),
+	})
+	for _, def := range factory.buildChildToolRegistry("a99").Definitions() {
+		if def.Name() == "repl" {
+			t.Error("child registry has repl tool despite nil blackboard")
+		}
 	}
 }

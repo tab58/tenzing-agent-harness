@@ -16,7 +16,6 @@ type Agent interface {
 	GetCurrentModel() string
 	UpdateToolDefinitions(tooldefs []common.ToolDefinition)
 	UpdateSkillMap(skillMap map[string]string)
-	UpdateOffloadFn(fn func(ctx context.Context, input string) (string, error))
 	UpdateStreamCallback(fn func(text string))
 	UpdateThinkingCallback(fn func(text string))
 	SetTodoProvider(fn func() string)
@@ -42,7 +41,10 @@ type CompressionInfo struct {
 }
 
 type ReasoningResult struct {
-	ToolCall    *tooldef.ToolCall
+	// ToolCalls holds every tool_use block from the response, in order. The
+	// runner must execute all of them and feed the results back in the same
+	// order so each pairs with its tool_use id.
+	ToolCalls   []tooldef.ToolCall
 	FinalAnswer string
 	Meta        ResponseMeta
 	Compression *CompressionInfo
@@ -50,10 +52,8 @@ type ReasoningResult struct {
 
 func (r ReasoningResult) String() string {
 	var metadataBuilder strings.Builder
-	if r.ToolCall != nil {
-		name := r.ToolCall.Name
-		input := r.ToolCall.Input
-		fmt.Fprintf(&metadataBuilder, "name:%s; input:%s;", name, input)
+	for _, tc := range r.ToolCalls {
+		fmt.Fprintf(&metadataBuilder, "name:%s; input:%s;", tc.Name, tc.Input)
 	}
 	if r.FinalAnswer != "" {
 		fmt.Fprintf(&metadataBuilder, "finalAnswer:%s;", r.FinalAnswer)

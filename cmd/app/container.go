@@ -13,6 +13,7 @@ import (
 	"github.com/tab58/huma-http-server/config"
 	"github.com/tab58/huma-http-server/router"
 	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/llm-providers/ollama"
 
 	"github.com/tab58/tenzing-agent-harness/internal/app"
 	"github.com/tab58/tenzing-agent-harness/internal/app/nexus"
@@ -35,6 +36,7 @@ type AppContainer struct {
 	cfg     *Config
 	cwd     string
 	logFile *os.File
+	logB    *app.LogBroadcaster
 	api     *agentServer
 	nexus   *nexus.Nexus
 	server  *httpserver.Server[router.MapAuthInfo]
@@ -60,13 +62,7 @@ func NewAppContainer() (*AppContainer, error) {
 		return nil, err
 	}
 
-	model := common.ModelDefinition{
-		Name:                 "glm-5.2",
-		MaxTokens:            32_768,
-		ContextWindowSize:    131_072,
-		DefaultContextWindow: 32_768,
-		Provider:             common.ProviderOllama,
-	}
+	model := ollama.Model_GLM5_2_Cloud.(common.ModelDefinition)
 
 	bus := events.NewEventBus()
 
@@ -126,6 +122,7 @@ func NewAppContainer() (*AppContainer, error) {
 		cfg:     cfg,
 		cwd:     cwd,
 		logFile: logFile,
+		logB:    logB,
 		api:     api,
 		nexus:   nx,
 		server:  server,
@@ -171,14 +168,16 @@ func (ac *AppContainer) Start(ctx context.Context) error {
 }
 
 // Shutdown stops nexus sources (so no new notifies can fire), cancels any
-// in-flight turn, stops the HTTP server, the harness, the event bus (which
-// ends the SSE forwarding goroutine), and closes the log file. Called once
-// from main's defer.
+// in-flight turn, ends open SSE streams (they would otherwise block the
+// graceful HTTP shutdown until its timeout), stops the HTTP server, the
+// harness, the event bus (which ends the SSE forwarding goroutine), and
+// closes the log file. Called once from main's defer.
 func (ac *AppContainer) Shutdown() {
 	if ac.nexus != nil {
 		ac.nexus.Stop()
 	}
 	ac.api.cancelActiveTurn()
+	ac.logB.Close()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := ac.server.Shutdown(shutdownCtx); err != nil {

@@ -105,10 +105,6 @@ func (a *Agent) UpdateSkillMap(skillMap map[string]string) {
 	a.skillMap = skillMap
 }
 
-func (a *Agent) UpdateOffloadFn(fn func(ctx context.Context, input string) (string, error)) {
-	a.history.UpdateOffloadFn(fn)
-}
-
 func (a *Agent) SetTodoProvider(fn func() string) {
 	a.history.SetTodoProvider(fn)
 }
@@ -123,14 +119,6 @@ func (a *Agent) UpdateThinkingCallback(fn func(text string)) {
 
 func (a *Agent) UpdateToolDefinitions(tooldefs []common.ToolDefinition) {
 	a.tools = tooldefs
-}
-
-// replaceInput replaces the string at index "idx" for "inputs" array
-func replaceInput(inputs []string, idx int, replacement string) []string {
-	out := make([]string, len(inputs))
-	copy(out, inputs)
-	out[idx] = replacement
-	return out
 }
 
 func (a *Agent) doStreamingReasoning(ctx context.Context, req common.CompletionRequest) (common.CompletionResponse, error) {
@@ -170,16 +158,6 @@ func (a *Agent) doStreamingReasoning(ctx context.Context, req common.CompletionR
 }
 
 func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminders []string) (runner.ReasoningResult, error) {
-	// if the inputs + context will blow the context limits, see if we can move to RLM
-	result, idx, err := a.history.ClassifyOverflow(ctx, inputs)
-	if err != nil {
-		slog.Warn("[offload] failed, using original input", "error", err)
-	}
-	if result != "" {
-		slog.Info("[offload] complete", "original_len", len(inputs[idx]), "result_len", len(result))
-		inputs = replaceInput(inputs, idx, "[RLM processed result]\n\n"+result)
-	}
-
 	// convert inputs arg to user messages and add to context. When the
 	// previous response contained tool_use blocks, inputs are tool outputs
 	// and must be sent back as tool_result blocks paired by id.
@@ -242,6 +220,7 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 
 	// get the LLM response
 	var resp common.CompletionResponse
+	var err error
 	if a.streamCallback != nil {
 		resp, err = a.doStreamingReasoning(ctx, req)
 	} else {
@@ -289,19 +268,21 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 		AssistantText: resp.Text(),
 	}
 
-	// if the action to take is a tool call, get it
+	// if the action to take is tool calls, return all of them; the runner
+	// executes each and feeds the results back in the same order.
 	toolCalls := resp.ToolCalls()
 	if len(toolCalls) > 0 {
 		a.pendingToolUses = toolCalls
-		// ponytail: only the first tool call is executed; the rest get
-		// "not executed" tool_results and the model re-issues them.
-		tc := toolCalls[0]
-		return runner.ReasoningResult{
-			ToolCall: &tooldef.ToolCall{
+		calls := make([]tooldef.ToolCall, len(toolCalls))
+		for i, tc := range toolCalls {
+			calls[i] = tooldef.ToolCall{
 				ID:    tc.ToolUseID,
 				Name:  tc.ToolName,
 				Input: string(tc.ToolInput),
-			},
+			}
+		}
+		return runner.ReasoningResult{
+			ToolCalls:   calls,
 			Meta:        meta,
 			Compression: compressionInfo,
 		}, nil

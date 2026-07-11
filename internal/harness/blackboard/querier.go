@@ -1,4 +1,4 @@
-package rlm
+package blackboard
 
 import (
 	"context"

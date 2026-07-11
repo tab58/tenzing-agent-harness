@@ -183,11 +183,14 @@ func TestDoReasoning_ToolResultPairing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoReasoning 1: %v", err)
 	}
-	if res.ToolCall == nil || res.ToolCall.ID != "tu-1" {
-		t.Fatalf("expected first tool call tu-1, got %+v", res.ToolCall)
+	if len(res.ToolCalls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %+v", res.ToolCalls)
+	}
+	if res.ToolCalls[0].ID != "tu-1" || res.ToolCalls[1].ID != "tu-2" {
+		t.Fatalf("expected tool calls tu-1, tu-2, got %+v", res.ToolCalls)
 	}
 
-	if _, err := ag.DoReasoning(context.Background(), []string{"file contents"}, nil); err != nil {
+	if _, err := ag.DoReasoning(context.Background(), []string{"a contents", "b contents"}, nil); err != nil {
 		t.Fatalf("DoReasoning 2: %v", err)
 	}
 
@@ -205,11 +208,14 @@ func TestDoReasoning_ToolResultPairing(t *testing.T) {
 	if last.Content[0].Type != common.ContentTypeToolResult || last.Content[0].ToolResultID != "tu-1" {
 		t.Errorf("block 0 = %+v, want tool_result for tu-1", last.Content[0])
 	}
-	if last.Content[0].ToolOutput != "file contents" {
-		t.Errorf("block 0 output = %q, want %q", last.Content[0].ToolOutput, "file contents")
+	if last.Content[0].ToolOutput != "a contents" {
+		t.Errorf("block 0 output = %q, want %q", last.Content[0].ToolOutput, "a contents")
 	}
 	if last.Content[1].Type != common.ContentTypeToolResult || last.Content[1].ToolResultID != "tu-2" {
-		t.Errorf("block 1 = %+v, want placeholder tool_result for tu-2", last.Content[1])
+		t.Errorf("block 1 = %+v, want tool_result for tu-2", last.Content[1])
+	}
+	if last.Content[1].ToolOutput != "b contents" {
+		t.Errorf("block 1 output = %q, want %q", last.Content[1].ToolOutput, "b contents")
 	}
 }
 

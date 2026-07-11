@@ -19,12 +19,19 @@ _last_output = ""
 _exec_count = 0
 
 _EXEC_TIMEOUT = 30
+_STDOUT_SEND_MAX = 100_000
+_PROMPT_SEND_MAX = 150_000
 _has_alarm = hasattr(signal, 'alarm')
 
 if _has_alarm:
     def _timeout_handler(signum, frame):
         raise TimeoutError(f"Code execution timed out ({_EXEC_TIMEOUT}s limit)")
     signal.signal(signal.SIGALRM, _timeout_handler)
+
+# Terminal ^C delivers SIGINT to the whole foreground process group, including
+# this subprocess. Lifecycle is owned by the Go parent (shutdown message or
+# stdin EOF), so ignore SIGINT instead of dying with a KeyboardInterrupt traceback.
+signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
 def _log(event, **kv):
@@ -53,10 +60,15 @@ def _print(*args):
 
 
 def _sub_lm(prompt, max_tokens=4096):
-    _log("callback_start", func="sub_lm", prompt_len=len(str(prompt)), max_tokens=max_tokens)
+    prompt = str(prompt)
+    if len(prompt) > _PROMPT_SEND_MAX:
+        raise ValueError(
+            "llm_query prompt is %d chars; max is %d. Slice the input and use llm_batch, or summarize in stages."
+            % (len(prompt), _PROMPT_SEND_MAX))
+    _log("callback_start", func="sub_lm", prompt_len=len(prompt), max_tokens=max_tokens)
     t0 = time.monotonic()
     _send({"type": "callback", "func": "sub_lm",
-           "args": {"prompt": str(prompt), "max_tokens": int(max_tokens)}})
+           "args": {"prompt": prompt, "max_tokens": int(max_tokens)}})
     resp = _recv()
     _log("callback_done", func="sub_lm", elapsed_ms=round((time.monotonic() - t0) * 1000), error=resp.get("error"), result_len=len(resp.get("result", "")))
     if resp.get("error"):
@@ -67,6 +79,11 @@ def _sub_lm(prompt, max_tokens=4096):
 def _llm_batch(prompts, max_tokens=4096):
     """Dispatch multiple sub-LLM queries in parallel. Returns list of response strings."""
     prompt_list = [str(p) for p in prompts]
+    total = sum(len(p) for p in prompt_list)
+    if total > _PROMPT_SEND_MAX:
+        raise ValueError(
+            "llm_batch prompts total %d chars; max is %d. Send smaller batches."
+            % (total, _PROMPT_SEND_MAX))
     _log("callback_start", func="sub_lm_batch", count=len(prompt_list), max_tokens=max_tokens)
     t0 = time.monotonic()
     _send({"type": "callback", "func": "sub_lm_batch",
@@ -111,19 +128,6 @@ def _list_files(pattern):
            "args": {"pattern": str(pattern)}})
     resp = _recv()
     _log("callback_done", func="list_files", error=resp.get("error"), result_len=len(resp.get("result", "")))
-    if resp.get("error"):
-        raise RuntimeError(resp["error"])
-    return resp["result"]
-
-
-def _rlm_query(context, query):
-    """Spawn a child RLM to recursively process context with a query."""
-    _log("callback_start", func="rlm_query", context_len=len(str(context)), query_len=len(str(query)))
-    t0 = time.monotonic()
-    _send({"type": "callback", "func": "rlm_query",
-           "args": {"prompt": f"Context:\n{str(context)}\n\nQuery: {str(query)}"}})
-    resp = _recv()
-    _log("callback_done", func="rlm_query", elapsed_ms=round((time.monotonic() - t0) * 1000), error=resp.get("error"), result_len=len(resp.get("result", "")))
     if resp.get("error"):
         raise RuntimeError(resp["error"])
     return resp["result"]
@@ -310,10 +314,6 @@ while True:
     if msg["type"] == "shutdown":
         break
 
-    if msg["type"] == "enable_rlm_query":
-        _namespace["rlm_query"] = _rlm_query
-        continue
-
     if msg["type"] == "set_var":
         _log("set_var", name=msg["name"], value_len=len(str(msg["value"])))
         _namespace[msg["name"]] = msg["value"]
@@ -341,7 +341,7 @@ while True:
                 "Break into smaller steps or delegate to llm_query/llm_batch.\n")
         except Exception:
             tb = traceback.format_exc()
-            _log("exec_error", n=_exec_count, traceback=tb)
+            _log("exec_error", n=_exec_count, traceback=tb[:2000])
             _stdout_capture.append(f"[Python Error] {tb}")
         finally:
             if _has_alarm:
@@ -351,12 +351,18 @@ while True:
         stdout = "".join(_stdout_capture)
         _last_output = stdout
 
+        sent = stdout
+        if len(sent) > _STDOUT_SEND_MAX:
+            sent = sent[:_STDOUT_SEND_MAX] + (
+                "\n[stdout truncated: %d chars total; use page_output(offset, limit) to read more]"
+                % len(stdout))
+
         user_vars = [k for k in _namespace if not k.startswith("_") and k != "__builtins__"]
         _log("exec_done", n=_exec_count, elapsed_ms=elapsed_ms, stdout_len=len(stdout), done=_done, has_final=_final_answer is not None, namespace_vars=user_vars)
 
         _send({
             "type": "result",
-            "stdout": stdout,
+            "stdout": sent,
             "done": _done,
             "final": _final_answer,
         })

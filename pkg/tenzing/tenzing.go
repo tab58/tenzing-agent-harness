@@ -34,9 +34,7 @@ var (
 	WithSubagentModel         = harness.WithSubagentModel
 	WithSubagentDepth         = harness.WithSubagentDepth
 	WithSubagentMaxIterations = harness.WithSubagentMaxIterations
-	WithRLMModel              = harness.WithRLMModel
-	WithRLMDefaultIterations  = harness.WithRLMDefaultIterations
-	WithRLMMaxIterations      = harness.WithRLMMaxIterations
+	WithBlackboardModel       = harness.WithBlackboardModel
 	WithAdvisorModel          = harness.WithAdvisorModel
 	WithDisabledTool          = harness.WithDisabledTool
 	WithSkillsDir             = harness.WithSkillsDir
@@ -46,6 +44,7 @@ var (
 	WithEventBus              = harness.WithEventBus
 	WithTextDeltaHandler      = harness.WithTextDeltaHandler
 	WithThinkingDeltaHandler  = harness.WithThinkingDeltaHandler
+	WithBlackboardDisabled    = harness.WithBlackboardDisabled
 )
 
 // Agent is the "brain" contract consumed by the runner; implement it and

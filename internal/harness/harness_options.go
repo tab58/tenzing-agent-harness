@@ -33,15 +33,9 @@ type harnessOptions struct {
 	// subagentMaxIterations caps loop iterations per subagent.
 	subagentMaxIterations int
 
-	// rlmModel is the model for RLM fetcher/querier tasks. Zero value falls
-	// back to the harness main model.
-	rlmModel common.ModelDefinition
-
-	// rlmDefaultIterations is the initial iteration budget per RLM agent.
-	rlmDefaultIterations int
-
-	// rlmMaxIterations caps iterations per RLM agent.
-	rlmMaxIterations int
+	// blackboardModel is the model used for llm_query/llm_batch sub-LM calls
+	// inside the shared blackboard REPL; unset falls back to the main model.
+	blackboardModel common.ModelDefinition
 
 	// advisorModel enables the advisor tool when set (non-zero Name).
 	advisorModel common.ModelDefinition
@@ -73,6 +67,10 @@ type harnessOptions struct {
 	// disabledTools removes tools by name (case-insensitive) after all
 	// registration, including built-ins like "bash" and "edit".
 	disabledTools []string
+
+	// blackboardDisabled turns off the shared blackboard REPL and its
+	// repl tool (enabled by default).
+	blackboardDisabled bool
 }
 
 func defaultHarnessOptions() *harnessOptions {
@@ -136,23 +134,12 @@ func WithSubagentMaxIterations(maxIter int) HarnessOption {
 	}
 }
 
-// WithRLMModel sets the model used for RLM fetch/query tasks. Unset falls
-// back to the main model.
-func WithRLMModel(model common.ModelDefinition) HarnessOption {
+// WithBlackboardModel sets the model used for llm_query/llm_batch sub-LM
+// calls inside the shared blackboard REPL; unset falls back to the main
+// model.
+func WithBlackboardModel(model common.ModelDefinition) HarnessOption {
 	return func(o *harnessOptions) {
-		o.rlmModel = model
-	}
-}
-
-func WithRLMDefaultIterations(iter int) HarnessOption {
-	return func(o *harnessOptions) {
-		o.rlmDefaultIterations = iter
-	}
-}
-
-func WithRLMMaxIterations(maxIter int) HarnessOption {
-	return func(o *harnessOptions) {
-		o.rlmMaxIterations = maxIter
+		o.blackboardModel = model
 	}
 }
 
@@ -215,5 +202,13 @@ func WithTextDeltaHandler(f func(string)) HarnessOption {
 func WithThinkingDeltaHandler(f func(string)) HarnessOption {
 	return func(o *harnessOptions) {
 		o.onThinkingDelta = f
+	}
+}
+
+// WithBlackboardDisabled turns off the shared blackboard REPL. The repl
+// tool is not registered and subagent results are always returned inline.
+func WithBlackboardDisabled() HarnessOption {
+	return func(o *harnessOptions) {
+		o.blackboardDisabled = true
 	}
 }

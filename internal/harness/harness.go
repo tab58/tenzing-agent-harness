@@ -8,8 +8,8 @@ import (
 
 	"github.com/tab58/tenzing-agent-harness/internal/agent"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/advisor"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/blackboard"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/rlm"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/subagent"
@@ -26,6 +26,7 @@ type Harness struct {
 	todoFile        *todo.TodoFile
 	eventBus        *events.EventBus
 	stopHooks       func()
+	blackboard      *blackboard.Blackboard
 }
 
 // EventBus returns the harness event bus. It is always non-nil.
@@ -61,18 +62,24 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 	if subagentModel.Name == "" {
 		subagentModel = mainModel
 	}
-	rlmModel := o.rlmModel
-	if rlmModel.Name == "" {
-		rlmModel = mainModel
-	}
 
 	mainLLM, err := llms.get(mainModel)
 	if err != nil {
 		return nil, fmt.Errorf("build main LLM: %w", err)
 	}
-	rlmLLM, err := llms.get(rlmModel)
-	if err != nil {
-		return nil, fmt.Errorf("build RLM LLM: %w", err)
+
+	// blackboardModel serves the shared blackboard REPL's llm_query/llm_batch
+	// sub-LM calls. Only resolved when the blackboard is enabled.
+	var blackboardLLM common.LLM
+	if !o.blackboardDisabled {
+		blackboardModel := o.blackboardModel
+		if blackboardModel.Name == "" {
+			blackboardModel = mainModel
+		}
+		blackboardLLM, err = llms.get(blackboardModel)
+		if err != nil {
+			return nil, fmt.Errorf("build blackboard LLM: %w", err)
+		}
 	}
 
 	// get cwd
@@ -97,39 +104,22 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		skillsRegistry.RegisterSkillDir(skillDir)
 	}
 
-	rlmProgressFn := func(ev rlm.ProgressEvent) {
-		detail := ev.Output
-		if ev.Phase == "repl_exec" {
-			detail = ev.CodeBlock
-		}
-		o.eventBus.Emit(events.ToolProgressEvent{
-			BaseEvent: events.NewBaseEvent(events.EventToolProgress, ""),
-			ToolName:  "rlm",
-			Phase:     ev.Phase,
-			Detail:    detail,
-			Iteration: ev.Iteration,
-			TokensIn:  ev.TokensIn,
-			TokensOut: ev.TokensOut,
-		})
-	}
-
-	rlmEngine, err := rlm.NewEngine(rlm.EngineConfig{
-		NewFetcher:        rlm.NewSimpleFetcherFactory(rlmLLM),
-		Querier:           rlm.NewLLMQuerier(rlmLLM),
-		MaxDepth:          1,
-		WorkingDir:        cwd,
-		OnProgress:        rlmProgressFn,
-		DefaultIterations: o.rlmDefaultIterations,
-		MaxIterations:     o.rlmMaxIterations,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize RLM engine: %w", err)
-	}
-
 	toolRegistry := tools.NewRegistry(cwd)
 	toolRegistry.RegisterFromProvider(skillsRegistry)
-	toolRegistry.RegisterFromProvider(rlmEngine)
 	toolRegistry.RegisterFromProvider(todoFile)
+
+	var bb *blackboard.Blackboard
+	if !o.blackboardDisabled {
+		bb = blackboard.New(blackboard.Config{
+			Querier:    blackboard.NewLLMQuerier(blackboardLLM),
+			WorkingDir: cwd,
+		})
+		toolRegistry.Register(blackboard.NewREPLTool(bb, "main"))
+	}
+
+	// Pre-generated so the subagent factory (built before the runner) can
+	// derive hierarchical child IDs from it: "<mainID>_<hex>".
+	mainRunnerID := runner.NewID()
 
 	if o.subagentMaxDepth > 0 {
 		subagentLLM, err := llms.get(subagentModel)
@@ -138,12 +128,13 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		}
 		subagentFactory := subagent.NewSubAgentFactory(subagent.SubAgentFactoryConfig{
 			AgentLLM:      subagentLLM,
-			RLMModel:      rlmLLM,
 			AgentBuilder:  brain,
 			MaxDepth:      o.subagentMaxDepth,
 			MaxIterations: o.subagentMaxIterations,
 			Cwd:           cwd,
 			Emitter:       o.eventBus,
+			Blackboard:    bb,
+			ParentID:      mainRunnerID,
 		})
 		toolRegistry.Register(subagent.NewSpawnAgentTool(subagentFactory))
 	}
@@ -170,12 +161,12 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		return nil, fmt.Errorf("build main agent: %w", err)
 	}
 	mainAgent.UpdateToolDefinitions(toolRegistry.ProviderDefinitions())
-	mainAgent.UpdateOffloadFn(rlmEngine.Run)
 	mainAgent.SetTodoProvider(todoFile.FormatReminder)
 
 	// create agent runner
 	mainAgentRunner, err := runner.NewAgentRunner(
 		mainAgent,
+		runner.WithID(mainRunnerID),
 		runner.WithToolRegistry(toolRegistry),
 		runner.WithSkillsRegistry(skillsRegistry),
 		runner.WithTodoFile(todoFile),
@@ -194,12 +185,16 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		todoFile:        todoFile,
 		eventBus:        o.eventBus,
 		stopHooks:       stopHooks,
+		blackboard:      bb,
 	}, nil
 }
 
 func (h *Harness) Shutdown() {
 	if h.stopHooks != nil {
 		h.stopHooks()
+	}
+	if h.blackboard != nil {
+		_ = h.blackboard.Close()
 	}
 }
 

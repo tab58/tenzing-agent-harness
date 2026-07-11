@@ -34,14 +34,14 @@ Provider-agnostic via canonical types (`Message`, `ContentBlock`, `CompletionReq
 - **Subagents** — spawn isolated agent loops with fresh context; only the final summary returns to the parent
 - **Task graph** — persistent, dependency-aware task board (`.agent_todo.json`) with mutex-guarded atomic operations
 - **Context compression** — three-layer system: recent messages kept verbatim, older messages summarized via LLM, summaries persisted to `.agent_memory.md`
-- **RLM engine** — recursive language model execution with a sandboxed Python REPL for processing inputs beyond the context window (probe → decompose → sub-LLM query → aggregate)
+- **Shared blackboard REPL** — one persistent, sandboxed Python REPL shared by the main agent and subagents, for processing inputs beyond the context window (`llm_query`/`llm_batch` sub-LLM calls in loops over shared state)
 - **Todo planning** — model commits a plan before acting, progress re-injected as reminders after every tool call
 
 ## Prerequisites
 
 - Go 1.25.9+
 - [Task](https://taskfile.dev) (optional, for `task app`)
-- Python 3 (for the RLM REPL sandbox)
+- Python 3 (for the blackboard REPL)
 
 ## Quick Start
 
@@ -74,7 +74,7 @@ cmd/
 internal/
   agent/                Agent implementation + context management
     context/            Compression, overflow routing
-    context/compressor/ Three-layer compressor + RLM router
+    context/compressor/ Three-layer compressor
   harness/              Core harness wiring
     runner/             AgentRunner, FSM loop
     tools/              Tool registry
@@ -84,7 +84,7 @@ internal/
     taskgraph/          Persistent task graph + tools
     todo/               Todo planning + tools
     snapshot/           File snapshot store + write/revert tools
-    rlm/                Recursive language model engine, Python REPL, sub-LM querier
+    blackboard/           Shared Python REPL (blackboard), REPL subprocess machinery, sub-LM querier
     prompts/            System prompt templates
   provider/             LLM provider implementations
     utils/              Rate limiting (token bucket, semaphore)
