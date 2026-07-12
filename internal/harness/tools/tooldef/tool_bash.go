@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"syscall"
 	"time"
 )
 
@@ -75,6 +76,15 @@ func (t *BashTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRes
 	if cwd != "" && isValidDirectory(cwd) {
 		cmd.Dir = cwd
 	}
+	// On timeout, kill the whole process group: killing only the shell leaves
+	// pipeline children holding the output pipe, blocking CombinedOutput long
+	// past the deadline.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	// Backstop: abandon the output pipe if something survives the group kill.
+	cmd.WaitDelay = 5 * time.Second
 
 	// output results
 	out, execErr := cmd.CombinedOutput()

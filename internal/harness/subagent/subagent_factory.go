@@ -96,6 +96,9 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 
 	systemPrompt := "You are a sub-agent. Complete the assigned task using your tools. " +
 		"Be thorough but concise in your final answer — it will be returned to the orchestrating agent."
+	if f.cwd != "" {
+		systemPrompt += " The project working directory is " + f.cwd + " — relative paths resolve there; do not guess other locations."
+	}
 	if f.blackboard != nil {
 		systemPrompt += " You share a persistent Python REPL (the repl tool) with other agents. " +
 			"Your blackboard slot is bb['" + agentID + "'] — write only there; read anything; " +

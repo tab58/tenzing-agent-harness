@@ -152,6 +152,22 @@ func TestMaybeCompressTooFewMessages(t *testing.T) {
 	}
 }
 
+// Summarization is a plumbing call: it must explicitly disable model
+// reasoning so thinking-by-default models don't burn tokens on it.
+func TestSummarizeDisablesThinking(t *testing.T) {
+	llm := &fakeLLM{response: "summary"}
+	c := newTestCompressor(t, llm, testContextWindow)
+
+	totalMsgs := KeepRecent + 4
+	msgs := makeMessages(totalMsgs, testThreshold/totalMsgs+1)
+	if _, did, err := c.MaybeCompress(context.Background(), msgs); err != nil || !did {
+		t.Fatalf("MaybeCompress did=%v err=%v, want compression", did, err)
+	}
+	if llm.lastReq.Think == nil || *llm.lastReq.Think {
+		t.Errorf("summarize request Think = %v, want explicit false", llm.lastReq.Think)
+	}
+}
+
 func TestMaybeCompressTriggered(t *testing.T) {
 	llm := &fakeLLM{response: "summary of old conversation"}
 	c := newTestCompressor(t, llm, testContextWindow)

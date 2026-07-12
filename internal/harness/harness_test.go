@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/prompts"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 
 	"github.com/tab58/llm-providers/common"
@@ -67,6 +68,47 @@ func newTestHarness(t *testing.T, opts ...HarnessOption) *Harness {
 
 func TestHarnessCreatesRunner(t *testing.T) {
 	newTestHarness(t)
+}
+
+// Regression: without WithSystemPrompt, the runner logged the default prompt
+// but the agent was built with "" — every main-agent request went to the LLM
+// with an empty system prompt.
+func TestMainAgentBuiltWithResolvedSystemPrompt(t *testing.T) {
+	tests := []struct {
+		name string
+		opts []HarnessOption
+		want string
+	}{
+		{"explicit prompt", []HarnessOption{WithSystemPrompt("custom prompt")}, "custom prompt"},
+		{"default prompt when unset", nil, prompts.DefaultSystemPrompt()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured string
+			builder := func(_ common.LLM, sp string) (runner.Agent, error) {
+				captured = sp
+				return &stubAgent{}, nil
+			}
+			h, err := New(testModel, append([]HarnessOption{
+				WithAgentBuilder(builder),
+				WithLLMFactory(stubFactory),
+			}, tt.opts...)...)
+			if err != nil {
+				t.Fatalf("New() error: %v", err)
+			}
+			if captured == "" {
+				t.Fatal("agent built with empty system prompt")
+			}
+			if captured != tt.want {
+				t.Errorf("agent system prompt = %q, want %q", captured, tt.want)
+			}
+			// The runner's copy (logging/accessor) must match what the agent got.
+			if h.SystemPrompt() != captured {
+				t.Errorf("runner prompt %q != agent prompt %q", h.SystemPrompt(), captured)
+			}
+		})
+	}
 }
 
 func TestHarnessRegistersSpawnAgentByDefault(t *testing.T) {

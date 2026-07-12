@@ -6,7 +6,7 @@ require (
 	github.com/danielgtaylor/huma/v2 v2.38.0
 	github.com/looplab/fsm v1.0.3
 	github.com/tab58/huma-http-server v0.3.0
-	github.com/tab58/llm-providers v0.3.0
+	github.com/tab58/llm-providers v0.3.2
 	go.yaml.in/yaml/v3 v3.0.4
 )
 

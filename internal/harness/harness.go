@@ -10,6 +10,7 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/harness/advisor"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/blackboard"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/prompts"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/subagent"
@@ -155,8 +156,17 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		toolRegistry = toolRegistry.CopyWithout(o.disabledTools...)
 	}
 
+	// Resolve the system prompt once: the agent (wire) and the runner
+	// (logging/accessor) must see the same string. Leaving it to the runner's
+	// own fallback sent requests with an empty system prompt while the log
+	// showed the default.
+	mainSystemPrompt := o.mainSystemPrompt
+	if mainSystemPrompt == "" {
+		mainSystemPrompt = prompts.DefaultSystemPrompt()
+	}
+
 	// build and wire the main agent
-	mainAgent, err := brain(mainLLM, o.mainSystemPrompt)
+	mainAgent, err := brain(mainLLM, mainSystemPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("build main agent: %w", err)
 	}
@@ -173,7 +183,7 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		runner.WithEmitter(o.eventBus),
 		runner.WithTextDeltaHandler(o.onTextDelta),
 		runner.WithThinkingDeltaHandler(o.onThinkingDelta),
-		runner.WithSystemPrompt(o.mainSystemPrompt),
+		runner.WithSystemPrompt(mainSystemPrompt),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("unable to initialize runner: %w", err)

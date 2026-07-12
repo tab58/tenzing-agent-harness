@@ -21,11 +21,15 @@ func NewLLMQuerier(llm common.LLM) Querier {
 }
 
 func (q *llmQuerier) Query(ctx context.Context, prompt string, maxTokens int64) (string, error) {
+	// Plumbing call: disable model reasoning — llm_query blocks the shared
+	// REPL, so latency matters more than deliberation.
+	noThink := false
 	resp, err := q.llm.SendSyncMessage(ctx, common.CompletionRequest{
 		Model:     q.llm.GetCurrentModel(),
 		System:    "Answer concisely and accurately.",
 		Messages:  []common.Message{common.NewUserMessage(prompt)},
 		MaxTokens: maxTokens,
+		Think:     &noThink,
 	})
 	if err != nil {
 		return "", err

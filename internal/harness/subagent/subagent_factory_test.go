@@ -268,6 +268,28 @@ func TestChildRegistryHasREPLToolWhenBlackboardSet(t *testing.T) {
 	}
 }
 
+// Regression: a sub-agent that doesn't know the working directory guesses
+// paths (observed: /home/user/repo, then a filesystem-wide find).
+func TestSubAgentSystemPromptIncludesWorkingDir(t *testing.T) {
+	cwd := t.TempDir()
+	var capturedPrompt string
+	factory := NewSubAgentFactory(SubAgentFactoryConfig{
+		AgentLLM: &stubLLM{},
+		Cwd:      cwd,
+		AgentBuilder: func(llm common.LLM, sp string) (runner.Agent, error) {
+			capturedPrompt = sp
+			return &stubAgent{}, nil
+		},
+	})
+
+	if _, err := factory.SpawnAgent(context.Background(), "task", ""); err != nil {
+		t.Fatalf("SpawnAgent error: %v", err)
+	}
+	if !strings.Contains(capturedPrompt, cwd) {
+		t.Fatalf("system prompt missing working directory %q:\n%s", cwd, capturedPrompt)
+	}
+}
+
 func TestChildRegistryHasNoREPLToolWithoutBlackboard(t *testing.T) {
 	factory := NewSubAgentFactory(SubAgentFactoryConfig{
 		AgentLLM: &stubLLM{},

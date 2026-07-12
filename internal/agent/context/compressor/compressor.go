@@ -142,11 +142,15 @@ func (c *Compressor) summarize(ctx context.Context, messages []common.Message) (
 		text = text[:maxSummarizeInput]
 	}
 
+	// Plumbing call: disable model reasoning — summarization happens inside
+	// the agent loop and shouldn't burn thinking tokens or latency.
+	noThink := false
 	resp, err := c.llm.SendSyncMessage(ctx, common.CompletionRequest{
 		Model:     c.llm.GetCurrentModel(),
 		System:    "Summarise this conversation. Keep all important decisions, code changes, file paths, and context. Be concise but complete.",
 		Messages:  []common.Message{common.NewUserMessage(text)},
 		MaxTokens: 4096,
+		Think:     &noThink,
 	})
 	if err != nil {
 		return "", fmt.Errorf("summarize call: %w", err)
