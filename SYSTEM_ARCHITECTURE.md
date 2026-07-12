@@ -207,9 +207,7 @@ type AgentConfig struct {
 
 `Agent` manages conversation history as `[]common.Message`, builds `CompletionRequest` each reasoning cycle, and parses `CompletionResponse` into `ReasoningResult`.
 
-Two constructors:
-- `New(cfg)` — basic agent, no compression
-- `NewWithCompressor(cfg, cwd)` — adds context compression. Loads prior memory from `.agent_memory.md` into history at startup. After each `DoReasoning` call, runs `MaybeCompress` to keep history within bounds.
+Constructor: `New(cfg)` — includes context compression. `cfg.InitialMemory` (a string, loaded by the harness for resumed conversations) seeds history with the prior session's summary. After each `DoReasoning` call, `MaybeCompress` keeps history within bounds. The agent performs no memory file I/O — persistence is the harness's job.
 
 ## Harness
 
@@ -319,7 +317,7 @@ Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn
 
 ### Blackboard (Shared REPL)
 
-Package `internal/harness/blackboard/`. A `Blackboard` is one persistent Python REPL per harness, shared by the main agent and every subagent. It wraps `NewREPL` (`repl.go`, `Querier`, and `bootstrap.py` in the same package host the sandboxed Python REPL subprocess machinery — there is no separate model-facing `rlm` tool). `bootstrap.py` carries no blackboard-specific logic — the shared namespace (`bb` dict) and helpers (`peek`, `bb_grep`) are injected via a one-time setup `Execute` call when the process lazily starts on first use. (`bootstrap.py`'s only blackboard-relevant feature is a transport-level stdout cap of 100k chars.) A single `sync.Mutex` serializes all access — the entire concurrency contract. If the REPL transport fails or a call is cancelled mid-execution, `Blackboard` closes and discards it so the next call restarts fresh (blackboard contents are lost); agents must tolerate a slot they expect being missing.
+Package `internal/harness/blackboard/`. A `Blackboard` is one persistent Python REPL per harness, shared by the main agent and every subagent. It wraps `NewREPL` (`repl.go`, `Querier`, and `bootstrap.py` in the same package host the sandboxed Python REPL subprocess machinery — there is no separate model-facing `rlm` tool). `bootstrap.py` carries no blackboard-specific logic — the shared namespace (`bb`, a guard dict that rejects writes to top-level keys other than the executing agent's slot) and helpers (`peek`, `bb_grep`) are injected via a one-time setup `Execute` call when the process lazily starts on first use. (`bootstrap.py`'s only blackboard-relevant feature is a transport-level stdout cap of 100k chars.) A single `sync.Mutex` serializes all access — the entire concurrency contract. If the REPL transport fails or a call is cancelled mid-execution, `Blackboard` closes and discards it so the next call restarts fresh (blackboard contents are lost); agents must tolerate a slot they expect being missing.
 
 - **`repl` tool** (`blackboard.NewREPLTool`) — one instance per agent, bound to a slot ID: `main` for the main agent, `a1`, `a2`, … for subagents (assigned from a package-level `atomic.Int64` counter in `subagent.nextAgentID`). Convention (not enforced in code): an agent writes only inside `bb['<its slot>']`, reads anything, never busy-waits on another slot. REPL stdout returned to the calling agent is truncated to `DefaultHeadChars`+`DefaultTailChars` (1500+500 = 2000) chars.
 - **Deposit/preview flow** (`SubAgentFactory.SpawnAgent`, `internal/harness/subagent/subagent_factory.go`) — a subagent's final answer up to `inlineResultMax` (2000) chars is returned inline, prefixed with `"Sub-agent <id> completed (blackboard slot bb['<id>'])."` so the orchestrator knows the slot even when nothing was deposited (the sub-agent may have written to its slot itself). Longer results are deposited via `Blackboard.Deposit` to `bb['<agent_id>']['result']` (agent ID validated against `[A-Za-z0-9_]+`, value passed through `SetVar`, never spliced into generated code) and the tool returns `"Sub-agent <id> completed."` plus a `Preview`: a 1500-char head / 500-char tail summary with a hint to inspect the full value via `peek()`/`bb_grep()`. If the deposit itself fails, `SpawnAgent` falls back to returning the full result inline.
@@ -384,14 +382,14 @@ Plan state is re-injected from the in-memory store after context compression via
 Three-layer compression in `internal/agent/context/compressor/compressor.go`. Prevents unbounded history growth during long sessions.
 
 ```go
-type Compressor struct { llm common.LLM; memoryFile string }
+type Compressor struct { llm common.LLM; threshold, summarizeBudget int }
 ```
 
 - `EstimateSize(messages)` — sums char lengths across all content blocks
-- `MaybeCompress(ctx, messages)` — triggers when history exceeds 75% of context window AND more than 6 messages. Splits at `len-6`, summarizes older portion via LLM, persists summary to `.agent_memory.md`, injects current todo state from disk (via `TodoProvider`), returns `[summary, todo_state, ack, ...recent_6]`
-- `LoadMemory()` / `SaveMemory(summary)` — disk persistence with timestamp header
+- `MaybeCompress(ctx, messages)` — triggers when history exceeds 75% of context window AND more than 6 messages. Splits at `len-6`, summarizes the older portion via LLM (sectioned third-person digest: Decisions / Files touched / Current state / Open work / Last position; input budget = half the context window with a head+tail omission marker), injects current todo state from disk (via `TodoProvider`), returns `[summary, todo_state, ack, ...recent_6]`
+- No file I/O. The summary surfaces as `ContextCompressedEvent` on the event bus; the harness persists it per conversation — main agent → `<UserConfigDir>/tenzing/.agent_memory-<YYYYMMDD-HHMM>-<AGENT_ID>.md`, sub-agents → `<UserCacheDir>/tenzing/` (write-only) — with a 7-day TTL sweep at startup. Resume via `WithConversationID(id)`. See `docs/superpowers/specs/2026-07-11-agent-memory-design.md`.
 
-Integrated in `Agent.DoReasoning` — runs after each assistant response. `NewWithCompressor` loads prior memory at startup, seeding history with previous session context.
+Integrated in `Agent.DoReasoning` — runs after each assistant response. `AgentConfig.InitialMemory` seeds history when the harness resumes a conversation.
 
 Compression is non-fatal: LLM errors are logged, original history preserved.
 

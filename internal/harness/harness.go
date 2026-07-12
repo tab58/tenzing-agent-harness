@@ -4,7 +4,9 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"log/slog"
 	"os"
+	"time"
 
 	"github.com/tab58/tenzing-agent-harness/internal/agent"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/advisor"
@@ -27,6 +29,7 @@ type Harness struct {
 	todoFile        *todo.TodoFile
 	eventBus        *events.EventBus
 	stopHooks       func()
+	stopMemoryHook  func()
 	blackboard      *blackboard.Blackboard
 }
 
@@ -118,9 +121,33 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		toolRegistry.Register(blackboard.NewREPLTool(bb, "main"))
 	}
 
+	// Conversation identity: resume under the supplied ID or start fresh.
 	// Pre-generated so the subagent factory (built before the runner) can
 	// derive hierarchical child IDs from it: "<mainID>_<hex>".
-	mainRunnerID := runner.NewID()
+	mainRunnerID := o.conversationID
+	if mainRunnerID == "" {
+		mainRunnerID = runner.NewID()
+	}
+
+	// Memory: the harness owns persistence. Summaries arrive on the event
+	// bus (ContextCompressedEvent) and are written per-conversation; the
+	// agent layers never touch files.
+	memory := newMemoryStore(mainRunnerID, time.Now)
+	memory.sweep(memoryTTL, o.conversationID)
+
+	var initialMemory string
+	if o.conversationID != "" {
+		initialMemory = memory.loadLatest(o.conversationID)
+		if initialMemory == "" {
+			slog.Warn("no memory found for conversation, starting fresh", "conversation_id", o.conversationID)
+		}
+	}
+
+	stopMemoryHook := events.StartHooks(o.eventBus, events.Hooks{
+		OnContextCompressed: func(e events.ContextCompressedEvent) {
+			memory.persist(e.RunnerID, e.Summary)
+		},
+	})
 
 	if o.subagentMaxDepth > 0 {
 		subagentLLM, err := llms.get(subagentModel)
@@ -165,8 +192,18 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		mainSystemPrompt = prompts.DefaultSystemPrompt()
 	}
 
-	// build and wire the main agent
-	mainAgent, err := brain(mainLLM, mainSystemPrompt)
+	// Build and wire the main agent. The default builder path passes resumed
+	// memory; custom builders own their memory story.
+	var mainAgent runner.Agent
+	if o.agentBuilder != nil {
+		mainAgent, err = o.agentBuilder(mainLLM, mainSystemPrompt)
+	} else {
+		mainAgent, err = agent.New(agent.AgentConfig{
+			Model:         mainLLM,
+			SystemPrompt:  mainSystemPrompt,
+			InitialMemory: initialMemory,
+		})
+	}
 	if err != nil {
 		return nil, fmt.Errorf("build main agent: %w", err)
 	}
@@ -195,6 +232,7 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		todoFile:        todoFile,
 		eventBus:        o.eventBus,
 		stopHooks:       stopHooks,
+		stopMemoryHook:  stopMemoryHook,
 		blackboard:      bb,
 	}, nil
 }
@@ -202,6 +240,9 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 func (h *Harness) Shutdown() {
 	if h.stopHooks != nil {
 		h.stopHooks()
+	}
+	if h.stopMemoryHook != nil {
+		h.stopMemoryHook()
 	}
 	if h.blackboard != nil {
 		_ = h.blackboard.Close()
@@ -218,6 +259,12 @@ func (h *Harness) ToolDefinitions() []tooldef.Definition {
 
 func (h *Harness) SystemPrompt() string {
 	return h.mainAgentRunner.SystemPrompt()
+}
+
+// ConversationID is the main agent's ID — the handle for resuming this
+// conversation later via WithConversationID.
+func (h *Harness) ConversationID() string {
+	return h.mainAgentRunner.ID()
 }
 
 func (h *Harness) RunTurn(ctx context.Context, query string) (string, error) {

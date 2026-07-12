@@ -2,8 +2,11 @@ package harness
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/prompts"
@@ -14,12 +17,12 @@ import (
 
 type stubAgent struct{}
 
-func (s *stubAgent) GetCurrentModel() string                                         { return "stub-model" }
-func (s *stubAgent) UpdateToolDefinitions(_ []common.ToolDefinition)                 {}
-func (s *stubAgent) UpdateSkillMap(_ map[string]string)                              {}
-func (s *stubAgent) UpdateStreamCallback(_ func(string))                             {}
-func (s *stubAgent) UpdateThinkingCallback(_ func(string))                           {}
-func (s *stubAgent) SetTodoProvider(_ func() string)                                 {}
+func (s *stubAgent) GetCurrentModel() string                         { return "stub-model" }
+func (s *stubAgent) UpdateToolDefinitions(_ []common.ToolDefinition) {}
+func (s *stubAgent) UpdateSkillMap(_ map[string]string)              {}
+func (s *stubAgent) UpdateStreamCallback(_ func(string))             {}
+func (s *stubAgent) UpdateThinkingCallback(_ func(string))           {}
+func (s *stubAgent) SetTodoProvider(_ func() string)                 {}
 
 func (s *stubAgent) DoReasoning(_ context.Context, _ []string, _ []string) (runner.ReasoningResult, error) {
 	return runner.ReasoningResult{FinalAnswer: "done"}, nil
@@ -52,9 +55,11 @@ func stubBrain(_ common.LLM, _ string) (runner.Agent, error) { return &stubAgent
 
 func stubFactory(_ common.ModelDefinition) (common.LLM, error) { return &stubLLM{}, nil }
 
-// newTestHarness builds a harness with stubbed LLMs and brain.
+// newTestHarness builds a harness with stubbed LLMs and brain. HOME is
+// redirected so the memory sweep and persistence never touch real dirs.
 func newTestHarness(t *testing.T, opts ...HarnessOption) *Harness {
 	t.Helper()
+	redirectHome(t)
 	h, err := New(testModel, append([]HarnessOption{
 		WithAgentBuilder(stubBrain),
 		WithLLMFactory(stubFactory),
@@ -85,6 +90,7 @@ func TestMainAgentBuiltWithResolvedSystemPrompt(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			redirectHome(t)
 			var captured string
 			builder := func(_ common.LLM, sp string) (runner.Agent, error) {
 				captured = sp
@@ -222,6 +228,7 @@ check:
 }
 
 func TestHarnessRoleModelsFallBackToMain(t *testing.T) {
+	redirectHome(t)
 	var built []string
 	factory := func(m common.ModelDefinition) (common.LLM, error) {
 		built = append(built, m.Name)
@@ -239,6 +246,7 @@ func TestHarnessRoleModelsFallBackToMain(t *testing.T) {
 }
 
 func TestHarnessDefaultAgentBuilder(t *testing.T) {
+	redirectHome(t)
 	h, err := New(testModel, WithLLMFactory(stubFactory), WithSystemPrompt("test"))
 	if err != nil {
 		t.Fatalf("New() without WithAgentBuilder error: %v", err)
@@ -270,5 +278,75 @@ func TestHarnessBlackboardDisabled(t *testing.T) {
 	defer h.Shutdown()
 	if hasTool(h, "repl") {
 		t.Error("repl tool should not be registered when blackboard is disabled")
+	}
+}
+
+func TestWithConversationIDSetsRunnerID(t *testing.T) {
+	redirectHome(t)
+	configDir, _ := memoryDirs()
+	if err := os.WriteFile(filepath.Join(configDir, ".agent_memory-20260710-0900-cafe0001.md"),
+		[]byte("# Agent Memory\n\nresume state marker\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Default builder path (no WithAgentBuilder): construction must succeed
+	// with a memory file present and adopt the supplied conversation ID.
+	h, err := New(testModel, WithLLMFactory(stubFactory), WithConversationID("cafe0001"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer h.Shutdown()
+	if h.ConversationID() != "cafe0001" {
+		t.Fatalf("ConversationID = %q, want cafe0001", h.ConversationID())
+	}
+}
+
+func TestCompressionEventPersistsMemory(t *testing.T) {
+	redirectHome(t)
+	h := newTestHarness(t)
+	defer h.Shutdown()
+
+	h.EventBus().Emit(events.ContextCompressedEvent{
+		BaseEvent: events.NewBaseEvent(events.EventContextCompressed, h.ConversationID()),
+		Summary:   "persisted by subscriber",
+	})
+	configDir, _ := memoryDirs()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		matches, _ := filepath.Glob(filepath.Join(configDir, ".agent_memory-*-"+h.ConversationID()+".md"))
+		if len(matches) == 1 {
+			data, _ := os.ReadFile(matches[0])
+			if strings.Contains(string(data), "persisted by subscriber") {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("subscriber never persisted the compression event")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestChildCompressionGoesToCache(t *testing.T) {
+	redirectHome(t)
+	h := newTestHarness(t)
+	defer h.Shutdown()
+
+	childID := h.ConversationID() + "_deadbeef"
+	h.EventBus().Emit(events.ContextCompressedEvent{
+		BaseEvent: events.NewBaseEvent(events.EventContextCompressed, childID),
+		Summary:   "child summary",
+	})
+	_, cacheDir := memoryDirs()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		matches, _ := filepath.Glob(filepath.Join(cacheDir, ".agent_memory-*-"+childID+".md"))
+		if len(matches) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("child compression not persisted to cache dir")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

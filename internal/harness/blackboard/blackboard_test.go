@@ -303,3 +303,70 @@ func TestBlackboardDepositRejectsInvalidSlotOrKey(t *testing.T) {
 		}
 	}
 }
+
+// Regression: sub-agents obeyed task-prompt instructions to deposit under
+// invented slot names (bb['agents_md']) instead of their own agent ID. The
+// slot convention must be enforced, not advisory.
+func TestBlackboardRejectsForeignSlotWrites(t *testing.T) {
+	bb := newTestBlackboard(t)
+	ctx := context.Background()
+
+	out, err := bb.Execute(ctx, "agent_a", "bb['agents_md'] = {'result': 'stolen'}")
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(out, "PermissionError") {
+		t.Fatalf("foreign top-level write not rejected:\n%s", out)
+	}
+
+	out, err = bb.Execute(ctx, "main", "print('agents_md' in bb)")
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if strings.TrimSpace(out) != "False" {
+		t.Fatalf("foreign slot was created anyway: %q", out)
+	}
+}
+
+func TestBlackboardOwnSlotWriteAndForeignReadAllowed(t *testing.T) {
+	bb := newTestBlackboard(t)
+	ctx := context.Background()
+
+	if out, err := bb.Execute(ctx, "agent_a", "bb['agent_a'] = {'result': 'mine'}"); err != nil || strings.Contains(out, "Error") {
+		t.Fatalf("own-slot write failed: %v / %s", err, out)
+	}
+	// setdefault on a foreign slot must also be rejected
+	if out, err := bb.Execute(ctx, "agent_b", "bb.setdefault('agent_a_fake', {})"); err != nil || !strings.Contains(out, "PermissionError") {
+		t.Fatalf("foreign setdefault not rejected: %v / %s", err, out)
+	}
+	// reads of other slots stay open
+	out, err := bb.Execute(ctx, "agent_b", "print(bb['agent_a']['result'])")
+	if err != nil {
+		t.Fatalf("foreign read: %v", err)
+	}
+	if strings.TrimSpace(out) != "mine" {
+		t.Fatalf("foreign read = %q, want mine", out)
+	}
+}
+
+// The Go Deposit path is trusted (the factory deposits into child slots) and
+// must bypass the write guard regardless of prior REPL activity.
+func TestDepositBypassesWriteGuard(t *testing.T) {
+	bb := newTestBlackboard(t)
+	ctx := context.Background()
+
+	// Prime the guard with a different writer first.
+	if _, err := bb.Execute(ctx, "agent_a", "x = 1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bb.Deposit(ctx, "agent_c", "result", "deposited"); err != nil {
+		t.Fatalf("Deposit: %v", err)
+	}
+	out, err := bb.Execute(ctx, "main", "print(bb['agent_c']['result'])")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out) != "deposited" {
+		t.Fatalf("deposit content = %q", out)
+	}
+}

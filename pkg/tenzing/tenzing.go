@@ -41,6 +41,7 @@ var (
 	WithTool                  = harness.WithTool
 	WithHooks                 = harness.WithHooks
 	WithSystemPrompt          = harness.WithSystemPrompt
+	WithConversationID        = harness.WithConversationID
 	WithEventBus              = harness.WithEventBus
 	WithTextDeltaHandler      = harness.WithTextDeltaHandler
 	WithThinkingDeltaHandler  = harness.WithThinkingDeltaHandler

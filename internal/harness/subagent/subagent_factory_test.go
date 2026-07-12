@@ -36,12 +36,12 @@ func (s *stubLLM) ProviderName() common.Provider { return common.ProviderOllama 
 
 type stubAgent struct{}
 
-func (s *stubAgent) GetCurrentModel() string                                         { return "stub" }
-func (s *stubAgent) UpdateToolDefinitions(_ []common.ToolDefinition)                 {}
-func (s *stubAgent) UpdateSkillMap(_ map[string]string)                              {}
-func (s *stubAgent) UpdateStreamCallback(_ func(string))                             {}
-func (s *stubAgent) UpdateThinkingCallback(_ func(string))                           {}
-func (s *stubAgent) SetTodoProvider(_ func() string)                                 {}
+func (s *stubAgent) GetCurrentModel() string                         { return "stub" }
+func (s *stubAgent) UpdateToolDefinitions(_ []common.ToolDefinition) {}
+func (s *stubAgent) UpdateSkillMap(_ map[string]string)              {}
+func (s *stubAgent) UpdateStreamCallback(_ func(string))             {}
+func (s *stubAgent) UpdateThinkingCallback(_ func(string))           {}
+func (s *stubAgent) SetTodoProvider(_ func() string)                 {}
 
 func (s *stubAgent) DoReasoning(_ context.Context, _ []string, _ []string) (runner.ReasoningResult, error) {
 	return runner.ReasoningResult{FinalAnswer: "done"}, nil
@@ -154,12 +154,12 @@ func TestSubAgentFactoryImmutability(t *testing.T) {
 // fixedAnswerAgent returns a canned final answer of any size.
 type fixedAnswerAgent struct{ answer string }
 
-func (s *fixedAnswerAgent) GetCurrentModel() string                                         { return "stub" }
-func (s *fixedAnswerAgent) UpdateToolDefinitions(_ []common.ToolDefinition)                 {}
-func (s *fixedAnswerAgent) UpdateSkillMap(_ map[string]string)                              {}
-func (s *fixedAnswerAgent) UpdateStreamCallback(_ func(string))                             {}
-func (s *fixedAnswerAgent) UpdateThinkingCallback(_ func(string))                           {}
-func (s *fixedAnswerAgent) SetTodoProvider(_ func() string)                                 {}
+func (s *fixedAnswerAgent) GetCurrentModel() string                         { return "stub" }
+func (s *fixedAnswerAgent) UpdateToolDefinitions(_ []common.ToolDefinition) {}
+func (s *fixedAnswerAgent) UpdateSkillMap(_ map[string]string)              {}
+func (s *fixedAnswerAgent) UpdateStreamCallback(_ func(string))             {}
+func (s *fixedAnswerAgent) UpdateThinkingCallback(_ func(string))           {}
+func (s *fixedAnswerAgent) SetTodoProvider(_ func() string)                 {}
 func (s *fixedAnswerAgent) DoReasoning(_ context.Context, _ []string, _ []string) (runner.ReasoningResult, error) {
 	return runner.ReasoningResult{FinalAnswer: s.answer}, nil
 }
@@ -299,5 +299,67 @@ func TestChildRegistryHasNoREPLToolWithoutBlackboard(t *testing.T) {
 		if def.Name() == "repl" {
 			t.Error("child registry has repl tool despite nil blackboard")
 		}
+	}
+}
+
+// recordingAgent captures the inputs RunLoop feeds into reasoning.
+type recordingAgent struct {
+	stubAgent
+	inputs []string
+}
+
+func (r *recordingAgent) DoReasoning(_ context.Context, inputs []string, _ []string) (runner.ReasoningResult, error) {
+	r.inputs = append(r.inputs, inputs...)
+	return runner.ReasoningResult{FinalAnswer: "done"}, nil
+}
+
+// Regression: sub-agents obeyed task-prompt instructions to deposit under
+// invented slot names. Every task is inoculated with the canonical slot.
+func TestSpawnAgentTaskInoculatedWithOwnSlot(t *testing.T) {
+	bb := newTestBlackboard(t)
+	rec := &recordingAgent{}
+	factory := NewSubAgentFactory(SubAgentFactoryConfig{
+		AgentLLM:   &stubLLM{},
+		MaxDepth:   1,
+		Cwd:        t.TempDir(),
+		Blackboard: bb,
+		ParentID:   "beef0000",
+		AgentBuilder: func(_ common.LLM, _ string) (runner.Agent, error) {
+			return rec, nil
+		},
+	})
+
+	if _, err := factory.SpawnAgent(context.Background(), "dump files into bb['agents_md']['result']", ""); err != nil {
+		t.Fatalf("SpawnAgent: %v", err)
+	}
+	if len(rec.inputs) == 0 {
+		t.Fatal("agent received no input")
+	}
+	input := rec.inputs[0]
+	if !strings.Contains(input, "Deposit results ONLY in bb['beef0000_") {
+		t.Fatalf("task not inoculated with canonical slot:\n%s", input)
+	}
+}
+
+// Short results must ALSO be deposited: the factory's completion message
+// names the canonical slot, so that slot must actually exist.
+func TestSpawnAgentSmallResultAlsoDeposited(t *testing.T) {
+	bb := newTestBlackboard(t)
+	factory := factoryWithAnswer(t, bb, "short answer")
+
+	result, err := factory.SpawnAgent(context.Background(), "task", "")
+	if err != nil {
+		t.Fatalf("SpawnAgent: %v", err)
+	}
+	m := regexp.MustCompile(`bb\['([0-9a-f_]+)'\]`).FindStringSubmatch(result)
+	if m == nil {
+		t.Fatalf("no slot in result: %q", result)
+	}
+	out, err := bb.Execute(context.Background(), "main", "print(bb['"+m[1]+"']['result'])")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "short answer") {
+		t.Fatalf("canonical slot empty for short result: %q", out)
 	}
 }

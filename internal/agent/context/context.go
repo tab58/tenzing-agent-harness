@@ -15,6 +15,10 @@ type Context struct {
 
 type ContextConfig struct {
 	LLM common.LLM
+	// InitialMemory is a prior session's summary, injected as the first
+	// exchange. Empty means a fresh conversation. The harness owns loading
+	// it from disk; no file paths exist at this layer.
+	InitialMemory string
 }
 
 func NewContext(cfg ContextConfig) (*Context, error) {
@@ -30,8 +34,11 @@ func NewContext(cfg ContextConfig) (*Context, error) {
 		compressor: compressor,
 	}
 
-	if err := ctx.LoadFromMemoryFile(); err != nil {
-		return nil, fmt.Errorf("load memory: %w", err)
+	if cfg.InitialMemory != "" {
+		ctx.messages = append(ctx.messages,
+			common.NewUserMessage("[Context summary from previous conversation]\n\n"+cfg.InitialMemory),
+			common.NewAssistantMessage("Understood. I have the full context from our previous work."),
+		)
 	}
 
 	return ctx, nil
@@ -53,33 +60,23 @@ func (c *Context) Len() int {
 
 func (c *Context) Threshold() int { return c.compressor.Threshold() }
 
-func (c *Context) LoadFromMemoryFile() error {
-	mem, err := c.compressor.LoadFromMemoryFile()
-	if err != nil {
-		return fmt.Errorf("load memory: %w", err)
-	}
-	if mem != "" {
-		c.messages = append(c.messages,
-			common.NewUserMessage("[Context summary from previous conversation]\n\n"+mem),
-			common.NewAssistantMessage("Understood. I have the full context from our previous work."),
-		)
-	}
-	return nil
-}
-
-func (c *Context) AppendMessages(ctx context.Context, messages ...common.Message) (bool, error) {
+// AppendMessages adds messages to the history and runs the compression
+// check after assistant turns. It returns whether compression happened and
+// the summary text (the caller surfaces it for persistence; empty when no
+// compression happened).
+func (c *Context) AppendMessages(ctx context.Context, messages ...common.Message) (bool, string, error) {
 	c.messages = append(c.messages, messages...)
 
 	if len(messages) == 0 || messages[len(messages)-1].Role != common.RoleAssistant {
-		return false, nil
+		return false, "", nil
 	}
 
-	compressed, did, err := c.compressor.MaybeCompress(ctx, c.messages)
+	compressed, summary, did, err := c.compressor.MaybeCompress(ctx, c.messages)
 	if err != nil {
-		return false, fmt.Errorf("compression check: %w", err)
+		return false, "", fmt.Errorf("compression check: %w", err)
 	}
 	if did {
 		c.messages = compressed
 	}
-	return did, nil
+	return did, summary, nil
 }

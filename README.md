@@ -33,7 +33,7 @@ Provider-agnostic via canonical types (`Message`, `ContentBlock`, `CompletionReq
 - **Skill system** — lazy-loaded domain knowledge via YAML-frontmatter Markdown files
 - **Subagents** — spawn isolated agent loops with fresh context; only the final summary returns to the parent
 - **Task graph** — persistent, dependency-aware task board (`.agent_todo.json`) with mutex-guarded atomic operations
-- **Context compression** — three-layer system: recent messages kept verbatim, older messages summarized via LLM, summaries persisted to `.agent_memory.md`
+- **Context compression** — three-layer system: recent messages kept verbatim, older messages summarized via LLM, summaries persisted per conversation to `<UserConfigDir>/tenzing/.agent_memory-<date>-<agent-id>.md` (resume with `WithConversationID`)
 - **Shared blackboard REPL** — one persistent, sandboxed Python REPL shared by the main agent and subagents, for processing inputs beyond the context window (`llm_query`/`llm_batch` sub-LLM calls in loops over shared state)
 - **Todo planning** — model commits a plan before acting, progress re-injected as reminders after every tool call
 

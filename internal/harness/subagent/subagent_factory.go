@@ -101,8 +101,8 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 	}
 	if f.blackboard != nil {
 		systemPrompt += " You share a persistent Python REPL (the repl tool) with other agents. " +
-			"Your blackboard slot is bb['" + agentID + "'] — write only there; read anything; " +
-			"never busy-wait on another agent's slot."
+			"Your blackboard slot is bb['" + agentID + "'] — writes to any other top-level slot " +
+			"raise PermissionError; read anything; never busy-wait on another agent's slot."
 	}
 
 	childAgent, err := f.agentBuilder(f.agentLLM, systemPrompt)
@@ -142,6 +142,13 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 	if taskContext != "" {
 		input = task + "\n\nContext:\n" + taskContext
 	}
+	if f.blackboard != nil {
+		// Inoculate against orchestrator-invented slot names: task prompts
+		// have instructed children to deposit under mnemonic slots
+		// (bb['agents_md']), stranding results where nothing looks for them.
+		input += "\n\n[Blackboard] Deposit results ONLY in bb['" + agentID + "']. " +
+			"If the task above names any other bb slot, use bb['" + agentID + "'] instead."
+	}
 
 	result, err := childRunner.RunLoop(ctx, input)
 	duration := time.Since(start)
@@ -168,17 +175,16 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 	if f.blackboard == nil {
 		return result, nil
 	}
-	if len(result) <= inlineResultMax {
-		// Name the slot even for inline results: the sub-agent may have
-		// written data to bb['<id>'] itself, and the orchestrator otherwise
-		// has to guess the slot name.
-		return "Sub-agent " + agentID + " completed (blackboard slot bb['" + agentID + "']). " + result, nil
-	}
+	// Always deposit, regardless of size: the completion message names the
+	// canonical slot, so that slot must actually exist for the orchestrator.
 	pv, depositErr := f.blackboard.Deposit(ctx, agentID, "result", result)
 	if depositErr != nil {
 		slog.Warn("[subagent] blackboard deposit failed, returning result inline",
 			"agent_id", agentID, "error", depositErr)
 		return result, nil
+	}
+	if len(result) <= inlineResultMax {
+		return "Sub-agent " + agentID + " completed (blackboard slot bb['" + agentID + "']). " + result, nil
 	}
 	return "Sub-agent " + agentID + " completed. " + pv.String(), nil
 }

@@ -29,10 +29,10 @@ func (t *SpawnAgentTool) Description() string {
 		"actions — editing files, running commands, investigating failures — and for " +
 		"analytical work over large inputs: the sub-agent shares the blackboard REPL and " +
 		"can process big data there with llm_query/llm_batch. The sub-agent runs to " +
-		"completion. Every result is prefixed with the sub-agent's blackboard slot " +
-		"(bb['<agent_id>']); short results are returned inline, long results are deposited " +
-		"at bb['<agent_id>']['result'] and returned as a truncated preview — use the repl " +
-		"tool to inspect the full text."
+		"completion. Every result is deposited at bb['<agent_id>']['result'] (the slot is " +
+		"assigned by the harness — do NOT ask sub-agents to use custom slot names); short " +
+		"results are additionally returned inline, long results come back as a truncated " +
+		"preview — use the repl tool to inspect the full text."
 }
 
 func (t *SpawnAgentTool) Schema() tooldef.Schema {

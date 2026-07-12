@@ -3,58 +3,72 @@ package compressor
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
-	"time"
 
 	"github.com/tab58/llm-providers/common"
 )
 
 const (
-	MemoryFileName    = ".agent_memory.md"
-	KeepRecent        = 6
-	maxSummarizeInput = 20_000
-	toolOutputWeight  = 4
+	KeepRecent       = 6
+	toolOutputWeight = 4
 	// ~4 chars per token, compress at 75% of context window
 	charsPerToken        = 4
 	compressAtFraction   = 3      // numerator; denominator is charsPerToken (i.e. 3/4 = 75%)
 	defaultContextWindow = 10_000 // tokens, fallback when caller doesn't specify
+	// summarizer input budget = half the context window, in chars
+	summarizeBudgetDivisor = 2
+	// how much of the final pre-cut assistant message is quoted verbatim
+	// under "## Last position"
+	lastPositionTailChars = 500
 )
 
+const summarizeSystem = "You are a session summarizer. The user message contains a <transcript> of an agent session. " +
+	"Write in third person, past tense. Never write in first person, never continue the conversation, never replay tool calls."
+
+const summarizeInstruction = `Summarize the transcript into exactly these markdown sections, keeping all important decisions, code changes, and file paths:
+
+## Decisions
+## Files touched
+## Current state
+## Open work
+`
+
 type Compressor struct {
-	llm          common.LLM
-	memoryFile   string
-	threshold    int
-	todoProvider func() string
+	llm             common.LLM
+	threshold       int
+	summarizeBudget int
+	todoProvider    func() string
 }
 
 func (c *Compressor) SetTodoProvider(fn func() string) {
 	c.todoProvider = fn
 }
 
+// NewCompressor creates an in-context compressor. It performs no file I/O;
+// persistence of summaries is the harness's job (it receives them via
+// ContextCompressedEvent on the event bus).
 func NewCompressor(llm common.LLM, contextWindow int) *Compressor {
-	memFile := MemoryFileName
-
 	if contextWindow <= 0 {
 		contextWindow = defaultContextWindow
 	}
 
 	return &Compressor{
-		llm:        llm,
-		memoryFile: memFile,
-		threshold:  contextWindow * compressAtFraction,
+		llm:             llm,
+		threshold:       contextWindow * compressAtFraction,
+		summarizeBudget: contextWindow * charsPerToken / summarizeBudgetDivisor,
 	}
 }
 
 // MaybeCompress checks whether the message history exceeds the threshold.
-// If so, it summarizes the older portion via LLM, persists it to disk,
-// and returns a shorter history with the summary prepended.
-func (c *Compressor) MaybeCompress(ctx context.Context, messages []common.Message) ([]common.Message, bool, error) {
+// If so, it summarizes the older portion via LLM and returns a shorter
+// history with the summary prepended, plus the summary text itself (the
+// harness persists it; empty when no compression happened).
+func (c *Compressor) MaybeCompress(ctx context.Context, messages []common.Message) ([]common.Message, string, bool, error) {
 	if c.EstimateSize(messages) < c.threshold {
-		return messages, false, nil
+		return messages, "", false, nil
 	}
 	if len(messages) <= KeepRecent {
-		return messages, false, nil
+		return messages, "", false, nil
 	}
 
 	splitIdx := len(messages) - KeepRecent
@@ -63,11 +77,7 @@ func (c *Compressor) MaybeCompress(ctx context.Context, messages []common.Messag
 
 	summary, err := c.summarize(ctx, old)
 	if err != nil {
-		return messages, false, fmt.Errorf("compression summarize: %w", err)
-	}
-
-	if err := c.SaveToMemoryFile(summary); err != nil {
-		return messages, false, fmt.Errorf("save memory: %w", err)
+		return messages, "", false, fmt.Errorf("compression summarize: %w", err)
 	}
 
 	compressed := make([]common.Message, 0, 3+len(recent))
@@ -88,7 +98,7 @@ func (c *Compressor) MaybeCompress(ctx context.Context, messages []common.Messag
 	)
 	compressed = append(compressed, recent...)
 
-	return compressed, true, nil
+	return compressed, summary, true, nil
 }
 
 func (c *Compressor) Threshold() int { return c.threshold }
@@ -103,23 +113,6 @@ func (c *Compressor) EstimateSize(messages []common.Message) int {
 		}
 	}
 	return size
-}
-
-func (c *Compressor) LoadFromMemoryFile() (string, error) {
-	data, err := os.ReadFile(c.memoryFile)
-	if os.IsNotExist(err) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("read memory: %w", err)
-	}
-	return string(data), nil
-}
-
-func (c *Compressor) SaveToMemoryFile(summary string) error {
-	content := fmt.Sprintf("# Agent Memory\nUpdated: %s\n\n%s\n",
-		time.Now().Format(time.RFC3339), summary)
-	return os.WriteFile(c.memoryFile, []byte(content), 0644)
 }
 
 func (c *Compressor) summarize(ctx context.Context, messages []common.Message) (string, error) {
@@ -138,8 +131,14 @@ func (c *Compressor) summarize(ctx context.Context, messages []common.Message) (
 	}
 
 	text := sb.String()
-	if len(text) > maxSummarizeInput {
-		text = text[:maxSummarizeInput]
+	// Over budget: keep head and tail with an explicit gap marker so the
+	// model knows content is missing (a flat cut silently dropped most of
+	// long histories).
+	if len(text) > c.summarizeBudget {
+		head := text[:c.summarizeBudget*6/10]
+		tail := text[len(text)-c.summarizeBudget*4/10:]
+		omitted := len(text) - len(head) - len(tail)
+		text = head + fmt.Sprintf("\n[... %d chars omitted ...]\n", omitted) + tail
 	}
 
 	// Plumbing call: disable model reasoning — summarization happens inside
@@ -147,13 +146,38 @@ func (c *Compressor) summarize(ctx context.Context, messages []common.Message) (
 	noThink := false
 	resp, err := c.llm.SendSyncMessage(ctx, common.CompletionRequest{
 		Model:     c.llm.GetCurrentModel(),
-		System:    "Summarise this conversation. Keep all important decisions, code changes, file paths, and context. Be concise but complete.",
-		Messages:  []common.Message{common.NewUserMessage(text)},
+		System:    summarizeSystem,
+		Messages:  []common.Message{common.NewUserMessage(summarizeInstruction + "\n<transcript>\n" + text + "\n</transcript>")},
 		MaxTokens: 4096,
 		Think:     &noThink,
 	})
 	if err != nil {
 		return "", fmt.Errorf("summarize call: %w", err)
 	}
-	return resp.Text(), nil
+
+	// Append where the agent stopped, deterministically — models misquote.
+	summary := resp.Text() + "\n\n## Last position\n"
+	if tail := lastAssistantTail(messages, lastPositionTailChars); tail != "" {
+		summary += "> " + tail
+	}
+	return summary, nil
+}
+
+// lastAssistantTail returns the final n chars of the last assistant text in
+// the compressed-away region, or "" when there is none.
+func lastAssistantTail(messages []common.Message, n int) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != common.RoleAssistant {
+			continue
+		}
+		text := common.CombinedText(messages[i].Content)
+		if text == "" {
+			continue
+		}
+		if len(text) > n {
+			text = text[len(text)-n:]
+		}
+		return text
+	}
+	return ""
 }

@@ -24,8 +24,31 @@ func capStr(s string, max int) string {
 // setupCode runs once when the REPL starts: the shared namespace plus
 // inspection helpers available to every agent. `re` is already in the
 // bootstrap namespace.
+// bb enforces slot ownership on writes: each Execute sets _BB._writer to the
+// calling agent's ID, and creating/replacing a top-level key that isn't your
+// own slot raises PermissionError. Reads are unrestricted. This is
+// anti-confusion, not security — agents share one interpreter.
+// ponytail: top-level keys only; deep guards if cross-slot mutation ever bites.
 const setupCode = `
-bb = {'main': {}}
+class _BB(dict):
+    _writer = None
+    def _check(self, k):
+        if _BB._writer is not None and k != _BB._writer:
+            raise PermissionError(
+                "bb[%r] is not your slot; deposit results only in bb[%r]" % (k, _BB._writer))
+    def __setitem__(self, k, v):
+        self._check(k)
+        dict.__setitem__(self, k, v)
+    def __delitem__(self, k):
+        self._check(k)
+        dict.__delitem__(self, k)
+    def setdefault(self, k, default=None):
+        if k not in self:
+            self._check(k)
+        return dict.setdefault(self, k, default)
+
+bb = _BB()
+bb['main'] = {}
 
 def peek(s, start=0, n=2000):
     s = s if isinstance(s, str) else str(s)
@@ -127,6 +150,12 @@ func (b *Blackboard) Execute(ctx context.Context, agentID, code string) (string,
 	if err := b.ensureStartedLocked(ctx); err != nil {
 		return "", err
 	}
+	// Arm the slot-ownership guard for this caller. agentID is validated so
+	// it can be spliced into Python safely.
+	if !slotKeyRe.MatchString(agentID) {
+		return "", fmt.Errorf("invalid blackboard agent id %q: must match [A-Za-z0-9_]+", agentID)
+	}
+	code = fmt.Sprintf("_BB._writer = %q\n", agentID) + code
 	stdout, _, _, err := b.repl.Execute(ctx, code)
 	if err != nil {
 		slog.Error("[blackboard] exec failed", "agent", agentID, "code", capStr(code, logCodeMax), "error", err)
@@ -176,7 +205,9 @@ func (b *Blackboard) Deposit(ctx context.Context, slot, key, value string) (Prev
 		b.resetLocked()
 		return Preview{}, fmt.Errorf("blackboard deposit for %s: %w", slot, err)
 	}
-	code := fmt.Sprintf("bb.setdefault('%s', {})['%s'] = _bb_deposit\ndel _bb_deposit", slot, key)
+	// dict.setdefault bypasses the _BB write guard: Deposit is the trusted
+	// Go path and writes into whatever slot the harness names.
+	code := fmt.Sprintf("dict.setdefault(bb, '%s', {})['%s'] = _bb_deposit\ndel _bb_deposit", slot, key)
 	if _, _, _, err := b.repl.Execute(ctx, code); err != nil {
 		b.resetLocked()
 		return Preview{}, fmt.Errorf("blackboard deposit for %s: %w", slot, err)

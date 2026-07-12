@@ -42,6 +42,9 @@ type AgentConfig struct {
 	Model        common.LLM
 	SystemPrompt string
 	SkillMap     map[string]string
+	// InitialMemory is a prior session's summary injected as the first
+	// exchange (resume). Empty means a fresh conversation.
+	InitialMemory string
 }
 
 type agentOptions struct {
@@ -70,7 +73,7 @@ func New(cfg AgentConfig, opts ...ConfigOption) (*Agent, error) {
 	systemPrompt := cfg.SystemPrompt
 	skillMap := cfg.SkillMap
 	enrichedPrompt := buildAgentSystemPrompt(systemPrompt, skillMap)
-	llmContext, err := agentctx.NewContext(agentctx.ContextConfig{LLM: cfg.Model})
+	llmContext, err := agentctx.NewContext(agentctx.ContextConfig{LLM: cfg.Model, InitialMemory: cfg.InitialMemory})
 	if err != nil {
 		return nil, fmt.Errorf("create context: %w", err)
 	}
@@ -186,7 +189,7 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 			userMsgs[i] = common.NewUserMessage(input)
 		}
 	}
-	if _, err := a.history.AppendMessages(ctx, userMsgs...); err != nil {
+	if _, _, err := a.history.AppendMessages(ctx, userMsgs...); err != nil {
 		return runner.ReasoningResult{}, fmt.Errorf("append user inputs: %w", err)
 	}
 
@@ -242,7 +245,7 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 		Content: resp.Content,
 	}
 	beforeCount := a.history.Len()
-	compressed, err := a.history.AppendMessages(ctx, assistantMsg)
+	compressed, summary, err := a.history.AppendMessages(ctx, assistantMsg)
 	if err != nil {
 		slog.Warn("compression failed", "error", err)
 	}
@@ -251,10 +254,11 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 	var compressionInfo *runner.CompressionInfo
 	if compressed {
 		afterCount := a.history.Len()
-		slog.Info("context compressed", "before_msgs", beforeCount+1, "after_msgs", afterCount)
+		slog.Info("context compressed", "before_msgs", beforeCount+1, "after_msgs", afterCount, "summary_len", len(summary))
 		compressionInfo = &runner.CompressionInfo{
 			MessagesBefore: beforeCount + 1,
 			MessagesAfter:  afterCount,
+			Summary:        summary,
 		}
 	}
 

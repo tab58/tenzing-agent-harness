@@ -54,6 +54,11 @@ type harnessOptions struct {
 	// mainSystemPrompt is the system prompt of the main agent
 	mainSystemPrompt string
 
+	// conversationID resumes a prior conversation: the main agent runs
+	// under this ID and its latest memory file is loaded at startup.
+	// Empty starts a fresh conversation under a random ID.
+	conversationID string
+
 	// hooks holds optional typed callbacks dispatched from the event
 	// bus. Only set hooks fire; leave the rest nil.
 	hooks events.Hooks
@@ -184,6 +189,15 @@ func WithHooks(hooks events.Hooks) HarnessOption {
 func WithSystemPrompt(prompt string) HarnessOption {
 	return func(o *harnessOptions) {
 		o.mainSystemPrompt = prompt
+	}
+}
+
+// WithConversationID resumes a prior conversation: the main agent runs under
+// this ID and its latest memory file is loaded as initial context. The
+// caller owns ID uniqueness across live processes.
+func WithConversationID(id string) HarnessOption {
+	return func(o *harnessOptions) {
+		o.conversationID = id
 	}
 }
 

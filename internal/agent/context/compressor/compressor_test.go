@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -54,7 +52,6 @@ func (f *fakeLLM) ProviderName() common.Provider { return common.ProviderOllama 
 func newTestCompressor(t *testing.T, llm common.LLM, contextWindow int) *Compressor {
 	t.Helper()
 	c := NewCompressor(llm, contextWindow)
-	c.memoryFile = filepath.Join(t.TempDir(), MemoryFileName)
 	return c
 }
 
@@ -124,7 +121,7 @@ func TestMaybeCompressBelowThreshold(t *testing.T) {
 	c := newTestCompressor(t, &fakeLLM{}, testContextWindow)
 
 	msgs := makeMessages(10, 100)
-	result, did, err := c.MaybeCompress(context.Background(), msgs)
+	result, _, did, err := c.MaybeCompress(context.Background(), msgs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -140,7 +137,7 @@ func TestMaybeCompressTooFewMessages(t *testing.T) {
 	c := newTestCompressor(t, &fakeLLM{}, testContextWindow)
 
 	msgs := makeMessages(KeepRecent, testThreshold/KeepRecent+1)
-	result, did, err := c.MaybeCompress(context.Background(), msgs)
+	result, _, did, err := c.MaybeCompress(context.Background(), msgs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -160,7 +157,7 @@ func TestSummarizeDisablesThinking(t *testing.T) {
 
 	totalMsgs := KeepRecent + 4
 	msgs := makeMessages(totalMsgs, testThreshold/totalMsgs+1)
-	if _, did, err := c.MaybeCompress(context.Background(), msgs); err != nil || !did {
+	if _, _, did, err := c.MaybeCompress(context.Background(), msgs); err != nil || !did {
 		t.Fatalf("MaybeCompress did=%v err=%v, want compression", did, err)
 	}
 	if llm.lastReq.Think == nil || *llm.lastReq.Think {
@@ -176,7 +173,7 @@ func TestMaybeCompressTriggered(t *testing.T) {
 	charsPerMsg := testThreshold/totalMsgs + 1
 	msgs := makeMessages(totalMsgs, charsPerMsg)
 
-	result, did, err := c.MaybeCompress(context.Background(), msgs)
+	result, _, did, err := c.MaybeCompress(context.Background(), msgs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -199,19 +196,6 @@ func TestMaybeCompressTriggered(t *testing.T) {
 	if result[1].Role != common.RoleAssistant {
 		t.Fatalf("second message role = %s, want assistant", result[1].Role)
 	}
-
-	// verify memory file written
-	data, err := os.ReadFile(c.memoryFile)
-	if err != nil {
-		t.Fatalf("memory file not written: %v", err)
-	}
-	content := string(data)
-	if !strings.Contains(content, "summary of old conversation") {
-		t.Fatal("memory file missing summary")
-	}
-	if !strings.Contains(content, "# Agent Memory") {
-		t.Fatal("memory file missing header")
-	}
 }
 
 func TestMaybeCompressLLMError(t *testing.T) {
@@ -222,7 +206,7 @@ func TestMaybeCompressLLMError(t *testing.T) {
 	charsPerMsg := testThreshold/totalMsgs + 1
 	msgs := makeMessages(totalMsgs, charsPerMsg)
 
-	result, did, err := c.MaybeCompress(context.Background(), msgs)
+	result, _, did, err := c.MaybeCompress(context.Background(), msgs)
 	if err == nil {
 		t.Fatal("expected error from LLM failure")
 	}
@@ -234,53 +218,77 @@ func TestMaybeCompressLLMError(t *testing.T) {
 	}
 }
 
-func TestLoadFromMemoryFileMissing(t *testing.T) {
-	c := NewCompressor(nil, 0)
-	c.memoryFile = filepath.Join(t.TempDir(), "nonexistent.md")
+// The summarizer prompt must present the transcript as data with a mandated
+// section skeleton — free-form prompts made glm continue the conversation in
+// first person instead of summarizing.
+func TestSummarizePromptShape(t *testing.T) {
+	llm := &fakeLLM{response: "summary"}
+	c := newTestCompressor(t, llm, testContextWindow)
 
-	mem, err := c.LoadFromMemoryFile()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	totalMsgs := KeepRecent + 4
+	msgs := makeMessages(totalMsgs, testThreshold/totalMsgs+1)
+	if _, _, did, err := c.MaybeCompress(context.Background(), msgs); err != nil || !did {
+		t.Fatalf("MaybeCompress did=%v err=%v", did, err)
 	}
-	if mem != "" {
-		t.Fatalf("expected empty, got %q", mem)
+
+	prompt := llm.lastReq.Messages[0].Content[0].Text
+	for _, want := range []string{"<transcript>", "</transcript>", "## Decisions", "## Files touched", "## Current state", "## Open work"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+	if !strings.Contains(llm.lastReq.System, "third person") {
+		t.Errorf("system prompt missing third-person instruction: %q", llm.lastReq.System)
 	}
 }
 
-func TestSaveAndLoadMemoryFile(t *testing.T) {
-	c := newTestCompressor(t, nil, 0)
+// The summary must end with a verbatim quote of where the agent stopped,
+// appended deterministically in code (models misquote).
+func TestSummaryAppendsLastPosition(t *testing.T) {
+	llm := &fakeLLM{response: "## Decisions\nstuff"}
+	c := newTestCompressor(t, llm, testContextWindow)
 
-	if err := c.SaveToMemoryFile("important decisions were made"); err != nil {
-		t.Fatalf("save: %v", err)
+	totalMsgs := KeepRecent + 4
+	msgs := makeMessages(totalMsgs, testThreshold/totalMsgs+1)
+	result, _, did, err := c.MaybeCompress(context.Background(), msgs)
+	if err != nil || !did {
+		t.Fatalf("MaybeCompress did=%v err=%v", did, err)
 	}
-
-	mem, err := c.LoadFromMemoryFile()
-	if err != nil {
-		t.Fatalf("load: %v", err)
+	summary := result[0].Content[0].Text
+	if !strings.Contains(summary, "## Last position") {
+		t.Fatalf("summary missing Last position section:\n%s", summary)
 	}
-	if !strings.Contains(mem, "important decisions were made") {
-		t.Fatal("loaded memory missing content")
-	}
-	if !strings.Contains(mem, "# Agent Memory") {
-		t.Fatal("loaded memory missing header")
-	}
-	if !strings.Contains(mem, "Updated:") {
-		t.Fatal("loaded memory missing timestamp")
+	// makeMessages alternates user/assistant; the last assistant message in
+	// the compressed-away region must appear as a quoted tail.
+	if !strings.Contains(summary, "> ") {
+		t.Fatalf("Last position missing quoted tail:\n%s", summary)
 	}
 }
 
-func TestSaveMemoryFileOverwrites(t *testing.T) {
-	c := newTestCompressor(t, nil, 0)
+// Over-budget transcripts keep head and tail with an explicit omission
+// marker — the old flat 20k cap silently dropped ~93% of long histories.
+func TestSummarizeInputBudgetHeadTail(t *testing.T) {
+	llm := &fakeLLM{response: "summary"}
+	c := newTestCompressor(t, llm, testContextWindow) // budget = 10_000*4/2 = 20_000 chars
 
-	c.SaveToMemoryFile("first")
-	c.SaveToMemoryFile("second")
-
-	mem, _ := c.LoadFromMemoryFile()
-	if strings.Contains(mem, "first") {
-		t.Fatal("old memory not overwritten")
+	msgs := []common.Message{
+		common.NewUserMessage("HEADMARK" + strings.Repeat("a", 40_000) + "TAILMARK"),
 	}
-	if !strings.Contains(mem, "second") {
-		t.Fatal("new memory not present")
+	for len(msgs) <= KeepRecent {
+		msgs = append(msgs, common.NewUserMessage(strings.Repeat("b", 100)))
+	}
+	if _, _, did, err := c.MaybeCompress(context.Background(), msgs); err != nil || !did {
+		t.Fatalf("MaybeCompress did=%v err=%v", did, err)
+	}
+	prompt := llm.lastReq.Messages[0].Content[0].Text
+	if !strings.Contains(prompt, "HEADMARK") {
+		t.Error("head of transcript missing")
+	}
+	if !strings.Contains(prompt, "TAILMARK") {
+		t.Error("tail of transcript missing")
+	}
+	if !strings.Contains(prompt, "chars omitted") {
+		t.Error("omission marker missing")
 	}
 }
 
@@ -295,7 +303,7 @@ func TestCompressTodoInjection(t *testing.T) {
 	charsPerMsg := testThreshold/totalMsgs + 1
 	msgs := makeMessages(totalMsgs, charsPerMsg)
 
-	compressed, did, err := c.MaybeCompress(context.Background(), msgs)
+	compressed, _, did, err := c.MaybeCompress(context.Background(), msgs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +340,7 @@ func TestCompressTodoInjectionSkippedWhenEmpty(t *testing.T) {
 	charsPerMsg := testThreshold/totalMsgs + 1
 	msgs := makeMessages(totalMsgs, charsPerMsg)
 
-	compressed, did, err := c.MaybeCompress(context.Background(), msgs)
+	compressed, _, did, err := c.MaybeCompress(context.Background(), msgs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,15 +355,14 @@ func TestCompressTodoInjectionSkippedWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestSummarizeInputTruncation(t *testing.T) {
+func TestSummarizeInputCappedAtBudget(t *testing.T) {
 	llm := &fakeLLM{response: "truncated summary"}
 	c := newTestCompressor(t, llm, testContextWindow)
 
 	totalMsgs := KeepRecent + 2
-	charsPerMsg := maxSummarizeInput
-	msgs := makeMessages(totalMsgs, charsPerMsg)
+	msgs := makeMessages(totalMsgs, c.summarizeBudget)
 
-	_, did, err := c.MaybeCompress(context.Background(), msgs)
+	_, _, did, err := c.MaybeCompress(context.Background(), msgs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -363,17 +370,9 @@ func TestSummarizeInputTruncation(t *testing.T) {
 		t.Fatal("expected compression")
 	}
 
-	// LLM should have received truncated input
 	inputText := llm.lastReq.Messages[0].Content[0].Text
-	if len(inputText) > maxSummarizeInput+200 {
-		t.Fatalf("input not truncated: len=%d", len(inputText))
-	}
-}
-
-func TestNewCompressorDefaultMemoryFile(t *testing.T) {
-	c := NewCompressor(nil, 0)
-	if c.memoryFile != MemoryFileName {
-		t.Fatalf("expected default %q, got %q", MemoryFileName, c.memoryFile)
+	if len(inputText) > c.summarizeBudget+500 {
+		t.Fatalf("input not capped: len=%d budget=%d", len(inputText), c.summarizeBudget)
 	}
 }
 
@@ -395,7 +394,7 @@ func TestCompressPreservesRecentMessages(t *testing.T) {
 		}
 	}
 
-	result, _, _ := c.MaybeCompress(context.Background(), msgs)
+	result, _, _, _ := c.MaybeCompress(context.Background(), msgs)
 
 	// Skip summary pair (indices 0,1), check rest match recent
 	for i := 2; i < len(result); i++ {

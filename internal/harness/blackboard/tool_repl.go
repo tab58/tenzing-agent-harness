@@ -30,7 +30,8 @@ func (t *REPLTool) Description() string {
 		"Execute Python in the persistent shared REPL (the blackboard). State persists across calls "+
 			"and is shared with other agents. The dict `bb` holds every agent's results: "+
 			"bb['<agent_id>']['result'] is a completed sub-agent's full output. "+
-			"Convention: write only inside bb['%s'] (your slot); read anything; never busy-wait on "+
+			"Writes are enforced: creating or replacing a top-level bb key other than bb['%s'] (your slot) "+
+			"raises PermissionError. Read anything; never busy-wait on "+
 			"another agent's slot. Helpers: peek(s, start, n) pages any string; bb_grep(pattern, s) "+
 			"greps it with line numbers; llm_query(prompt) and llm_batch(prompts) call a sub-LLM. "+
 			"Output longer than %d chars is truncated — print slices or peek() to see more. "+
