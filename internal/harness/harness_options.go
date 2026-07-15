@@ -139,9 +139,10 @@ func WithSubagentMaxIterations(maxIter int) HarnessOption {
 	}
 }
 
-// WithBlackboardModel sets the model used for llm_query/llm_batch sub-LM
-// calls inside the shared blackboard REPL; unset falls back to the main
-// model.
+// WithBlackboardModel sets the model used for llm_query/llm_batch calls
+// inside the shared blackboard REPL; unset falls back to the main model.
+// These are stateless one-shot completions (no tools, no agent loop) —
+// not subagents — so a small/fast model is often the right choice.
 func WithBlackboardModel(model common.ModelDefinition) HarnessOption {
 	return func(o *harnessOptions) {
 		o.blackboardModel = model
