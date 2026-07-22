@@ -87,7 +87,7 @@ func TestDoReasoning_StreamingDeltas(t *testing.T) {
 		collected = append(collected, text)
 	})
 
-	result, err := ag.DoReasoning(context.Background(), []string{"say hello"}, nil)
+	result, err := ag.DoReasoning(context.Background(), []common.Message{common.NewUserMessage("say hello")}, nil)
 	if err != nil {
 		t.Fatalf("DoReasoning error: %v", err)
 	}
@@ -110,6 +110,16 @@ func TestDoReasoning_StreamingDeltas(t *testing.T) {
 	}
 	if result.Meta.ResponseID != "resp-1" {
 		t.Fatalf("Meta.ResponseID = %q, want %q", result.Meta.ResponseID, "resp-1")
+	}
+
+	// The agent is stateless: it hands the full assistant message back via
+	// Meta rather than storing it, so the caller can append it to its own
+	// ContextPort.
+	if result.Meta.AssistantMessage.Role != common.RoleAssistant {
+		t.Fatalf("AssistantMessage.Role = %q, want assistant", result.Meta.AssistantMessage.Role)
+	}
+	if got := common.CombinedText(result.Meta.AssistantMessage.Content); got != "Hello world" {
+		t.Fatalf("AssistantMessage text = %q, want %q", got, "Hello world")
 	}
 
 	// Verify streaming path was used, not sync.
@@ -137,7 +147,7 @@ func TestDoReasoning_NoCallbackUsesSyncPath(t *testing.T) {
 	ag := newTestAgent(t, mock)
 	// No stream callback set.
 
-	result, err := ag.DoReasoning(context.Background(), []string{"say hello"}, nil)
+	result, err := ag.DoReasoning(context.Background(), []common.Message{common.NewUserMessage("say hello")}, nil)
 	if err != nil {
 		t.Fatalf("DoReasoning error: %v", err)
 	}
@@ -155,11 +165,11 @@ func TestDoReasoning_NoCallbackUsesSyncPath(t *testing.T) {
 	}
 }
 
-// TestDoReasoning_ToolResultPairing verifies a tool round-trip produces a
-// valid history: the user message after an assistant tool_use must carry
-// tool_result blocks paired by id (the Anthropic API rejects anything else),
-// and earlier inputs must not be re-appended.
-func TestDoReasoning_ToolResultPairing(t *testing.T) {
+// TestDoReasoning_ToolCallsReturnedWithAssistantMessage verifies that when
+// the model responds with tool_use blocks, DoReasoning returns every call
+// (extracted for the runner to execute) plus the full, unaltered assistant
+// message via Meta — the agent itself stores nothing.
+func TestDoReasoning_ToolCallsReturnedWithAssistantMessage(t *testing.T) {
 	toolUseResp := common.CompletionResponse{
 		ID:         "resp-1",
 		Model:      "test-model",
@@ -169,19 +179,13 @@ func TestDoReasoning_ToolResultPairing(t *testing.T) {
 			common.NewToolUseContent("tu-2", "Read", []byte(`{"path":"b.go"}`)),
 		},
 	}
-	finalResp := common.CompletionResponse{
-		ID:         "resp-2",
-		Model:      "test-model",
-		StopReason: common.StopReasonEndTurn,
-		Content:    []common.ContentBlock{common.NewTextContent("done")},
-	}
 
-	mock := &recordingLLM{responses: []common.CompletionResponse{toolUseResp, finalResp}}
+	mock := &recordingLLM{responses: []common.CompletionResponse{toolUseResp}}
 	ag := newTestAgent(t, mock)
 
-	res, err := ag.DoReasoning(context.Background(), []string{"analyze"}, nil)
+	res, err := ag.DoReasoning(context.Background(), []common.Message{common.NewUserMessage("analyze")}, nil)
 	if err != nil {
-		t.Fatalf("DoReasoning 1: %v", err)
+		t.Fatalf("DoReasoning: %v", err)
 	}
 	if len(res.ToolCalls) != 2 {
 		t.Fatalf("expected 2 tool calls, got %+v", res.ToolCalls)
@@ -190,13 +194,50 @@ func TestDoReasoning_ToolResultPairing(t *testing.T) {
 		t.Fatalf("expected tool calls tu-1, tu-2, got %+v", res.ToolCalls)
 	}
 
-	if _, err := ag.DoReasoning(context.Background(), []string{"a contents", "b contents"}, nil); err != nil {
-		t.Fatalf("DoReasoning 2: %v", err)
+	if res.Meta.AssistantMessage.Role != common.RoleAssistant {
+		t.Fatalf("AssistantMessage.Role = %q, want assistant", res.Meta.AssistantMessage.Role)
+	}
+	if len(res.Meta.AssistantMessage.Content) != 2 {
+		t.Fatalf("AssistantMessage.Content = %d blocks, want 2", len(res.Meta.AssistantMessage.Content))
+	}
+}
+
+// TestDoReasoning_MessagesPassedThroughUnmodified verifies the agent sends
+// exactly the messages it was given to the LLM — no accumulation, no
+// reordering. History (including tool_use/tool_result pairing) is the
+// caller's ContextPort's responsibility now, not the agent's.
+func TestDoReasoning_MessagesPassedThroughUnmodified(t *testing.T) {
+	finalResp := common.CompletionResponse{
+		ID:         "resp-2",
+		Model:      "test-model",
+		StopReason: common.StopReasonEndTurn,
+		Content:    []common.ContentBlock{common.NewTextContent("done")},
+	}
+
+	mock := &recordingLLM{responses: []common.CompletionResponse{finalResp}}
+	ag := newTestAgent(t, mock)
+
+	// A history a ContextPort would rebuild: user, assistant tool_use, and
+	// the paired tool_result message.
+	history := []common.Message{
+		common.NewUserMessage("analyze"),
+		{Role: common.RoleAssistant, Content: []common.ContentBlock{
+			common.NewToolUseContent("tu-1", "Read", []byte(`{"path":"a.go"}`)),
+			common.NewToolUseContent("tu-2", "Read", []byte(`{"path":"b.go"}`)),
+		}},
+		{Role: common.RoleTool, Content: []common.ContentBlock{
+			common.NewToolResultContent("tu-1", "Read", "a contents"),
+			common.NewToolResultContent("tu-2", "Read", "b contents"),
+		}},
+	}
+
+	if _, err := ag.DoReasoning(context.Background(), history, nil); err != nil {
+		t.Fatalf("DoReasoning: %v", err)
 	}
 
 	msgs := mock.lastRequest.Messages
-	if len(msgs) != 3 {
-		t.Fatalf("history = %d messages, want 3 (user, assistant, tool_result message); got %+v", len(msgs), msgs)
+	if len(msgs) != len(history) {
+		t.Fatalf("request messages = %d, want %d (passed through unmodified)", len(msgs), len(history))
 	}
 	last := msgs[2]
 	if last.Role != common.RoleTool {
@@ -205,17 +246,11 @@ func TestDoReasoning_ToolResultPairing(t *testing.T) {
 	if len(last.Content) != 2 {
 		t.Fatalf("tool_result blocks = %d, want 2", len(last.Content))
 	}
-	if last.Content[0].Type != common.ContentTypeToolResult || last.Content[0].ToolResultID != "tu-1" {
-		t.Errorf("block 0 = %+v, want tool_result for tu-1", last.Content[0])
+	if last.Content[0].ToolResultID != "tu-1" || last.Content[0].ToolOutput != "a contents" {
+		t.Errorf("block 0 = %+v, want tool_result tu-1/a contents", last.Content[0])
 	}
-	if last.Content[0].ToolOutput != "a contents" {
-		t.Errorf("block 0 output = %q, want %q", last.Content[0].ToolOutput, "a contents")
-	}
-	if last.Content[1].Type != common.ContentTypeToolResult || last.Content[1].ToolResultID != "tu-2" {
-		t.Errorf("block 1 = %+v, want tool_result for tu-2", last.Content[1])
-	}
-	if last.Content[1].ToolOutput != "b contents" {
-		t.Errorf("block 1 output = %q, want %q", last.Content[1].ToolOutput, "b contents")
+	if last.Content[1].ToolResultID != "tu-2" || last.Content[1].ToolOutput != "b contents" {
+		t.Errorf("block 1 = %+v, want tool_result tu-2/b contents", last.Content[1])
 	}
 }
 

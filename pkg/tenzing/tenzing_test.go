@@ -17,9 +17,8 @@ func (s *stubAgent) UpdateToolDefinitions(_ []tenzing.LLMToolDefinition)        
 func (s *stubAgent) UpdateSkillMap(_ map[string]string)                              {}
 func (s *stubAgent) UpdateStreamCallback(_ func(string))                             {}
 func (s *stubAgent) UpdateThinkingCallback(_ func(string))                           {}
-func (s *stubAgent) SetTodoProvider(_ func() string)                                 {}
 
-func (s *stubAgent) DoReasoning(_ context.Context, _ []string, _ []string) (tenzing.ReasoningResult, error) {
+func (s *stubAgent) DoReasoning(_ context.Context, _ []tenzing.Message, _ []string) (tenzing.ReasoningResult, error) {
 	return tenzing.ReasoningResult{FinalAnswer: "done"}, nil
 }
 

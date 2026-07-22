@@ -22,9 +22,8 @@ func (s *stubAgent) UpdateToolDefinitions(_ []common.ToolDefinition) {}
 func (s *stubAgent) UpdateSkillMap(_ map[string]string)              {}
 func (s *stubAgent) UpdateStreamCallback(_ func(string))             {}
 func (s *stubAgent) UpdateThinkingCallback(_ func(string))           {}
-func (s *stubAgent) SetTodoProvider(_ func() string)                 {}
 
-func (s *stubAgent) DoReasoning(_ context.Context, _ []string, _ []string) (runner.ReasoningResult, error) {
+func (s *stubAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string) (runner.ReasoningResult, error) {
 	return runner.ReasoningResult{FinalAnswer: "done"}, nil
 }
 

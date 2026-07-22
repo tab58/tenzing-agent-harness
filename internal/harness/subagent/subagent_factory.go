@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/contextstore"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/reminders"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/blackboard"
@@ -116,10 +117,19 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 	skillsReg := skills.NewRegistry()
 	childExts := core.NewExtensions(reminders.New(todoFile.FormatReminder))
 
+	// Each child owns a fresh, isolated context store — no InitialMemory
+	// (children don't resume prior sessions), scoped to its own runner ID.
+	childStore := contextstore.New(contextstore.Config{
+		LLM:      f.agentLLM,
+		Emitter:  f.emitter,
+		RunnerID: agentID,
+	})
+
 	childRunner, err := runner.NewAgentRunner(
 		childAgent,
 		runner.WithToolRegistry(registry),
 		runner.WithSkillsRegistry(skillsReg),
+		runner.WithContextStore(childStore),
 		runner.WithSystemPrompt(systemPrompt),
 		runner.WithExtensions(childExts),
 		// Share the parent's emitter so the sub-agent's tool/LLM events reach

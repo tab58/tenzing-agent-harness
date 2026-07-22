@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/contextstore"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
@@ -39,26 +40,46 @@ func (c *eventCollector) byType(t events.EventType) []events.Event {
 }
 
 type minimalAgent struct {
-	mu     sync.Mutex
-	steps  []ReasoningResult
-	idx    int
-	inputs [][]string
+	mu       sync.Mutex
+	steps    []ReasoningResult
+	idx      int
+	messages [][]common.Message
 }
 
-func (a *minimalAgent) GetCurrentModel() string                                         { return "" }
-func (a *minimalAgent) UpdateToolDefinitions(_ []common.ToolDefinition)                 {}
-func (a *minimalAgent) UpdateSkillMap(_ map[string]string)                              {}
-func (a *minimalAgent) UpdateStreamCallback(_ func(string))                             {}
-func (a *minimalAgent) UpdateThinkingCallback(_ func(string))                           {}
-func (a *minimalAgent) SetTodoProvider(_ func() string)                                 {}
+func (a *minimalAgent) GetCurrentModel() string                         { return "" }
+func (a *minimalAgent) UpdateToolDefinitions(_ []common.ToolDefinition) {}
+func (a *minimalAgent) UpdateSkillMap(_ map[string]string)              {}
+func (a *minimalAgent) UpdateStreamCallback(_ func(string))             {}
+func (a *minimalAgent) UpdateThinkingCallback(_ func(string))           {}
 
-func (a *minimalAgent) DoReasoning(_ context.Context, inputs []string, _ []string) (ReasoningResult, error) {
+func (a *minimalAgent) DoReasoning(_ context.Context, messages []common.Message, _ []string) (ReasoningResult, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.inputs = append(a.inputs, inputs)
+	a.messages = append(a.messages, messages)
 	r := a.steps[a.idx]
 	a.idx++
 	return r, nil
+}
+
+// newTestContextStore returns a fresh, isolated in-memory context store for
+// tests that just need RunLoop to have somewhere to build history.
+func newTestContextStore() core.ContextPort {
+	return contextstore.New(contextstore.Config{})
+}
+
+// toolCallStep builds a ReasoningResult for a tool_use response, keeping
+// ToolCalls and Meta.AssistantMessage in sync — as the real agent does. The
+// context store pairs tool_results against the message's own tool_use
+// blocks, not the parallel ToolCalls list, so tests must supply both.
+func toolCallStep(calls ...tooldef.ToolCall) ReasoningResult {
+	blocks := make([]common.ContentBlock, len(calls))
+	for i, c := range calls {
+		blocks[i] = common.NewToolUseContent(c.ID, c.Name, []byte(c.Input))
+	}
+	return ReasoningResult{
+		ToolCalls: calls,
+		Meta:      ResponseMeta{AssistantMessage: common.Message{Role: common.RoleAssistant, Content: blocks}},
+	}
 }
 
 func TestRunnerEmitsTurnAndLoopEvents(t *testing.T) {
@@ -74,6 +95,7 @@ func TestRunnerEmitsTurnAndLoopEvents(t *testing.T) {
 		WithToolRegistry(tools.NewRegistry("")),
 		WithSkillsRegistry(skills.NewRegistry()),
 		WithSystemPrompt("test"),
+		WithContextStore(newTestContextStore()),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +136,7 @@ func TestRunnerEmitsToolEvents(t *testing.T) {
 	registry.Register(&echoTool{})
 
 	agent := &minimalAgent{steps: []ReasoningResult{
-		{ToolCalls: []tooldef.ToolCall{{ID: "1", Name: "echo", Input: `{"text":"hi"}`}}},
+		toolCallStep(tooldef.ToolCall{ID: "1", Name: "echo", Input: `{"text":"hi"}`}),
 		{FinalAnswer: "done"},
 	}}
 
@@ -124,6 +146,7 @@ func TestRunnerEmitsToolEvents(t *testing.T) {
 		WithToolRegistry(registry),
 		WithSkillsRegistry(skills.NewRegistry()),
 		WithSystemPrompt("test"),
+		WithContextStore(newTestContextStore()),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -156,11 +179,11 @@ func TestRunnerExecutesAllToolCallsInBatch(t *testing.T) {
 	registry.Register(&echoTool{})
 
 	agent := &minimalAgent{steps: []ReasoningResult{
-		{ToolCalls: []tooldef.ToolCall{
-			{ID: "1", Name: "echo", Input: `{"text":"one"}`},
-			{ID: "2", Name: "echo", Input: `{"text":"two"}`},
-			{ID: "3", Name: "echo", Input: `{"text":"three"}`},
-		}},
+		toolCallStep(
+			tooldef.ToolCall{ID: "1", Name: "echo", Input: `{"text":"one"}`},
+			tooldef.ToolCall{ID: "2", Name: "echo", Input: `{"text":"two"}`},
+			tooldef.ToolCall{ID: "3", Name: "echo", Input: `{"text":"three"}`},
+		),
 		{FinalAnswer: "done"},
 	}}
 
@@ -170,6 +193,7 @@ func TestRunnerExecutesAllToolCallsInBatch(t *testing.T) {
 		WithToolRegistry(registry),
 		WithSkillsRegistry(skills.NewRegistry()),
 		WithSystemPrompt("test"),
+		WithContextStore(newTestContextStore()),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -186,17 +210,24 @@ func TestRunnerExecutesAllToolCallsInBatch(t *testing.T) {
 		t.Errorf("expected 3 ToolSucceeded, got %d", got)
 	}
 
-	if len(agent.inputs) != 2 {
-		t.Fatalf("expected 2 reasoning calls, got %d", len(agent.inputs))
+	if len(agent.messages) != 2 {
+		t.Fatalf("expected 2 reasoning calls, got %d", len(agent.messages))
 	}
-	second := agent.inputs[1]
+	// The second reasoning call must see the tool_result message with all
+	// three outputs paired by id, in order — none dropped or replaced with a
+	// placeholder.
+	second := agent.messages[1]
+	last := second[len(second)-1]
+	if last.Role != common.RoleTool {
+		t.Fatalf("last message role = %q, want tool", last.Role)
+	}
 	want := []string{`echo: {"text":"one"}`, `echo: {"text":"two"}`, `echo: {"text":"three"}`}
-	if len(second) != len(want) {
-		t.Fatalf("second reasoning inputs = %v, want %v", second, want)
+	if len(last.Content) != len(want) {
+		t.Fatalf("tool_result blocks = %d, want %d: %+v", len(last.Content), len(want), last.Content)
 	}
 	for i := range want {
-		if second[i] != want[i] {
-			t.Errorf("input[%d] = %q, want %q", i, second[i], want[i])
+		if last.Content[i].ToolOutput != want[i] {
+			t.Errorf("tool_result[%d].ToolOutput = %q, want %q", i, last.Content[i].ToolOutput, want[i])
 		}
 	}
 }
@@ -258,7 +289,7 @@ func TestToolCallDeniedByExtension(t *testing.T) {
 	registry.Register(tool)
 
 	agent := &minimalAgent{steps: []ReasoningResult{
-		{ToolCalls: []tooldef.ToolCall{{ID: "1", Name: "echo", Input: `{"text":"hi"}`}}},
+		toolCallStep(tooldef.ToolCall{ID: "1", Name: "echo", Input: `{"text":"hi"}`}),
 		{FinalAnswer: "done"},
 	}}
 
@@ -268,6 +299,7 @@ func TestToolCallDeniedByExtension(t *testing.T) {
 		WithToolRegistry(registry),
 		WithSkillsRegistry(skills.NewRegistry()),
 		WithSystemPrompt("test"),
+		WithContextStore(newTestContextStore()),
 		WithExtensions(core.NewExtensions(denyExt{})),
 	)
 	if err != nil {

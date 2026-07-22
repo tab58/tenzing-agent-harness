@@ -28,15 +28,17 @@ No CI pipeline yet. Run `go build ./...` and `go test ./...` before declaring wo
 
 ## Layer Boundaries
 
-Three layers, strict dependency direction: **Harness → AgentRunner → Agent**.
+Four layers, hexagonal dependency direction: **Core → Adapters → Extensions → Composition Root**.
 
 | Layer                                                          | Knows about                              | Does NOT know about                   |
 | -------------------------------------------------------------- | ---------------------------------------- | ------------------------------------- |
+| Core (`internal/core/`)                                        | Domain types, port interfaces, FSM, events, loop (`Loop`, `RunTurn`) | Everything outside `core` — adapters, tools, harness, CLI |
+| Adapters (`internal/adapters/`)                                | Core port interfaces; concrete implementations (`contextstore`, `toolport`) | Harness, CLI, sessions                |
+| AgentRunner (facade, `agent_runner.go`)                        | Agent interface, tool/skills registry, core.Loop — one-time wiring then delegation | CLI, sessions, users                  |
 | Harness (`harness.go`, `harness_options.go`, `llm.go`)         | AgentRunner, EventBus, LLM construction/caching, config wiring | Tool implementations                  |
-| AgentRunner (`agent_runner.go`, `loop_fsm.go`)                 | Agent interface, tool registry, FSM, Emitter interface | CLI, sessions, users                  |
-| Agent (`internal/agent/agent.go`, `internal/llmctx/`)          | LLM provider, message types, compression | Filesystem, processes, tools directly |
+| Agent (`internal/agent/agent.go`)                              | LLM provider, message types — stateless: receives the full message list on every `DoReasoning` call, returns the assistant message rather than storing it | Filesystem, processes, tools directly, conversation history/compression |
 
-**Never import upward.** Tools don't import harness. Agent doesn't import runner. If you need cross-layer communication, use an interface injected via config.
+**Never import upward.** Core imports nothing from `internal/`. Adapters import core, never harness. Tools don't import harness. Agent doesn't import runner. If you need cross-layer communication, use an interface injected via config.
 
 One deliberate exception to "never import upward": `harness.New` imports `internal/agent` in exactly one place — the unexported `defaultAgentBuilder` fallback — so a harness works out of the box with no brain injection. All other harness code talks only to the `runner.Agent` interface. Callers with a custom brain override it via `harness.WithAgentBuilder(builder)`.
 
@@ -92,18 +94,22 @@ Models are `common.Model` values (`common.ModelDefinition{Name, MaxTokens, Conte
 - `WithTool` — injects an additional tool implementing `tooldef.Definition` (used by cmd/app to register nexus channel tools).
 - Subagents (`spawn_agent` tool) are enabled by default at depth 1 using the main model; `WithSubagentDepth(0)` disables the tool.
 - `WithBlackboardDisabled` — the shared blackboard REPL is on by default: main agent and subagents share one persistent Python process (`repl` tool); subagent results over 2000 chars are deposited to `bb['<agent_id>']['result']` and returned as a 1500/500-char head/tail preview. Blackboard execs/deposits are logged via `slog` at info level (code capped 500 chars, stdout head 200).
+- `WithConversationID(id)` — resumes a prior conversation: the main agent runs under `id` instead of a random one, and `harness.New` loads that conversation's latest persisted memory file (see below) into the main `contextstore.Store`'s `InitialMemory`, which seeds it as a synthetic user/assistant summary exchange before the fresh turn. Omit to start a new conversation under a random ID (`Harness.ConversationID()` returns it either way — the caller's handle for a future resume).
 
 LLM clients are cached per (provider, model, base URL) inside `harness.New`, so roles sharing a model definition share one client.
 
+Memory (`internal/harness/memory.go`) is separate from the in-process `contextstore.Store`: it's the harness's own `ContextCompressedEvent` subscriber, persisting each compaction's summary to a per-conversation file (`.agent_memory-<stamp>-<runnerID>.md`, main-agent files in the OS config dir, subagent files in the OS cache dir) so a later `WithConversationID` resume — even in a new process — has something to load. Neither `internal/core` nor `internal/adapters/contextstore` know this file-backed store exists; they only emit/consume the event.
+
 ## Configuration & DI
 
-All non-invariant behavior flows through `AgentRunnerConfig`. To change runner behavior:
+All non-invariant runner behavior flows through `runner.AgentRunnerOption` functional options (`internal/harness/runner/agent_runner.go`), passed to `runner.NewAgentRunner(agent, opts...)`. To change runner behavior:
 
 - Swap the Agent (different model/provider)
-- Swap the ToolRegistry (different tool set)
-- Swap the SystemPrompt
-- Provide an `events.Emitter` to receive structured events from the loop
-- Provide `OnTextDelta`/`OnThinkingDelta` callbacks for streaming text
+- Swap the ToolRegistry (`WithToolRegistry`, different tool set)
+- Swap the ContextStore (`WithContextStore`) — required; the `core.ContextPort` implementation that owns this runner's conversation history
+- Swap the SystemPrompt (`WithSystemPrompt`)
+- Provide an `events.Emitter` to receive structured events from the loop (`WithEmitter`)
+- Provide `WithTextDeltaHandler`/`WithThinkingDeltaHandler` callbacks for streaming text
 
 System reminders (todo state, etc.) no longer flow through the runner. They
 are injected each iteration by `core.Extension`s implementing
@@ -112,25 +118,26 @@ on `*core.Extensions` and passed to the runner via `runner.WithExtensions`.
 `harness.New` wires the default reminders extension around the harness's
 `todoFile`; add more via `harness.WithExtension`.
 
-Don't modify the loop. Don't add fields to the runner struct. Configure via `AgentRunnerConfig`.
+Don't modify the loop. Don't add fields to the `AgentRunner` struct. Configure via `runner.AgentRunnerOption`.
 
 ## FSM Rules
 
 Six states, six transitions. Don't add states or transitions without updating `SYSTEM_ARCHITECTURE.md`.
 
-The FSM is per-runner instance — subagents and concurrent loops don't share state.
+The FSM lives in `internal/core/fsm.go` and is per-Loop instance — subagents and concurrent loops don't share state.
 
 ## File Conventions
 
 | Pattern                  | Location                                              |
 | ------------------------ | ----------------------------------------------------- |
-| Core domain (types/FSM/events) | `internal/core/` |
+| Core domain (types/FSM/events/loop/ports) | `internal/core/` |
+| Port adapters (contextstore, toolport) | `internal/adapters/` |
 | Extensions                | `internal/extensions/<name>/`                          |
 | Tool implementations     | `internal/harness/tools/tooldef/tool_*.go`            |
 | Provider implementations | external: `github.com/tab58/llm-providers`            |
 | Prompt templates         | `internal/harness/prompts/*.gotmpl`                   |
 | REPL subprocess machinery | `internal/harness/blackboard/` (Python REPL, Querier) |
-| Context management       | `internal/agent/context/` (compression, task graph)   |
+| Context management       | `internal/adapters/contextstore/` (implements `core.ContextPort`: history, tool_use/tool_result pairing, compression) |
 | App (HTTP/SSE server)    | `cmd/app/`                                            |
 | Public API facade        | `pkg/tenzing/` (aliases over `internal/harness`)      |
 | Test files               | Same directory as source, `*_test.go`                 |

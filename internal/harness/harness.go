@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/contextstore"
 	"github.com/tab58/tenzing-agent-harness/internal/agent"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/reminders"
@@ -201,23 +202,30 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		mainSystemPrompt = prompts.DefaultSystemPrompt()
 	}
 
-	// Build and wire the main agent. The default builder path passes resumed
-	// memory; custom builders own their memory story.
+	// Build and wire the main agent. The default builder path is stateless;
+	// custom builders own their own memory story.
 	var mainAgent runner.Agent
 	if o.agentBuilder != nil {
 		mainAgent, err = o.agentBuilder(mainLLM, mainSystemPrompt)
 	} else {
 		mainAgent, err = agent.New(agent.AgentConfig{
-			Model:         mainLLM,
-			SystemPrompt:  mainSystemPrompt,
-			InitialMemory: initialMemory,
+			Model:        mainLLM,
+			SystemPrompt: mainSystemPrompt,
 		})
 	}
 	if err != nil {
 		return nil, fmt.Errorf("build main agent: %w", err)
 	}
 	mainAgent.UpdateToolDefinitions(toolRegistry.ProviderDefinitions())
-	mainAgent.SetTodoProvider(todoFile.FormatReminder)
+
+	// The runner owns conversation history via a ContextPort; the store
+	// seeds resumed memory and emits ContextCompressedEvent on compaction.
+	mainStore := contextstore.New(contextstore.Config{
+		LLM:           mainLLM,
+		InitialMemory: initialMemory,
+		Emitter:       o.eventBus,
+		RunnerID:      mainRunnerID,
+	})
 
 	// create agent runner
 	mainAgentRunner, err := runner.NewAgentRunner(
@@ -225,6 +233,7 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		runner.WithID(mainRunnerID),
 		runner.WithToolRegistry(toolRegistry),
 		runner.WithSkillsRegistry(skillsRegistry),
+		runner.WithContextStore(mainStore),
 		runner.WithEmitter(o.eventBus),
 		runner.WithTextDeltaHandler(o.onTextDelta),
 		runner.WithThinkingDeltaHandler(o.onThinkingDelta),

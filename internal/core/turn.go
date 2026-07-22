@@ -3,6 +3,8 @@
 // extensions import core, never the reverse.
 package core
 
+import "github.com/tab58/llm-providers/common"
+
 // ToolCall is one tool_use request from the model.
 type ToolCall struct {
 	ID    string
@@ -17,4 +19,29 @@ type ToolResult struct {
 	Output    string
 	IsError   bool
 	Metadata  map[string]string
+}
+
+// ResponseMeta carries per-call metadata about one ModelPort.DoReasoning
+// invocation, for logging/events.
+type ResponseMeta struct {
+	Model         string
+	ResponseID    string
+	InputTokens   int64
+	OutputTokens  int64
+	StopReason    string
+	AssistantText string
+	// AssistantMessage is the full assistant message (all content blocks,
+	// including tool_use) as produced by the model. The runner appends it
+	// to the ContextPort — the model itself is stateless.
+	AssistantMessage common.Message
+}
+
+// ReasoningResult is the outcome of one ModelPort.DoReasoning call.
+type ReasoningResult struct {
+	// ToolCalls holds every tool_use block from the response, in order. The
+	// runner must execute all of them and feed the results back in the same
+	// order so each pairs with its tool_use id.
+	ToolCalls   []ToolCall
+	FinalAnswer string
+	Meta        ResponseMeta
 }

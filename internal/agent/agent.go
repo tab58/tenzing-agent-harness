@@ -8,7 +8,6 @@ import (
 	"runtime/debug"
 	"strings"
 
-	agentctx "github.com/tab58/tenzing-agent-harness/internal/agent/context"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 
@@ -23,28 +22,17 @@ var _ runner.Agent = (*Agent)(nil)
 type Agent struct {
 	model        common.LLM
 	systemPrompt string
-	history      *agentctx.Context
 
 	skillMap         map[string]string
 	tools            []common.ToolDefinition
 	streamCallback   func(text string)
 	thinkingCallback func(text string)
-
-	// pendingToolUses holds the tool_use blocks from the last assistant
-	// response. The next DoReasoning call pairs incoming inputs with these
-	// ids as tool_result blocks — required by the Anthropic API, which
-	// rejects histories where a tool_use is not answered by a tool_result
-	// in the immediately following user message.
-	pendingToolUses []common.ContentBlock
 }
 
 type AgentConfig struct {
 	Model        common.LLM
 	SystemPrompt string
 	SkillMap     map[string]string
-	// InitialMemory is a prior session's summary injected as the first
-	// exchange (resume). Empty means a fresh conversation.
-	InitialMemory string
 }
 
 type agentOptions struct {
@@ -73,17 +61,12 @@ func New(cfg AgentConfig, opts ...ConfigOption) (*Agent, error) {
 	systemPrompt := cfg.SystemPrompt
 	skillMap := cfg.SkillMap
 	enrichedPrompt := buildAgentSystemPrompt(systemPrompt, skillMap)
-	llmContext, err := agentctx.NewContext(agentctx.ContextConfig{LLM: cfg.Model, InitialMemory: cfg.InitialMemory})
-	if err != nil {
-		return nil, fmt.Errorf("create context: %w", err)
-	}
 
 	return &Agent{
 		model:        cfg.Model,
 		tools:        []common.ToolDefinition{},
 		skillMap:     skillMap,
 		systemPrompt: enrichedPrompt,
-		history:      llmContext,
 	}, nil
 }
 
@@ -106,10 +89,6 @@ func (a *Agent) GetCurrentModel() string {
 
 func (a *Agent) UpdateSkillMap(skillMap map[string]string) {
 	a.skillMap = skillMap
-}
-
-func (a *Agent) SetTodoProvider(fn func() string) {
-	a.history.SetTodoProvider(fn)
 }
 
 func (a *Agent) UpdateStreamCallback(fn func(text string)) {
@@ -160,39 +139,11 @@ func (a *Agent) doStreamingReasoning(ctx context.Context, req common.CompletionR
 	return resp, nil
 }
 
-func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminders []string) (runner.ReasoningResult, error) {
-	// convert inputs arg to user messages and add to context. When the
-	// previous response contained tool_use blocks, inputs are tool outputs
-	// and must be sent back as tool_result blocks paired by id.
-	var userMsgs []common.Message
-	if len(a.pendingToolUses) > 0 {
-		blocks := make([]common.ContentBlock, 0, len(a.pendingToolUses))
-		for i, tu := range a.pendingToolUses {
-			output := "tool call was not executed"
-			if i < len(inputs) {
-				output = inputs[i]
-			}
-			blocks = append(blocks, common.NewToolResultContent(tu.ToolUseID, tu.ToolName, output))
-		}
-		// RoleTool: every provider converter renders this natively — the
-		// Anthropic converter as a user message with tool_result blocks,
-		// Ollama/OpenAI as role-"tool" messages. A plain RoleUser message
-		// would drop the blocks in the Ollama/OpenAI text conversion.
-		userMsgs = append(userMsgs, common.Message{Role: common.RoleTool, Content: blocks})
-		for i := len(a.pendingToolUses); i < len(inputs); i++ {
-			userMsgs = append(userMsgs, common.NewUserMessage(inputs[i]))
-		}
-		a.pendingToolUses = nil
-	} else {
-		userMsgs = make([]common.Message, len(inputs))
-		for i, input := range inputs {
-			userMsgs[i] = common.NewUserMessage(input)
-		}
-	}
-	if _, _, err := a.history.AppendMessages(ctx, userMsgs...); err != nil {
-		return runner.ReasoningResult{}, fmt.Errorf("append user inputs: %w", err)
-	}
-
+// DoReasoning is a single, stateless model call: messages is the full
+// conversation history, built and owned by the caller's ContextPort. The
+// agent neither stores nor mutates it — the returned Meta.AssistantMessage
+// carries the model's response back for the caller to append.
+func (a *Agent) DoReasoning(ctx context.Context, messages []common.Message, systemReminders []string) (runner.ReasoningResult, error) {
 	// add system reminders to system prompt
 	system := a.systemPrompt
 	for _, r := range systemReminders {
@@ -200,7 +151,6 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 	}
 
 	// create LLM request
-	messages := a.history.Messages()
 	model := a.model.GetCurrentModel()
 	req := common.CompletionRequest{
 		Model:     model,
@@ -210,7 +160,7 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 		Tools:     a.tools,
 	}
 
-	slog.Debug("llm request", "model", model, "messages", a.history.Len(), "tools", len(a.tools))
+	slog.Debug("llm request", "model", model, "messages", len(messages), "tools", len(a.tools))
 	if slog.Default().Enabled(ctx, runner.LevelTrace) {
 		slog.Log(ctx, runner.LevelTrace, "llm request system prompt", "model", model, "system", system)
 		if raw, err := json.Marshal(messages); err == nil {
@@ -230,7 +180,7 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 		resp, err = a.model.SendMessageWithTools(ctx, req, a.tools)
 	}
 	if err != nil {
-		slog.Error("llm call failed", "model", model, "error", err, "messages", a.history.Len(), "stack", string(debug.Stack()))
+		slog.Error("llm call failed", "model", model, "error", err, "messages", len(messages), "stack", string(debug.Stack()))
 		return runner.ReasoningResult{}, fmt.Errorf("llm call (%s): %w", model, err)
 	}
 
@@ -239,44 +189,21 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 		slog.Debug("assistant text", "text", text)
 	}
 
-	// add response as assistant message and add to context
-	assistantMsg := common.Message{
-		Role:    common.RoleAssistant,
-		Content: resp.Content,
-	}
-	beforeCount := a.history.Len()
-	compressed, summary, err := a.history.AppendMessages(ctx, assistantMsg)
-	if err != nil {
-		slog.Warn("compression failed", "error", err)
-	}
-
-	// check if context was compressed
-	var compressionInfo *runner.CompressionInfo
-	if compressed {
-		afterCount := a.history.Len()
-		slog.Info("context compressed", "before_msgs", beforeCount+1, "after_msgs", afterCount, "summary_len", len(summary))
-		compressionInfo = &runner.CompressionInfo{
-			MessagesBefore: beforeCount + 1,
-			MessagesAfter:  afterCount,
-			Summary:        summary,
-		}
-	}
-
 	// get the response details for logging
 	meta := runner.ResponseMeta{
-		Model:         resp.Model,
-		ResponseID:    resp.ID,
-		InputTokens:   resp.Usage.InputTokens,
-		OutputTokens:  resp.Usage.OutputTokens,
-		StopReason:    string(resp.StopReason),
-		AssistantText: resp.Text(),
+		Model:            resp.Model,
+		ResponseID:       resp.ID,
+		InputTokens:      resp.Usage.InputTokens,
+		OutputTokens:     resp.Usage.OutputTokens,
+		StopReason:       string(resp.StopReason),
+		AssistantText:    resp.Text(),
+		AssistantMessage: common.Message{Role: common.RoleAssistant, Content: resp.Content},
 	}
 
 	// if the action to take is tool calls, return all of them; the runner
 	// executes each and feeds the results back in the same order.
 	toolCalls := resp.ToolCalls()
 	if len(toolCalls) > 0 {
-		a.pendingToolUses = toolCalls
 		calls := make([]tooldef.ToolCall, len(toolCalls))
 		for i, tc := range toolCalls {
 			calls[i] = tooldef.ToolCall{
@@ -286,9 +213,8 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 			}
 		}
 		return runner.ReasoningResult{
-			ToolCalls:   calls,
-			Meta:        meta,
-			Compression: compressionInfo,
+			ToolCalls: calls,
+			Meta:      meta,
 		}, nil
 	}
 
@@ -296,6 +222,5 @@ func (a *Agent) DoReasoning(ctx context.Context, inputs []string, systemReminder
 	return runner.ReasoningResult{
 		FinalAnswer: resp.Text(),
 		Meta:        meta,
-		Compression: compressionInfo,
 	}, nil
 }

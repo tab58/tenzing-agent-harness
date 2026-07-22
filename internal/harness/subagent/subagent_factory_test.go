@@ -41,9 +41,8 @@ func (s *stubAgent) UpdateToolDefinitions(_ []common.ToolDefinition) {}
 func (s *stubAgent) UpdateSkillMap(_ map[string]string)              {}
 func (s *stubAgent) UpdateStreamCallback(_ func(string))             {}
 func (s *stubAgent) UpdateThinkingCallback(_ func(string))           {}
-func (s *stubAgent) SetTodoProvider(_ func() string)                 {}
 
-func (s *stubAgent) DoReasoning(_ context.Context, _ []string, _ []string) (runner.ReasoningResult, error) {
+func (s *stubAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string) (runner.ReasoningResult, error) {
 	return runner.ReasoningResult{FinalAnswer: "done"}, nil
 }
 
@@ -159,8 +158,7 @@ func (s *fixedAnswerAgent) UpdateToolDefinitions(_ []common.ToolDefinition) {}
 func (s *fixedAnswerAgent) UpdateSkillMap(_ map[string]string)              {}
 func (s *fixedAnswerAgent) UpdateStreamCallback(_ func(string))             {}
 func (s *fixedAnswerAgent) UpdateThinkingCallback(_ func(string))           {}
-func (s *fixedAnswerAgent) SetTodoProvider(_ func() string)                 {}
-func (s *fixedAnswerAgent) DoReasoning(_ context.Context, _ []string, _ []string) (runner.ReasoningResult, error) {
+func (s *fixedAnswerAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string) (runner.ReasoningResult, error) {
 	return runner.ReasoningResult{FinalAnswer: s.answer}, nil
 }
 
@@ -302,14 +300,14 @@ func TestChildRegistryHasNoREPLToolWithoutBlackboard(t *testing.T) {
 	}
 }
 
-// recordingAgent captures the inputs RunLoop feeds into reasoning.
+// recordingAgent captures the messages RunLoop feeds into reasoning.
 type recordingAgent struct {
 	stubAgent
-	inputs []string
+	messages []common.Message
 }
 
-func (r *recordingAgent) DoReasoning(_ context.Context, inputs []string, _ []string) (runner.ReasoningResult, error) {
-	r.inputs = append(r.inputs, inputs...)
+func (r *recordingAgent) DoReasoning(_ context.Context, messages []common.Message, _ []string) (runner.ReasoningResult, error) {
+	r.messages = append(r.messages, messages...)
 	return runner.ReasoningResult{FinalAnswer: "done"}, nil
 }
 
@@ -332,10 +330,10 @@ func TestSpawnAgentTaskInoculatedWithOwnSlot(t *testing.T) {
 	if _, err := factory.SpawnAgent(context.Background(), "dump files into bb['agents_md']['result']", ""); err != nil {
 		t.Fatalf("SpawnAgent: %v", err)
 	}
-	if len(rec.inputs) == 0 {
+	if len(rec.messages) == 0 {
 		t.Fatal("agent received no input")
 	}
-	input := rec.inputs[0]
+	input := common.CombinedText(rec.messages[0].Content)
 	if !strings.Contains(input, "Deposit results ONLY in bb['beef0000_") {
 		t.Fatalf("task not inoculated with canonical slot:\n%s", input)
 	}

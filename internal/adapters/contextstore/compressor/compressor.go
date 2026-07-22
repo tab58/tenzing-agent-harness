@@ -37,11 +37,6 @@ type Compressor struct {
 	llm             common.LLM
 	threshold       int
 	summarizeBudget int
-	todoProvider    func() string
-}
-
-func (c *Compressor) SetTodoProvider(fn func() string) {
-	c.todoProvider = fn
 }
 
 // NewCompressor creates an in-context compressor. It performs no file I/O;
@@ -80,18 +75,10 @@ func (c *Compressor) MaybeCompress(ctx context.Context, messages []common.Messag
 		return messages, "", false, fmt.Errorf("compression summarize: %w", err)
 	}
 
-	compressed := make([]common.Message, 0, 3+len(recent))
+	compressed := make([]common.Message, 0, 2+len(recent))
 	compressed = append(compressed,
 		common.NewUserMessage("[Context summary from previous conversation]\n\n"+summary),
 	)
-
-	if c.todoProvider != nil {
-		if todoState := c.todoProvider(); todoState != "" {
-			compressed = append(compressed,
-				common.NewUserMessage("[Current plan state — persisted from disk]\n\n"+todoState),
-			)
-		}
-	}
 
 	compressed = append(compressed,
 		common.NewAssistantMessage("Understood. I have the full context from our previous work."),
