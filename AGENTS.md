@@ -118,6 +118,7 @@ The FSM is per-runner instance — subagents and concurrent loops don't share st
 
 | Pattern                  | Location                                              |
 | ------------------------ | ----------------------------------------------------- |
+| Core domain (types/FSM/events) | `internal/core/` |
 | Tool implementations     | `internal/harness/tools/tooldef/tool_*.go`            |
 | Provider implementations | external: `github.com/tab58/llm-providers`            |
 | Prompt templates         | `internal/harness/prompts/*.gotmpl`                   |

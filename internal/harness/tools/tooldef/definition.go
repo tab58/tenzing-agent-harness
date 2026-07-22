@@ -3,14 +3,11 @@ package tooldef
 import (
 	"context"
 	"encoding/json"
+
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 )
 
-type ToolResult struct {
-	ToolUseID string
-	Output    string
-	IsError   bool
-	Metadata  map[string]string
-}
+type ToolResult = core.ToolResult
 
 type toolResultOptions struct {
 	ToolUseID string
@@ -52,11 +49,7 @@ func NewToolResult(output string, options ...ToolResultOption) ToolResult {
 	}
 }
 
-type ToolCall struct {
-	ID    string
-	Name  string
-	Input string
-}
+type ToolCall = core.ToolCall
 
 type Definition interface {
 	Name() string

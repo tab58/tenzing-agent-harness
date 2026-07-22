@@ -54,6 +54,11 @@ cmd/app/server.go                       agentServer — routes (/query, /cancel,
 cmd/app/index.go                        Embedded chat UI (single-page HTML served at /)
 
 internal/
+├── core/                                Invariant domain: types, FSM, events; imports nothing internal
+│   ├── turn.go                         Turn state for conversation history
+│   ├── fsm.go                          Per-runner finite state machine (6 states, 6 transitions)
+│   ├── event.go                        Event interface, BaseEvent, Emitter, EventType constants
+│   └── event_types.go                  All concrete event struct types (21 events)
 ├── app/                                 App-level wiring shared by cmd/app
 │   ├── logsse.go                        LogBroadcaster — io.Writer teeing slog output to /debug SSE
 │   └── nexus/                          Input channel monitoring (see "Nexus" below)

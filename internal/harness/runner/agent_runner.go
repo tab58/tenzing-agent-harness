@@ -12,6 +12,7 @@ import (
 
 	"github.com/tab58/llm-providers/common"
 
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/prompts"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
@@ -163,7 +164,7 @@ func NewAgentRunner(agent Agent, opts ...AgentRunnerOption) (*AgentRunner, error
 	return &AgentRunner{
 		agent:           agent,
 		id:              o.id,
-		fsm:             createNewLoopFSM(),
+		fsm:             core.NewLoopFSM(),
 		toolRegistry:    o.toolRegistry,
 		skillsRegistry:  o.skillsRegistry,
 		todoFile:        o.todoFile,

@@ -1,55 +1,37 @@
 package events
 
-import "time"
+import "github.com/tab58/tenzing-agent-harness/internal/core"
 
-// EventType identifies the kind of event.
-type EventType string
-
-const (
-	EventSessionStarted        EventType = "session.started"
-	EventSessionEnded          EventType = "session.ended"
-	EventTurnStarted           EventType = "turn.started"
-	EventTurnCompleted         EventType = "turn.completed"
-	EventLoopStarted           EventType = "loop.started"
-	EventLoopStopped           EventType = "loop.stopped"
-	EventReasoningStarted      EventType = "reasoning.started"
-	EventReasoningFinished     EventType = "reasoning.finished"
-	EventToolExecutionStarted  EventType = "tool_execution.started"
-	EventToolExecutionFinished EventType = "tool_execution.finished"
-	EventLLMResponse           EventType = "llm.response"
-	EventToolSucceeded         EventType = "tool.succeeded"
-	EventToolFailed            EventType = "tool.failed"
-	EventToolProgress          EventType = "tool.progress"
-	EventContextCompressing    EventType = "context.compressing"
-	EventContextCompressed     EventType = "context.compressed"
-	EventError                 EventType = "error"
-	EventSubagentStarted       EventType = "subagent.started"
-	EventSubagentStopped       EventType = "subagent.stopped"
-	EventTaskCreated           EventType = "task.created"
-	EventTaskCompleted         EventType = "task.completed"
+type (
+	EventType = core.EventType
+	Event     = core.Event
+	BaseEvent = core.BaseEvent
 )
 
-// Event is the common interface for all harness events.
-type Event interface {
-	Type() EventType
-	Timestamp() time.Time
-}
-
-// BaseEvent holds fields common to every event. Embed it in concrete event structs.
-type BaseEvent struct {
-	EventType EventType `json:"type"`
-	Time      time.Time `json:"timestamp"`
-	RunnerID  string    `json:"runner_id"`
-}
-
-// NewBaseEvent constructs a BaseEvent stamped with the current time.
 func NewBaseEvent(eventType EventType, runnerID string) BaseEvent {
-	return BaseEvent{
-		EventType: eventType,
-		Time:      time.Now(),
-		RunnerID:  runnerID,
-	}
+	return core.NewBaseEvent(eventType, runnerID)
 }
 
-func (e BaseEvent) Type() EventType      { return e.EventType }
-func (e BaseEvent) Timestamp() time.Time { return e.Time }
+const (
+	EventSessionStarted        = core.EventSessionStarted
+	EventSessionEnded          = core.EventSessionEnded
+	EventTurnStarted           = core.EventTurnStarted
+	EventTurnCompleted         = core.EventTurnCompleted
+	EventLoopStarted           = core.EventLoopStarted
+	EventLoopStopped           = core.EventLoopStopped
+	EventReasoningStarted      = core.EventReasoningStarted
+	EventReasoningFinished     = core.EventReasoningFinished
+	EventToolExecutionStarted  = core.EventToolExecutionStarted
+	EventToolExecutionFinished = core.EventToolExecutionFinished
+	EventLLMResponse           = core.EventLLMResponse
+	EventToolSucceeded         = core.EventToolSucceeded
+	EventToolFailed            = core.EventToolFailed
+	EventToolProgress          = core.EventToolProgress
+	EventContextCompressing    = core.EventContextCompressing
+	EventContextCompressed     = core.EventContextCompressed
+	EventError                 = core.EventError
+	EventSubagentStarted       = core.EventSubagentStarted
+	EventSubagentStopped       = core.EventSubagentStopped
+	EventTaskCreated           = core.EventTaskCreated
+	EventTaskCompleted         = core.EventTaskCompleted
+)

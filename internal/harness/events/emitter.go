@@ -1,7 +1,6 @@
 package events
 
-// Emitter is the interface for publishing events.
-// Implementations may fan out to subscribers, write to a log, etc.
-type Emitter interface {
-	Emit(event Event)
-}
+import "github.com/tab58/tenzing-agent-harness/internal/core"
+
+// Emitter is re-exported from core (it is the core EmitterPort).
+type Emitter = core.Emitter
