@@ -2,12 +2,13 @@ package runner
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/todo"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 
@@ -72,7 +73,6 @@ func TestRunnerEmitsTurnAndLoopEvents(t *testing.T) {
 		WithEmitter(collector),
 		WithToolRegistry(tools.NewRegistry("")),
 		WithSkillsRegistry(skills.NewRegistry()),
-		WithTodoFile(todo.NewTodoStore()),
 		WithSystemPrompt("test"),
 	)
 	if err != nil {
@@ -123,7 +123,6 @@ func TestRunnerEmitsToolEvents(t *testing.T) {
 		WithEmitter(collector),
 		WithToolRegistry(registry),
 		WithSkillsRegistry(skills.NewRegistry()),
-		WithTodoFile(todo.NewTodoStore()),
 		WithSystemPrompt("test"),
 	)
 	if err != nil {
@@ -170,7 +169,6 @@ func TestRunnerExecutesAllToolCallsInBatch(t *testing.T) {
 		WithEmitter(collector),
 		WithToolRegistry(registry),
 		WithSkillsRegistry(skills.NewRegistry()),
-		WithTodoFile(todo.NewTodoStore()),
 		WithSystemPrompt("test"),
 	)
 	if err != nil {
@@ -212,4 +210,87 @@ func (e *echoTool) Schema() tooldef.Schema {
 }
 func (e *echoTool) Execute(_ context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
 	return tooldef.NewToolResult("echo: " + exctx.Arguments[0]), nil
+}
+
+// countingEchoTool tracks how many times Execute is called, so tests can
+// assert a denied tool call never reaches the underlying tool.
+type countingEchoTool struct {
+	mu      sync.Mutex
+	invoked int
+}
+
+func (c *countingEchoTool) Name() string        { return "echo" }
+func (c *countingEchoTool) Description() string { return "echoes input" }
+func (c *countingEchoTool) Schema() tooldef.Schema {
+	return tooldef.Schema{Properties: map[string]tooldef.SchemaProperty{"text": {Type: tooldef.JsonTypeString}}}
+}
+func (c *countingEchoTool) Execute(_ context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
+	c.mu.Lock()
+	c.invoked++
+	c.mu.Unlock()
+	return tooldef.NewToolResult("echo: " + exctx.Arguments[0]), nil
+}
+
+func (c *countingEchoTool) invocations() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.invoked
+}
+
+// denyExt is a test extension that denies every tool call.
+type denyExt struct{}
+
+func (denyExt) Name() string { return "deny-all" }
+func (denyExt) OnToolCall(ctx context.Context, tcc *core.ToolCallContext) error {
+	tcc.Decision = core.Deny
+	tcc.Reason = "test policy"
+	return nil
+}
+
+// TestToolCallDeniedByExtension verifies that when a registered extension
+// denies a tool call, the loop feeds back a denied-by-policy error result
+// without ever invoking the underlying tool.
+func TestToolCallDeniedByExtension(t *testing.T) {
+	collector := &eventCollector{}
+
+	registry := tools.NewRegistry("")
+	tool := &countingEchoTool{}
+	registry.Register(tool)
+
+	agent := &minimalAgent{steps: []ReasoningResult{
+		{ToolCalls: []tooldef.ToolCall{{ID: "1", Name: "echo", Input: `{"text":"hi"}`}}},
+		{FinalAnswer: "done"},
+	}}
+
+	r, err := NewAgentRunner(
+		agent,
+		WithEmitter(collector),
+		WithToolRegistry(registry),
+		WithSkillsRegistry(skills.NewRegistry()),
+		WithSystemPrompt("test"),
+		WithExtensions(core.NewExtensions(denyExt{})),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.RunLoop(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := tool.invocations(); got != 0 {
+		t.Errorf("expected tool to never execute, invoked %d times", got)
+	}
+
+	failed := collector.byType(events.EventToolFailed)
+	if len(failed) != 1 {
+		t.Fatalf("expected 1 ToolFailedEvent, got %d", len(failed))
+	}
+	ev, ok := failed[0].(events.ToolFailedEvent)
+	if !ok {
+		t.Fatalf("event is not ToolFailedEvent: %T", failed[0])
+	}
+	if !strings.Contains(ev.Error, "denied by policy") {
+		t.Errorf("error = %q, want substring %q", ev.Error, "denied by policy")
+	}
 }

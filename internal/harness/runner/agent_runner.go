@@ -16,8 +16,8 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/prompts"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/todo"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 )
 
 const logOutputMaxLen = 2000
@@ -53,23 +53,23 @@ type AgentRunner struct {
 	fsm             *LoopFSM
 	toolRegistry    *tools.Registry
 	skillsRegistry  *skills.Registry
-	todoFile        *todo.TodoFile
 	agent           Agent
 	emitter         events.Emitter
 	onTextDelta     func(string)
 	onThinkingDelta func(string)
 	systemPrompt    string
+	extensions      *core.Extensions
 }
 
 type agentRunnerOptions struct {
 	id              string
 	toolRegistry    *tools.Registry
 	skillsRegistry  *skills.Registry
-	todoFile        *todo.TodoFile
 	onTextDelta     func(string)
 	onThinkingDelta func(string)
 	systemPrompt    string
 	emitter         events.Emitter
+	extensions      *core.Extensions
 }
 
 type AgentRunnerOption func(*agentRunnerOptions)
@@ -123,14 +123,12 @@ func WithSkillsRegistry(registry *skills.Registry) AgentRunnerOption {
 	}
 }
 
-func WithTodoFile(file *todo.TodoFile) AgentRunnerOption {
-	return func(o *agentRunnerOptions) {
-		o.todoFile = file
-	}
+func WithExtensions(exts *core.Extensions) AgentRunnerOption {
+	return func(o *agentRunnerOptions) { o.extensions = exts }
 }
 
 // NewAgentRunner creates a new AgentRunner, the actual executor of a single agent's
-// reasoning and tool execution loop. The agent, tool registry, skills registry, and todo file
+// reasoning and tool execution loop. The agent, tool registry, and skills registry
 // must be defined.
 func NewAgentRunner(agent Agent, opts ...AgentRunnerOption) (*AgentRunner, error) {
 	if agent == nil {
@@ -153,12 +151,12 @@ func NewAgentRunner(agent Agent, opts ...AgentRunnerOption) (*AgentRunner, error
 		return nil, fmt.Errorf("no skills registry defined")
 	}
 
-	if o.todoFile == nil {
-		return nil, fmt.Errorf("no todo file defined")
-	}
-
 	if o.id == "" {
 		o.id = NewID()
+	}
+
+	if o.extensions == nil {
+		o.extensions = core.NewExtensions()
 	}
 
 	return &AgentRunner{
@@ -167,11 +165,11 @@ func NewAgentRunner(agent Agent, opts ...AgentRunnerOption) (*AgentRunner, error
 		fsm:             core.NewLoopFSM(),
 		toolRegistry:    o.toolRegistry,
 		skillsRegistry:  o.skillsRegistry,
-		todoFile:        o.todoFile,
 		emitter:         o.emitter,
 		systemPrompt:    o.systemPrompt,
 		onTextDelta:     o.onTextDelta,
 		onThinkingDelta: o.onThinkingDelta,
+		extensions:      o.extensions,
 	}, nil
 }
 
@@ -230,7 +228,20 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 			loopErr = fmt.Errorf("fsm start reasoning: %w", err)
 			break
 		}
-		reminders := h.buildSystemReminders()
+		turnCtx := &core.TurnContext{RunnerID: h.id, Iteration: iteration}
+		if err := h.extensions.RunBeforeIteration(ctx, turnCtx); err != nil {
+			loopErr = fmt.Errorf("before iteration hook: %w", err)
+			break
+		}
+		if turnCtx.Terminate != "" {
+			// graceful termination requested (budgets, Phase 5). Stop like a final answer.
+			if err := h.fsm.TransitionStates(ctx, LoopTransitionReset); err != nil {
+				slog.Error("fsm reset after termination", "runner", h.id, "error", err)
+			}
+			slog.Info("loop terminated by hook", "runner", h.id, "reason", turnCtx.Terminate)
+			return "", fmt.Errorf("terminated: %s", turnCtx.Terminate)
+		}
+		reminders := turnCtx.Reminders
 		if len(reminders) > 0 {
 			slog.Debug("system reminders", "runner", h.id, "iter", iteration, "count", len(reminders), "reminders", reminders)
 		}
@@ -334,6 +345,11 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 				Iterations:  iteration,
 				Duration:    time.Since(loopStart).Round(time.Millisecond),
 			})
+			h.extensions.RunAfterTurn(ctx, &core.TurnResult{
+				FinalAnswer: finalAnswer,
+				Iterations:  iteration,
+				Duration:    time.Since(loopStart).Round(time.Millisecond),
+			})
 			return finalAnswer, nil
 		}
 
@@ -359,7 +375,22 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 				Input:     toolCall.Input,
 			})
 			toolStart := time.Now()
-			toolResult, err := h.toolRegistry.Execute(ctx, toolCall.Name, toolCall.Input)
+			tcc := &core.ToolCallContext{RunnerID: h.id, Call: &toolCall, Origin: "native"}
+			var toolResult tooldef.ToolResult
+			var err error
+			if hookErr := h.extensions.RunToolCall(ctx, tcc); hookErr != nil {
+				toolResult = tooldef.ToolResult{Output: fmt.Sprintf("tool call blocked by extension: %v", hookErr), IsError: true}
+			} else {
+				switch tcc.Decision {
+				case core.Deny:
+					toolResult = tooldef.ToolResult{Output: fmt.Sprintf("tool call denied by policy: %s", tcc.Reason), IsError: true}
+				case core.AskUser:
+					// Approval flow arrives in Phase 5 (Task 16). Until then, unanswerable.
+					toolResult = tooldef.ToolResult{Output: "tool call requires approval but no approver is configured", IsError: true}
+				default:
+					toolResult, err = h.toolRegistry.Execute(ctx, toolCall.Name, toolCall.Input)
+				}
+			}
 			toolDuration := time.Since(toolStart)
 			if err != nil {
 				loopErr = fmt.Errorf("tool execution error: %w", err)
@@ -393,6 +424,7 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 					Duration:  toolDuration.Round(time.Millisecond),
 				})
 			}
+			h.extensions.RunToolResult(ctx, &core.ToolResultContext{RunnerID: h.id, Call: toolCall, Result: &toolResult})
 			outputs = append(outputs, toolResult.Output)
 		}
 		if loopErr != nil {
@@ -427,14 +459,6 @@ func (h *AgentRunner) ID() string {
 
 func (h *AgentRunner) SystemPrompt() string {
 	return h.systemPrompt
-}
-
-func (h *AgentRunner) buildSystemReminders() []string {
-	var reminders []string
-	if r := h.todoFile.FormatReminder(); r != "" {
-		reminders = append(reminders, r)
-	}
-	return reminders
 }
 
 func truncateLog(s string, max int) string {

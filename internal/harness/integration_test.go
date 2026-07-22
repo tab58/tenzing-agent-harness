@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/extensions/reminders"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
@@ -265,7 +267,6 @@ func TestIntegration_ReadEditRevert_ThroughLoop(t *testing.T) {
 		agent,
 		runner.WithToolRegistry(registry),
 		runner.WithSkillsRegistry(skills.NewRegistry()),
-		runner.WithTodoFile(todo.NewTodoStore()),
 		runner.WithSystemPrompt("test"),
 	)
 	if err != nil {
@@ -297,7 +298,6 @@ func TestIntegration_FinalAnswerOnly(t *testing.T) {
 		agent,
 		runner.WithToolRegistry(registry),
 		runner.WithSkillsRegistry(skills.NewRegistry()),
-		runner.WithTodoFile(todo.NewTodoStore()),
 		runner.WithSystemPrompt("test"),
 	)
 	if err != nil {
@@ -322,7 +322,6 @@ func TestIntegration_ContextCanceled(t *testing.T) {
 		agent,
 		runner.WithToolRegistry(registry),
 		runner.WithSkillsRegistry(skills.NewRegistry()),
-		runner.WithTodoFile(todo.NewTodoStore()),
 		runner.WithSystemPrompt("test"),
 	)
 	if err != nil {
@@ -348,7 +347,6 @@ func TestIntegration_UnknownTool(t *testing.T) {
 		agent,
 		runner.WithToolRegistry(registry),
 		runner.WithSkillsRegistry(skills.NewRegistry()),
-		runner.WithTodoFile(todo.NewTodoStore()),
 		runner.WithSystemPrompt("test"),
 	)
 	if err != nil {
@@ -383,7 +381,6 @@ func TestIntegration_MultipleToolCalls(t *testing.T) {
 		agent,
 		runner.WithToolRegistry(registry),
 		runner.WithSkillsRegistry(skills.NewRegistry()),
-		runner.WithTodoFile(todo.NewTodoStore()),
 		runner.WithSystemPrompt("test"),
 	)
 	if err != nil {
@@ -419,7 +416,6 @@ func TestIntegration_ToolHookCalled(t *testing.T) {
 		runner.WithEmitter(collector),
 		runner.WithToolRegistry(registry),
 		runner.WithSkillsRegistry(skills.NewRegistry()),
-		runner.WithTodoFile(todo.NewTodoStore()),
 		runner.WithSystemPrompt("test"),
 	)
 	if err != nil {
@@ -448,11 +444,12 @@ func TestTodoRemindersScopedPerRunner(t *testing.T) {
 		t.Helper()
 		registry := tools.NewRegistry("")
 		registry.RegisterFromProvider(store)
+		exts := core.NewExtensions(reminders.New(store.FormatReminder))
 		r, err := runner.NewAgentRunner(
 			agent,
 			runner.WithToolRegistry(registry),
 			runner.WithSkillsRegistry(skills.NewRegistry()),
-			runner.WithTodoFile(store),
+			runner.WithExtensions(exts),
 			runner.WithSystemPrompt("test"),
 		)
 		if err != nil {

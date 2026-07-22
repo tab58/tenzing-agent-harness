@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/tab58/tenzing-agent-harness/internal/agent"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/extensions/reminders"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/advisor"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/blackboard"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
@@ -31,6 +33,7 @@ type Harness struct {
 	stopHooks       func()
 	stopMemoryHook  func()
 	blackboard      *blackboard.Blackboard
+	extensions      *core.Extensions
 }
 
 // EventBus returns the harness event bus. It is always non-nil.
@@ -101,6 +104,12 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 	// set up todo store
 	todoFile := todo.NewTodoStore()
 	todoFile.SetEmitter(o.eventBus)
+
+	// default extensions run first, then any caller-supplied via WithExtension
+	defaultExts := []core.Extension{
+		reminders.New(todoFile.FormatReminder),
+	}
+	allExts := core.NewExtensions(append(defaultExts, o.extensions...)...)
 
 	// build skills registry
 	skillsRegistry := skills.NewRegistry()
@@ -216,11 +225,11 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		runner.WithID(mainRunnerID),
 		runner.WithToolRegistry(toolRegistry),
 		runner.WithSkillsRegistry(skillsRegistry),
-		runner.WithTodoFile(todoFile),
 		runner.WithEmitter(o.eventBus),
 		runner.WithTextDeltaHandler(o.onTextDelta),
 		runner.WithThinkingDeltaHandler(o.onThinkingDelta),
 		runner.WithSystemPrompt(mainSystemPrompt),
+		runner.WithExtensions(allExts),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("unable to initialize runner: %w", err)
@@ -234,6 +243,7 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		stopHooks:       stopHooks,
 		stopMemoryHook:  stopMemoryHook,
 		blackboard:      bb,
+		extensions:      allExts,
 	}, nil
 }
 

@@ -102,9 +102,15 @@ All non-invariant behavior flows through `AgentRunnerConfig`. To change runner b
 - Swap the Agent (different model/provider)
 - Swap the ToolRegistry (different tool set)
 - Swap the SystemPrompt
-- Swap the ReminderBuilder
 - Provide an `events.Emitter` to receive structured events from the loop
 - Provide `OnTextDelta`/`OnThinkingDelta` callbacks for streaming text
+
+System reminders (todo state, etc.) no longer flow through the runner. They
+are injected each iteration by `core.Extension`s implementing
+`core.BeforeIterationHook` (e.g. `internal/extensions/reminders`), registered
+on `*core.Extensions` and passed to the runner via `runner.WithExtensions`.
+`harness.New` wires the default reminders extension around the harness's
+`todoFile`; add more via `harness.WithExtension`.
 
 Don't modify the loop. Don't add fields to the runner struct. Configure via `AgentRunnerConfig`.
 
@@ -119,6 +125,7 @@ The FSM is per-runner instance — subagents and concurrent loops don't share st
 | Pattern                  | Location                                              |
 | ------------------------ | ----------------------------------------------------- |
 | Core domain (types/FSM/events) | `internal/core/` |
+| Extensions                | `internal/extensions/<name>/`                          |
 | Tool implementations     | `internal/harness/tools/tooldef/tool_*.go`            |
 | Provider implementations | external: `github.com/tab58/llm-providers`            |
 | Prompt templates         | `internal/harness/prompts/*.gotmpl`                   |

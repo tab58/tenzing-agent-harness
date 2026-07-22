@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/extensions/reminders"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/blackboard"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
@@ -112,13 +114,14 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 
 	todoFile := todo.NewTodoStore()
 	skillsReg := skills.NewRegistry()
+	childExts := core.NewExtensions(reminders.New(todoFile.FormatReminder))
 
 	childRunner, err := runner.NewAgentRunner(
 		childAgent,
 		runner.WithToolRegistry(registry),
 		runner.WithSkillsRegistry(skillsReg),
-		runner.WithTodoFile(todoFile),
 		runner.WithSystemPrompt(systemPrompt),
+		runner.WithExtensions(childExts),
 		// Share the parent's emitter so the sub-agent's tool/LLM events reach
 		// the same bus (and UI). Its events carry the child's RunnerID.
 		runner.WithEmitter(f.emitter),

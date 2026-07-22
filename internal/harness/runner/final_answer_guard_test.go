@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/todo"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
 )
 
@@ -45,7 +44,6 @@ func newGuardTestRunner(t *testing.T, agent *minimalAgent) *AgentRunner {
 		WithEmitter(&eventCollector{}),
 		WithToolRegistry(tools.NewRegistry("")),
 		WithSkillsRegistry(skills.NewRegistry()),
-		WithTodoFile(todo.NewTodoStore()),
 		WithSystemPrompt("test"),
 	)
 	if err != nil {

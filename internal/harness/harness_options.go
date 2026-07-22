@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
@@ -76,6 +77,11 @@ type harnessOptions struct {
 	// blackboardDisabled turns off the shared blackboard REPL and its
 	// repl tool (enabled by default).
 	blackboardDisabled bool
+
+	// extensions are additional core.Extension registrations, appended after
+	// the default extensions (e.g. reminders). Order of WithExtension calls
+	// is hook execution order.
+	extensions []core.Extension
 }
 
 func defaultHarnessOptions() *harnessOptions {
@@ -226,4 +232,10 @@ func WithBlackboardDisabled() HarnessOption {
 	return func(o *harnessOptions) {
 		o.blackboardDisabled = true
 	}
+}
+
+// WithExtension registers an additional core extension. Order of WithExtension
+// calls is hook execution order (after the default extensions).
+func WithExtension(ext core.Extension) HarnessOption {
+	return func(o *harnessOptions) { o.extensions = append(o.extensions, ext) }
 }
