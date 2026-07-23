@@ -7,7 +7,7 @@
 - **Core** (`internal/core/`) — the invariant domain. Types (`ToolCall`, `ToolResult`, `ReasoningResult`, `ResponseMeta`), port interfaces (`ModelPort`, `ToolPort`, `ContextPort`), the FSM, events, the extension system (`Extensions`, hooks, `Decision`), and the agent loop (`Loop`, `RunTurn`). Core imports nothing from this repo's `internal/` tree — adapters and extensions import core, never the reverse.
 - **Adapters** (`internal/adapters/`) — port implementations. `contextstore/` implements `ContextPort` (in-memory history, tool_use/tool_result pairing, compression). `toolport/` wraps `tools.Registry` as `ToolPort` (error-as-ToolResult conversion, panic recovery). The `Agent` interface in `runner/agent.go` extends `ModelPort` with construction-time wiring methods; the concrete agent (`internal/agent/`) implements it.
 - **Extensions** (`internal/extensions/`) — optional hooks that plug into the loop via `core.Extensions` (e.g. `reminders/` for system reminders). They implement core hook interfaces (`BeforeIterationHook`, `ToolCallHook`, etc.) and are registered at construction.
-- **Composition Root** — `harness.New` (the outermost shell) and `AgentRunner` (thin facade). The harness wires adapters, extensions, and tools; `AgentRunner` performs one-time agent wiring (tool definitions, skill map, stream callbacks) and delegates to `core.Loop.RunTurn`, translating `TurnResult` into the `(string, error)` contract the harness expects.
+- **Composition Root** — `harness.New` (the outermost shell) and `AgentRunner` (thin facade). The harness wires adapters, extensions, and tools, and assembles the system prompt (base + extension `PromptFragments`); `AgentRunner` performs one-time agent wiring (stream callbacks) and delegates to `core.Loop.RunTurn`, translating `TurnResult` into the `(string, error)` contract the harness expects.
 
 The Harness creates an AgentRunner for the main session. A subagent spawns a fresh AgentRunner with its own Loop, FSM, and message history. This separation means you can swap the agent (different LLM, different strategy) without touching execution infrastructure, swap the harness (CLI → server, local → remote) without touching decision logic, and reuse the loop for subagents without coupling them to the CLI layer.
 
@@ -65,13 +65,15 @@ internal/
 │   └── event_types.go                  All concrete event struct types (21 events)
 ├── adapters/                            Port implementations
 │   ├── contextstore/                   ContextPort: in-memory history, pairing, compression
-│   └── toolport/                       ToolPort: wraps tools.Registry, error-as-ToolResult, panic recovery
+│   └── toolport/                       ToolPort: Composite (native + extension + dynamic mounts, panic recovery, SpecFromDefinition) and Wrap (plain registry port)
 ├── app/                                 App-level wiring shared by cmd/app
 │   ├── logsse.go                        LogBroadcaster — io.Writer teeing slog output to /debug SSE
 │   └── nexus/                          Input channel monitoring (see "Nexus" below)
 │       └── tools/                      Channel tools: list_channels, read_channel, search_channel
 ├── extensions/                          core.Extension implementations
-│   └── reminders/                      BeforeIterationHook — injects TODO-plan-state system reminders
+│   ├── reminders/                      BeforeIterationHook — injects TODO-plan-state system reminders
+│   ├── skillsext/                      ToolProvider (list_skills/load_skill) + PromptContributor (skills index)
+│   └── blackboardext/                  ToolProvider (repl) + SessionEndHook (closes the shared blackboard)
 ├── agent/                              Concrete, stateless Agent implementation
 │   └── agent.go                        Agent struct, AgentConfig, DoReasoning — owns no history, no compression, no memory I/O
 └── harness/                            Composition root: wiring, config, event bus, memory persistence
@@ -115,7 +117,8 @@ internal/
     │   ├── repl.go                     Python subprocess + JSON-line IPC
     │   └── tool_repl.go                repl tool (REPLTool)
     └── subagent/                       Sub-agent delegation
-        ├── subagent_factory.go         SubAgentFactory — builds child AgentRunner + Agent + contextstore.Store
+        ├── subagent_factory.go         SubAgentFactory — builds child AgentRunner + Agent + contextstore.Store + child extensions/composite
+        ├── spawn_ext.go                SpawnExt — mounts spawn_agent as a core.Extension (in-package to avoid an import cycle)
         └── tool_spawn_agent.go         spawn_agent tool + AgentFactory interface
 
 LLM provider layer: external module github.com/tab58/llm-providers
@@ -162,7 +165,7 @@ func (l *Loop) ID() string
 
 ## AgentRunner (Facade)
 
-`AgentRunner` (`internal/harness/runner/agent_runner.go`) is a thin facade over `core.Loop`. It performs one-time agent wiring (tool definitions, skill map, stream/thinking callbacks) at construction time, builds a `core.Loop` via `core.NewLoop(core.LoopConfig{Model: agent, Tools: toolport.Wrap(o.toolRegistry), Context: o.contextStore, Emitter, Extensions, SystemPrompt})`, and `RunLoop` is a one-line delegate to `Loop.RunTurn`, translating `TurnResult` into the `(string, error)` contract the harness expects: a non-empty `Terminated` becomes `fmt.Errorf("terminated: %s", reason)` (with `FinalAnswer` still returned alongside), otherwise `FinalAnswer` passes through directly.
+`AgentRunner` (`internal/harness/runner/agent_runner.go`) is a thin facade over `core.Loop`. It performs one-time agent wiring (stream/thinking callbacks) at construction time, builds a `core.Loop` via `core.NewLoop(core.LoopConfig{Model: agent, Tools: tp, Context: o.contextStore, Emitter, Extensions, SystemPrompt})` — where `tp` is the `core.ToolPort` from `WithToolPort` (the harness passes the composite) or a `toolport.Wrap(o.toolRegistry)` fallback — and `RunLoop` is a one-line delegate to `Loop.RunTurn`, translating `TurnResult` into the `(string, error)` contract the harness expects: a non-empty `Terminated` becomes `fmt.Errorf("terminated: %s", reason)` (with `FinalAnswer` still returned alongside), otherwise `FinalAnswer` passes through directly.
 
 The runner has no `Cwd` — working directory is a tool execution concern owned by the `Registry`. The FSM, message assembly, hook dispatch, retry logic, and tool dispatch described below all live in `core.Loop.RunTurn` (`internal/core/loop.go`) — the invariant loop the design goals describe. `AgentRunner` owns none of it; it wires the three ports once at construction and forwards the call.
 
@@ -192,20 +195,22 @@ Loop.RunTurn(ctx, input string) → (TurnResult, error)
 
 1. context.AppendUser(ctx, input) — once, before the loop
 2. Reset FSM
-3. Loop (iteration = 1, 2, ...):
+3. tools.BeginTurn(ctx); toolDefs := tools.Definitions() — snapshot the tool
+   surface once per turn (composite re-reads dynamic sources here)
+4. Loop (iteration = 1, 2, ...):
    a. Check ctx cancellation
    b. StartReasoning
    c. extensions.RunBeforeIteration(ctx, turnCtx) — load-bearing; hooks append
       turnCtx.Reminders and may set turnCtx.Terminate for graceful termination
       (Terminate set → Reset FSM, return TurnResult{Terminated: reason}, nil — not an error)
    d. messages := context.Messages(ctx)
-   e. reasoningResult := model.DoReasoning(ctx, messages, turnCtx.Reminders)
+   e. reasoningResult := model.DoReasoning(ctx, messages, turnCtx.Reminders, toolDefs)
    f. FinishReasoning
    g. If ToolCalls is empty (final answer):
       - context.AppendAssistant(ctx, reasoningResult.Meta.AssistantMessage)
       - if the answer is empty, looks like a tool call written as plain text, or
         was truncated at the output token limit, and fewer than 2 retries have
-        been used: context.AppendUser(ctx, a retry instruction) → loop to 3a
+        been used: context.AppendUser(ctx, a retry instruction) → loop to 4a
       - else: Stop, extensions.RunAfterTurn(ctx, &tr) (degrading), return
         TurnResult{FinalAnswer, Iterations, Duration}
    h. Else (tool calls present):
@@ -220,8 +225,8 @@ Loop.RunTurn(ctx, input string) → (TurnResult, error)
       - context.AppendAssistant(ctx, reasoningResult.Meta.AssistantMessage), then
         context.AppendToolResults(ctx, outputs) — results carry ToolUseID so the
         store pairs them to the assistant's tool_use blocks
-      - loop to 3a
-4. On any error: Reset FSM, emit ErrorEvent, return the error
+      - loop to 4a
+5. On any error: Reset FSM, emit ErrorEvent, return the error
 ```
 
 Exit: model produces `ReasoningResult{ToolCalls: nil}` with a valid final answer, or a `BeforeIteration` hook sets `TurnContext.Terminate` (graceful termination — a `TurnResult`, not an error).
@@ -232,11 +237,9 @@ Error: ctx canceled, an FSM transition error, `BeforeIteration` hook error, `DoR
 ```go
 type Agent interface {
     GetCurrentModel() string
-    UpdateToolDefinitions(tooldefs []common.ToolDefinition)
-    UpdateSkillMap(skillMap map[string]string)
     UpdateStreamCallback(fn func(text string))
     UpdateThinkingCallback(fn func(text string))
-    DoReasoning(ctx context.Context, messages []common.Message, systemReminders []string) (ReasoningResult, error)
+    DoReasoning(ctx context.Context, messages []common.Message, systemReminders []string, tools []common.ToolDefinition) (ReasoningResult, error)
 }
 
 type ReasoningResult struct {
@@ -255,15 +258,14 @@ type ResponseMeta struct {
 
 `ReasoningResult`/`ResponseMeta` live in `internal/core/turn.go`; `runner.ReasoningResult`/`runner.ResponseMeta` are aliases. `core.ModelPort` (`internal/core/ports.go`) mirrors this `DoReasoning` signature — `Agent` is the runner-facing name for the same contract, extended with the `Update*` wiring calls.
 
-The Agent is **stateless**: `messages` is the full conversation history, rebuilt from the runner's `core.ContextPort` on every call. The agent neither stores nor mutates it, and returns the model's full response via `Meta.AssistantMessage` rather than appending it anywhere — the runner does that, against its `ContextPort`. `systemReminders` carries the current todo plan state.
+The Agent is **stateless**: `messages` is the full conversation history, rebuilt from the runner's `core.ContextPort` on every call, and `tools` is the tool surface for the turn, snapshotted from the loop's `core.ToolPort`. The agent neither stores nor mutates them, and returns the model's full response via `Meta.AssistantMessage` rather than appending it anywhere — the runner does that, against its `ContextPort`. `systemReminders` carries the current todo plan state.
 
-The concrete implementation lives in `internal/agent/`. Tool definitions are injected at construction via `AgentConfig` — the tool registry converts its definitions to `[]common.ToolDefinition` via `Registry.ProviderDefinitions()`.
+The concrete implementation lives in `internal/agent/`. Tool definitions are applied per-request from the `tools` parameter — the agent holds no tool state.
 
 ```go
 type AgentConfig struct {
     Model        common.LLM
-    SystemPrompt string
-    SkillMap     map[string]string // name → description, injected into system prompt
+    SystemPrompt string // fully assembled by the composition root (base + extension fragments)
 }
 ```
 
@@ -320,6 +322,10 @@ The brain defaults to the built-in agent implementation: when no `WithAgentBuild
 `RunTurn(ctx, query)` — runs one agent turn via `RunLoop` and returns the answer. `cmd/app` drives turns over HTTP (`POST /query`) and streams progress via SSE.
 
 ## Tool System
+
+### Composite ToolPort (`internal/adapters/toolport/composite.go`)
+
+The loop's `core.ToolPort` in the harness is the `Composite`, which mounts three source kinds in stable definition order: native registry tools (sorted by name, `Origin: "native"`), extension `core.ToolProvider` bundles (registration order, `Origin: "extension:<name>"`), then `core.DynamicToolSource` snapshots (re-read at each turn's `BeginTurn`; e.g. MCP). Extension tools are `core.ToolSpec`s carrying their own `Execute` closure — no registry registration. Static name collisions are a construction error; dynamic collisions are skipped with a warning. Panic recovery lives in `Composite.Execute` — the single choke point for all mounts. `toolport.Wrap(registry)` remains as a plain single-registry port for tests/simple drivers (no-op `BeginTurn`).
 
 ### Registry
 
@@ -401,7 +407,7 @@ Package `internal/harness/blackboard/`. A `Blackboard` is one persistent Python 
 - **Deposit/preview flow** (`SubAgentFactory.SpawnAgent`, `internal/harness/subagent/subagent_factory.go`) — a subagent's final answer up to `inlineResultMax` (2000) chars is returned inline, prefixed with `"Sub-agent <id> completed (blackboard slot bb['<id>'])."` so the orchestrator knows the slot even when nothing was deposited (the sub-agent may have written to its slot itself). Longer results are deposited via `Blackboard.Deposit` to `bb['<agent_id>']['result']` (agent ID validated against `[A-Za-z0-9_]+`, value passed through `SetVar`, never spliced into generated code) and the tool returns `"Sub-agent <id> completed."` plus a `Preview`: a 1500-char head / 500-char tail summary with a hint to inspect the full value via `peek()`/`bb_grep()`. If the deposit itself fails, `SpawnAgent` falls back to returning the full result inline.
 - **Logging** — every `exec`/`deposit` op is logged via `slog` at info level (so it lands in `.tenzing-agent.log`): agent, code (capped 500 chars), `stdout_len`, stdout head (capped 200 chars); transport failures log at error level. This is the only visibility into blackboard state since it never appears in transcripts.
 - **Options** — `WithBlackboardDisabled()` skips registering the blackboard and the `repl` tool entirely (subagent results are then always inline). On by default and re-exported from `pkg/tenzing`.
-- **Shutdown** — `Harness.Shutdown()` closes the blackboard's Python subprocess (`Blackboard.Close`) alongside stopping hook dispatch.
+- **Shutdown** — `Harness.Shutdown()` runs the extensions' session-end hooks (5s timeout) alongside stopping hook dispatch; the blackboard extension's `SessionEnd` closes the Python subprocess (`Blackboard.Close`). The `repl` tool mounts via `internal/extensions/blackboardext` (`core.ToolProvider`), not the tool registry.
 
 Known limit: `llm_query`/`llm_batch` inside the blackboard hold the REPL mutex for all agents while they run — keep individual calls small and prefer `llm_batch` for fan-out work.
 
@@ -479,13 +485,13 @@ Compression is non-fatal: LLM errors are logged, original history preserved.
 
 Recursive delegation via full autonomous sub-agents. The main agent delegates operational tasks (file editing, commands, investigations) to child agents that run their own AgentRunner loop. Children can themselves spawn sub-agents up to a configurable max depth.
 
-Architecture: `spawn_agent` tool → `AgentFactory` interface (in `subagent/`) → `SubAgentFactory` (in `harness/`) builds child AgentRunner + Agent per spawn. Children share the blackboard REPL with their parent when one is configured, so analytical work over large inputs can run there via `llm_query`/`llm_batch`.
+Architecture: `spawn_agent` tool, mounted via `subagent.SpawnExt` (`core.ToolProvider`; it lives in the subagent package rather than `internal/extensions/` because the factory's own child wiring builds it for grandchildren — a separate package would be an import cycle) → `AgentFactory` interface → `SubAgentFactory` builds child AgentRunner + Agent per spawn: fresh native registry, child extension set (`childExtensions`: own todo reminders, shared skills ext, shared blackboard ext under the child's slot ID, and — below max depth — a `SpawnExt` wrapping a nested factory), a child composite ToolPort over both, and the child system prompt assembled with the extension `PromptFragments`. Children share the blackboard REPL with their parent when one is configured, so analytical work over large inputs can run there via `llm_query`/`llm_batch`.
 
-Depth control: factory tracks `currentDepth`. At `maxDepth`, child gets all tools except `spawn_agent`. Default max depth is 1 (main → child; no grandchildren) using the main model.
+Depth control: factory tracks `currentDepth`. Depth exclusion is a wiring decision — `childExtensions` omits `SpawnExt` at `maxDepth`, so that child's tool surface has no `spawn_agent`. Default max depth is 1 (main → child; no grandchildren) using the main model.
 
-Tool isolation: each child gets fresh tool instances via `tools.NewRegistry(cwd)`. No tool instance is shared between parent and child. `pathLocks` (package-level `sync.Map`) is the one intentional exception — serializes file writes across all agents in-process.
+Tool isolation: each child gets fresh native tool instances via `tools.NewRegistry(cwd)`. No tool instance is shared between parent and child (the shared blackboard/skills extensions are deliberate wiring decisions). `pathLocks` (package-level `sync.Map`) is the one intentional exception — serializes file writes across all agents in-process.
 
-Children get their own empty `TodoFile` (`todo.NewTodoStore()`) and an empty `SkillsRegistry` — nothing is shared with the parent. No event hooks.
+Children get their own empty `TodoFile` (`todo.NewTodoStore()`) and the parent's shared skills extension (read-only registry). No event hooks.
 
 Wired via `WithSubagentDepth` (default 1, 0 = disabled) and `WithSubagentMaxIterations` (default 100 per child). Children are built with the same `runner.AgentBuilder` as the main agent — the default built-in agent, or whatever `WithAgentBuilder` set.
 

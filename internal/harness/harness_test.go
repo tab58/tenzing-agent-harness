@@ -18,12 +18,10 @@ import (
 type stubAgent struct{}
 
 func (s *stubAgent) GetCurrentModel() string                         { return "stub-model" }
-func (s *stubAgent) UpdateToolDefinitions(_ []common.ToolDefinition) {}
-func (s *stubAgent) UpdateSkillMap(_ map[string]string)              {}
 func (s *stubAgent) UpdateStreamCallback(_ func(string))             {}
 func (s *stubAgent) UpdateThinkingCallback(_ func(string))           {}
 
-func (s *stubAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string) (runner.ReasoningResult, error) {
+func (s *stubAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string, _ []common.ToolDefinition) (runner.ReasoningResult, error) {
 	return runner.ReasoningResult{FinalAnswer: "done"}, nil
 }
 
@@ -120,7 +118,7 @@ func TestHarnessRegistersSpawnAgentByDefault(t *testing.T) {
 	h := newTestHarness(t)
 	found := false
 	for _, def := range h.ToolDefinitions() {
-		if def.Name() == "spawn_agent" {
+		if def.Name == "spawn_agent" {
 			found = true
 			break
 		}
@@ -133,7 +131,7 @@ func TestHarnessRegistersSpawnAgentByDefault(t *testing.T) {
 func TestHarnessNoSpawnAgentWhenDepthZero(t *testing.T) {
 	h := newTestHarness(t, WithSubagentDepth(0))
 	for _, def := range h.ToolDefinitions() {
-		if def.Name() == "spawn_agent" {
+		if def.Name == "spawn_agent" {
 			t.Fatal("spawn_agent tool should not be registered when depth is 0")
 		}
 	}
@@ -154,7 +152,7 @@ func TestHarnessAdvisorRegistration(t *testing.T) {
 			h := newTestHarness(t, tt.opts...)
 			found := false
 			for _, def := range h.ToolDefinitions() {
-				if def.Name() == "advisor" {
+				if def.Name == "advisor" {
 					found = true
 					break
 				}
@@ -170,7 +168,7 @@ func TestHarnessDisabledToolsRemovesBuiltins(t *testing.T) {
 	h := newTestHarness(t, WithDisabledTool("bash"), WithDisabledTool("edit"))
 	names := make(map[string]bool)
 	for _, def := range h.ToolDefinitions() {
-		names[strings.ToLower(def.Name())] = true
+		names[strings.ToLower(def.Name)] = true
 	}
 	for _, banned := range []string{"bash", "edit"} {
 		if names[banned] {
@@ -257,7 +255,7 @@ func TestHarnessDefaultAgentBuilder(t *testing.T) {
 
 func hasTool(h *Harness, name string) bool {
 	for _, def := range h.ToolDefinitions() {
-		if def.Name() == name {
+		if def.Name == name {
 			return true
 		}
 	}

@@ -82,6 +82,17 @@ type PromptContributor interface {
 	PromptFragment() string
 }
 
+// ToolProvider is a static tool bundle contributed by an extension. Specs are
+// read once at composite construction.
+type ToolProvider interface {
+	Tools() []ToolSpec
+}
+
+// DynamicToolSource is a tool source re-read at each turn boundary (MCP).
+type DynamicToolSource interface {
+	CurrentTools(ctx context.Context) []ToolSpec
+}
+
 // Extensions holds registered extensions bucketed by capability. Buckets are
 // filled once at construction; the loop iterates plain slices.
 type Extensions struct {
@@ -93,6 +104,8 @@ type Extensions struct {
 	toolResult      []ToolResultHook
 	afterTurn       []AfterTurnHook
 	prompts         []PromptContributor
+	toolProviders   []ToolProvider
+	dynamicSources  []DynamicToolSource
 }
 
 func NewExtensions(exts ...Extension) *Extensions {
@@ -126,6 +139,14 @@ func NewExtensions(exts ...Extension) *Extensions {
 		if h, ok := ext.(PromptContributor); ok {
 			e.prompts = append(e.prompts, h)
 			hooks = append(hooks, "prompt")
+		}
+		if h, ok := ext.(ToolProvider); ok {
+			e.toolProviders = append(e.toolProviders, h)
+			hooks = append(hooks, "tools")
+		}
+		if h, ok := ext.(DynamicToolSource); ok {
+			e.dynamicSources = append(e.dynamicSources, h)
+			hooks = append(hooks, "dynamic_tools")
 		}
 		slog.Info("extension registered", "ext", ext.Name(), "hooks", hooks)
 	}
@@ -202,6 +223,12 @@ func (e *Extensions) RunAfterTurn(ctx context.Context, tr *TurnResult) {
 		}
 	}
 }
+
+// ToolProviders returns static tool bundles in registration order.
+func (e *Extensions) ToolProviders() []ToolProvider { return e.toolProviders }
+
+// DynamicToolSources returns dynamic tool sources in registration order.
+func (e *Extensions) DynamicToolSources() []DynamicToolSource { return e.dynamicSources }
 
 // PromptFragments returns contributions in registration order.
 func (e *Extensions) PromptFragments() []string {

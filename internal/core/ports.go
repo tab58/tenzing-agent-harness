@@ -16,15 +16,18 @@ type ContextPort interface {
 	AppendToolResults(ctx context.Context, results []ToolResult) error
 }
 
-// ModelPort is a stateless model call: given the full message history and
-// system reminders, it returns tool calls to execute or a final answer.
-// Adapters implement it; the core loop depends only on this interface.
+// ModelPort is a stateless model call: given the full message history, system
+// reminders, and the tool definitions for this turn, it returns tool calls to
+// execute or a final answer. Adapters implement it; the core loop depends
+// only on this interface.
 type ModelPort interface {
-	DoReasoning(ctx context.Context, messages []common.Message, systemReminders []string) (ReasoningResult, error)
+	DoReasoning(ctx context.Context, messages []common.Message, systemReminders []string, tools []common.ToolDefinition) (ReasoningResult, error)
 }
 
-// ToolPort owns tool definitions and execution. Implemented in Task 9.
+// ToolPort owns tool definitions and execution. BeginTurn is called once by
+// the loop at turn start so composite ports can snapshot dynamic sources.
 type ToolPort interface {
+	BeginTurn(ctx context.Context)
 	Definitions() []common.ToolDefinition
 	Origin(name string) string
 	Execute(ctx context.Context, call ToolCall) ToolResult

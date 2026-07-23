@@ -13,11 +13,9 @@ import (
 // on every call — the runner owns the conversation via a core.ContextPort.
 type Agent interface {
 	GetCurrentModel() string
-	UpdateToolDefinitions(tooldefs []common.ToolDefinition)
-	UpdateSkillMap(skillMap map[string]string)
 	UpdateStreamCallback(fn func(text string))
 	UpdateThinkingCallback(fn func(text string))
-	DoReasoning(ctx context.Context, messages []common.Message, systemReminders []string) (ReasoningResult, error)
+	DoReasoning(ctx context.Context, messages []common.Message, systemReminders []string, tools []common.ToolDefinition) (ReasoningResult, error)
 }
 
 // AgentBuilder creates an Agent given an LLM and system prompt.

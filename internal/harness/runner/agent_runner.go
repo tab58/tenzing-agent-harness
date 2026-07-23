@@ -10,7 +10,6 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/prompts"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
 )
 
@@ -27,7 +26,7 @@ type AgentRunner struct {
 type agentRunnerOptions struct {
 	id              string
 	toolRegistry    *tools.Registry
-	skillsRegistry  *skills.Registry
+	toolPort        core.ToolPort
 	contextStore    core.ContextPort
 	onTextDelta     func(string)
 	onThinkingDelta func(string)
@@ -81,9 +80,11 @@ func WithToolRegistry(registry *tools.Registry) AgentRunnerOption {
 	}
 }
 
-func WithSkillsRegistry(registry *skills.Registry) AgentRunnerOption {
+// WithToolPort supplies the ToolPort the loop drives (e.g. the composite).
+// When unset, the runner wraps the tool registry into a plain port.
+func WithToolPort(port core.ToolPort) AgentRunnerOption {
 	return func(o *agentRunnerOptions) {
-		o.skillsRegistry = registry
+		o.toolPort = port
 	}
 }
 
@@ -115,11 +116,8 @@ func NewAgentRunner(agent Agent, opts ...AgentRunnerOption) (*AgentRunner, error
 		opt(o)
 	}
 
-	if o.toolRegistry == nil {
+	if o.toolPort == nil && o.toolRegistry == nil {
 		return nil, fmt.Errorf("no tool registry defined")
-	}
-	if o.skillsRegistry == nil {
-		return nil, fmt.Errorf("no skills registry defined")
 	}
 	if o.contextStore == nil {
 		return nil, fmt.Errorf("no context store defined")
@@ -133,8 +131,6 @@ func NewAgentRunner(agent Agent, opts ...AgentRunnerOption) (*AgentRunner, error
 
 	// One-time agent wiring — these are construction-time setups, not
 	// per-iteration calls. The core.Loop never touches them.
-	agent.UpdateSkillMap(o.skillsRegistry.GetSkillMap())
-	agent.UpdateToolDefinitions(o.toolRegistry.ProviderDefinitions())
 	if o.onTextDelta != nil {
 		agent.UpdateStreamCallback(o.onTextDelta)
 	}
@@ -142,10 +138,15 @@ func NewAgentRunner(agent Agent, opts ...AgentRunnerOption) (*AgentRunner, error
 		agent.UpdateThinkingCallback(o.onThinkingDelta)
 	}
 
+	tp := o.toolPort
+	if tp == nil {
+		tp = toolport.Wrap(o.toolRegistry)
+	}
+
 	loop, err := core.NewLoop(core.LoopConfig{
 		ID:           o.id,
 		Model:        agent,
-		Tools:        toolport.Wrap(o.toolRegistry),
+		Tools:        tp,
 		Context:      o.contextStore,
 		Emitter:      o.emitter,
 		Extensions:   o.extensions,

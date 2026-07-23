@@ -21,6 +21,8 @@ type registryPort struct {
 // (error becomes IsError=true), and recovers panics into error results.
 func Wrap(reg *tools.Registry) core.ToolPort { return &registryPort{reg: reg} }
 
+func (p *registryPort) BeginTurn(ctx context.Context) {}
+
 func (p *registryPort) Definitions() []common.ToolDefinition { return p.reg.ProviderDefinitions() }
 
 func (p *registryPort) Origin(name string) string { return "native" }

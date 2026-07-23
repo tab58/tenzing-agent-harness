@@ -9,7 +9,6 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/contextstore"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 
@@ -47,12 +46,10 @@ type minimalAgent struct {
 }
 
 func (a *minimalAgent) GetCurrentModel() string                         { return "" }
-func (a *minimalAgent) UpdateToolDefinitions(_ []common.ToolDefinition) {}
-func (a *minimalAgent) UpdateSkillMap(_ map[string]string)              {}
 func (a *minimalAgent) UpdateStreamCallback(_ func(string))             {}
 func (a *minimalAgent) UpdateThinkingCallback(_ func(string))           {}
 
-func (a *minimalAgent) DoReasoning(_ context.Context, messages []common.Message, _ []string) (ReasoningResult, error) {
+func (a *minimalAgent) DoReasoning(_ context.Context, messages []common.Message, _ []string, _ []common.ToolDefinition) (ReasoningResult, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.messages = append(a.messages, messages)
@@ -93,7 +90,6 @@ func TestRunnerEmitsTurnAndLoopEvents(t *testing.T) {
 		agent,
 		WithEmitter(collector),
 		WithToolRegistry(tools.NewRegistry("")),
-		WithSkillsRegistry(skills.NewRegistry()),
 		WithSystemPrompt("test"),
 		WithContextStore(newTestContextStore()),
 	)
@@ -144,7 +140,6 @@ func TestRunnerEmitsToolEvents(t *testing.T) {
 		agent,
 		WithEmitter(collector),
 		WithToolRegistry(registry),
-		WithSkillsRegistry(skills.NewRegistry()),
 		WithSystemPrompt("test"),
 		WithContextStore(newTestContextStore()),
 	)
@@ -191,7 +186,6 @@ func TestRunnerExecutesAllToolCallsInBatch(t *testing.T) {
 		agent,
 		WithEmitter(collector),
 		WithToolRegistry(registry),
-		WithSkillsRegistry(skills.NewRegistry()),
 		WithSystemPrompt("test"),
 		WithContextStore(newTestContextStore()),
 	)
@@ -297,7 +291,6 @@ func TestToolCallDeniedByExtension(t *testing.T) {
 		agent,
 		WithEmitter(collector),
 		WithToolRegistry(registry),
-		WithSkillsRegistry(skills.NewRegistry()),
 		WithSystemPrompt("test"),
 		WithContextStore(newTestContextStore()),
 		WithExtensions(core.NewExtensions(denyExt{})),

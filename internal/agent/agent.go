@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
-	"strings"
 
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
@@ -23,8 +22,6 @@ type Agent struct {
 	model        common.LLM
 	systemPrompt string
 
-	skillMap         map[string]string
-	tools            []common.ToolDefinition
 	streamCallback   func(text string)
 	thinkingCallback func(text string)
 }
@@ -32,7 +29,6 @@ type Agent struct {
 type AgentConfig struct {
 	Model        common.LLM
 	SystemPrompt string
-	SkillMap     map[string]string
 }
 
 type agentOptions struct {
@@ -58,37 +54,14 @@ func New(cfg AgentConfig, opts ...ConfigOption) (*Agent, error) {
 		opt(o)
 	}
 
-	systemPrompt := cfg.SystemPrompt
-	skillMap := cfg.SkillMap
-	enrichedPrompt := buildAgentSystemPrompt(systemPrompt, skillMap)
-
 	return &Agent{
 		model:        cfg.Model,
-		tools:        []common.ToolDefinition{},
-		skillMap:     skillMap,
-		systemPrompt: enrichedPrompt,
+		systemPrompt: cfg.SystemPrompt,
 	}, nil
-}
-
-func buildAgentSystemPrompt(prompt string, skillMap map[string]string) string {
-	var systemPrompt strings.Builder
-	systemPrompt.WriteString(prompt)
-	if len(skillMap) > 0 {
-		systemPrompt.WriteString("\n\nAvailable skills (call load_skill to get full instructions):")
-		for name, desc := range skillMap {
-			fmt.Fprintf(&systemPrompt, "\n- %s: %s", name, desc)
-		}
-		systemPrompt.WriteString("\nWhen a task requires specialised knowledge, call load_skill(name) to get full instructions before starting. Do NOT guess.")
-	}
-	return systemPrompt.String()
 }
 
 func (a *Agent) GetCurrentModel() string {
 	return a.model.GetCurrentModel()
-}
-
-func (a *Agent) UpdateSkillMap(skillMap map[string]string) {
-	a.skillMap = skillMap
 }
 
 func (a *Agent) UpdateStreamCallback(fn func(text string)) {
@@ -99,12 +72,7 @@ func (a *Agent) UpdateThinkingCallback(fn func(text string)) {
 	a.thinkingCallback = fn
 }
 
-func (a *Agent) UpdateToolDefinitions(tooldefs []common.ToolDefinition) {
-	a.tools = tooldefs
-}
-
 func (a *Agent) doStreamingReasoning(ctx context.Context, req common.CompletionRequest) (common.CompletionResponse, error) {
-	req.Tools = a.tools
 	events := make(chan common.StreamEvent)
 
 	var streamErr error
@@ -140,10 +108,12 @@ func (a *Agent) doStreamingReasoning(ctx context.Context, req common.CompletionR
 }
 
 // DoReasoning is a single, stateless model call: messages is the full
-// conversation history, built and owned by the caller's ContextPort. The
-// agent neither stores nor mutates it — the returned Meta.AssistantMessage
-// carries the model's response back for the caller to append.
-func (a *Agent) DoReasoning(ctx context.Context, messages []common.Message, systemReminders []string) (runner.ReasoningResult, error) {
+// conversation history, built and owned by the caller's ContextPort, and
+// tools is the tool surface for this turn, owned by the caller's ToolPort.
+// The agent neither stores nor mutates them — the returned
+// Meta.AssistantMessage carries the model's response back for the caller to
+// append.
+func (a *Agent) DoReasoning(ctx context.Context, messages []common.Message, systemReminders []string, tools []common.ToolDefinition) (runner.ReasoningResult, error) {
 	// add system reminders to system prompt
 	system := a.systemPrompt
 	for _, r := range systemReminders {
@@ -157,16 +127,16 @@ func (a *Agent) DoReasoning(ctx context.Context, messages []common.Message, syst
 		System:    system,
 		Messages:  messages,
 		MaxTokens: maxTokensStdResponse,
-		Tools:     a.tools,
+		Tools:     tools,
 	}
 
-	slog.Debug("llm request", "model", model, "messages", len(messages), "tools", len(a.tools))
+	slog.Debug("llm request", "model", model, "messages", len(messages), "tools", len(tools))
 	if slog.Default().Enabled(ctx, runner.LevelTrace) {
 		slog.Log(ctx, runner.LevelTrace, "llm request system prompt", "model", model, "system", system)
 		if raw, err := json.Marshal(messages); err == nil {
 			slog.Log(ctx, runner.LevelTrace, "llm request messages", "model", model, "messages_json", string(raw))
 		}
-		if raw, err := json.Marshal(a.tools); err == nil {
+		if raw, err := json.Marshal(tools); err == nil {
 			slog.Log(ctx, runner.LevelTrace, "llm request tools", "model", model, "tools_json", string(raw))
 		}
 	}
@@ -177,7 +147,7 @@ func (a *Agent) DoReasoning(ctx context.Context, messages []common.Message, syst
 	if a.streamCallback != nil {
 		resp, err = a.doStreamingReasoning(ctx, req)
 	} else {
-		resp, err = a.model.SendMessageWithTools(ctx, req, a.tools)
+		resp, err = a.model.SendMessageWithTools(ctx, req, tools)
 	}
 	if err != nil {
 		slog.Error("llm call failed", "model", model, "error", err, "messages", len(messages), "stack", string(debug.Stack()))

@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 )
 
 type Definition struct {
@@ -41,13 +40,6 @@ func expandTilde(path string) string {
 		return filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(path, "~"), "/"))
 	}
 	return path
-}
-
-func (r *Registry) GetTools() []tooldef.Definition {
-	return []tooldef.Definition{
-		NewLoadSkillTool(r),
-		NewListSkillsTool(r),
-	}
 }
 
 func (r *Registry) Discover() map[string]Definition {

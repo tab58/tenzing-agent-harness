@@ -63,12 +63,10 @@ func newScriptedAgent(steps ...runner.ReasoningResult) *ScriptedAgent {
 }
 
 func (s *ScriptedAgent) GetCurrentModel() string                         { return "scripted-model" }
-func (s *ScriptedAgent) UpdateToolDefinitions(_ []common.ToolDefinition) {}
-func (s *ScriptedAgent) UpdateSkillMap(_ map[string]string)              {}
 func (s *ScriptedAgent) UpdateStreamCallback(_ func(string))             {}
 func (s *ScriptedAgent) UpdateThinkingCallback(_ func(string))           {}
 
-func (s *ScriptedAgent) DoReasoning(_ context.Context, messages []common.Message, reminders []string) (runner.ReasoningResult, error) {
+func (s *ScriptedAgent) DoReasoning(_ context.Context, messages []common.Message, reminders []string, _ []common.ToolDefinition) (runner.ReasoningResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

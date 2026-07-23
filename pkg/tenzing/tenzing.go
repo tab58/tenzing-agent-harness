@@ -10,6 +10,7 @@
 package tenzing
 
 import (
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
@@ -46,6 +47,37 @@ var (
 	WithTextDeltaHandler      = harness.WithTextDeltaHandler
 	WithThinkingDeltaHandler  = harness.WithThinkingDeltaHandler
 	WithBlackboardDisabled    = harness.WithBlackboardDisabled
+	WithExtension             = harness.WithExtension
+)
+
+// Extension system: implement Extension plus any of the capability hook
+// interfaces below and register via WithExtension.
+type (
+	Extension = core.Extension
+
+	SessionStartHook    = core.SessionStartHook
+	SessionEndHook      = core.SessionEndHook
+	BeforeIterationHook = core.BeforeIterationHook
+	ToolCallHook        = core.ToolCallHook
+	ToolResultHook      = core.ToolResultHook
+	AfterTurnHook       = core.AfterTurnHook
+	PromptContributor   = core.PromptContributor
+	ToolProvider        = core.ToolProvider
+	DynamicToolSource   = core.DynamicToolSource
+
+	TurnContext       = core.TurnContext
+	ToolCallContext   = core.ToolCallContext
+	ToolResultContext = core.ToolResultContext
+	TurnResult        = core.TurnResult
+	ToolSpec          = core.ToolSpec
+	Decision          = core.Decision
+)
+
+// Tool-gating decisions for ToolCallHook implementations.
+const (
+	Allow   = core.Allow
+	AskUser = core.AskUser
+	Deny    = core.Deny
 )
 
 // Agent is the "brain" contract consumed by the runner; implement it and

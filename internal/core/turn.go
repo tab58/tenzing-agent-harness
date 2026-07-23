@@ -3,7 +3,25 @@
 // extensions import core, never the reverse.
 package core
 
-import "github.com/tab58/llm-providers/common"
+import (
+	"context"
+
+	"github.com/tab58/llm-providers/common"
+)
+
+// ProviderToolDefinition is the provider-level tool definition surfaced
+// through ToolPort. Aliased so extensions can build ToolSpecs against core
+// without naming the provider package.
+type ProviderToolDefinition = common.ToolDefinition
+
+// ToolSpec is an origin-tagged tool mounted into the composite ToolPort.
+// It carries its own Execute closure so extension tools need no central
+// registry registration.
+type ToolSpec struct {
+	Definition ProviderToolDefinition
+	Origin     string // "native", "mcp:<server>", "extension:<name>"
+	Execute    func(ctx context.Context, call ToolCall) ToolResult
+}
 
 // ToolCall is one tool_use request from the model.
 type ToolCall struct {

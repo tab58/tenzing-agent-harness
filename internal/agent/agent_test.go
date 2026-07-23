@@ -87,7 +87,7 @@ func TestDoReasoning_StreamingDeltas(t *testing.T) {
 		collected = append(collected, text)
 	})
 
-	result, err := ag.DoReasoning(context.Background(), []common.Message{common.NewUserMessage("say hello")}, nil)
+	result, err := ag.DoReasoning(context.Background(), []common.Message{common.NewUserMessage("say hello")}, nil, nil)
 	if err != nil {
 		t.Fatalf("DoReasoning error: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestDoReasoning_NoCallbackUsesSyncPath(t *testing.T) {
 	ag := newTestAgent(t, mock)
 	// No stream callback set.
 
-	result, err := ag.DoReasoning(context.Background(), []common.Message{common.NewUserMessage("say hello")}, nil)
+	result, err := ag.DoReasoning(context.Background(), []common.Message{common.NewUserMessage("say hello")}, nil, nil)
 	if err != nil {
 		t.Fatalf("DoReasoning error: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestDoReasoning_ToolCallsReturnedWithAssistantMessage(t *testing.T) {
 	mock := &recordingLLM{responses: []common.CompletionResponse{toolUseResp}}
 	ag := newTestAgent(t, mock)
 
-	res, err := ag.DoReasoning(context.Background(), []common.Message{common.NewUserMessage("analyze")}, nil)
+	res, err := ag.DoReasoning(context.Background(), []common.Message{common.NewUserMessage("analyze")}, nil, nil)
 	if err != nil {
 		t.Fatalf("DoReasoning: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestDoReasoning_MessagesPassedThroughUnmodified(t *testing.T) {
 		}},
 	}
 
-	if _, err := ag.DoReasoning(context.Background(), history, nil); err != nil {
+	if _, err := ag.DoReasoning(context.Background(), history, nil, nil); err != nil {
 		t.Fatalf("DoReasoning: %v", err)
 	}
 

@@ -32,11 +32,11 @@ Four layers, hexagonal dependency direction: **Core → Adapters → Extensions 
 
 | Layer                                                          | Knows about                              | Does NOT know about                   |
 | -------------------------------------------------------------- | ---------------------------------------- | ------------------------------------- |
-| Core (`internal/core/`)                                        | Domain types, port interfaces, FSM, events, loop (`Loop`, `RunTurn`) | Everything outside `core` — adapters, tools, harness, CLI |
-| Adapters (`internal/adapters/`)                                | Core port interfaces; concrete implementations (`contextstore`, `toolport`) | Harness, CLI, sessions                |
-| AgentRunner (facade, `agent_runner.go`)                        | Agent interface, tool/skills registry, core.Loop — one-time wiring then delegation | CLI, sessions, users                  |
-| Harness (`harness.go`, `harness_options.go`, `llm.go`)         | AgentRunner, EventBus, LLM construction/caching, config wiring | Tool implementations                  |
-| Agent (`internal/agent/agent.go`)                              | LLM provider, message types — stateless: receives the full message list on every `DoReasoning` call, returns the assistant message rather than storing it | Filesystem, processes, tools directly, conversation history/compression |
+| Core (`internal/core/`)                                        | Domain types, port interfaces (`ModelPort`, `ToolPort`, `ContextPort`), FSM, events, extension/hook contracts, loop (`Loop`, `RunTurn`) | Everything outside `core` — adapters, extensions, harness, CLI |
+| Adapters (`internal/adapters/`)                                | Core port interfaces; concrete implementations (`contextstore`, `toolport.Composite`/`Wrap`) | Harness, CLI, sessions                |
+| Extensions (`internal/extensions/`, plus `subagent.SpawnExt`)  | Core capability interfaces (`ToolProvider`, `PromptContributor`, session/iteration/tool hooks) and whatever feature they wrap (skills registry, blackboard, subagent factory) | The loop's internals, other extensions |
+| Composition root (`harness.go`, `harness_options.go`, `llm.go`; `AgentRunner` facade) | Everything below: builds adapters, default + user extensions, the composite ToolPort, assembles the system prompt, wires one runner per loop | Tool implementations' internals       |
+| Agent (`internal/agent/agent.go`)                              | LLM provider, message types — stateless: receives the full message list and per-turn tool definitions on every `DoReasoning` call, returns the assistant message rather than storing it | Filesystem, processes, tools, skills, conversation history/compression |
 
 **Never import upward.** Core imports nothing from `internal/`. Adapters import core, never harness. Tools don't import harness. Agent doesn't import runner. If you need cross-layer communication, use an interface injected via config.
 
@@ -50,13 +50,21 @@ Known limit: `llm_query` inside the blackboard holds the REPL lock for all agent
 
 Cancellation or transport failure mid-call resets the blackboard (contents lost, lazily restarted empty); agents must tolerate missing slots.
 
+Registration is via `internal/extensions/blackboardext`: a `core.Extension` providing the `repl` tool (`core.ToolProvider`, wrapping the same REPL tool implementation) and closing the blackboard on `core.SessionEndHook` (run by `Harness.Shutdown` with a 5s timeout). The `*blackboard.Blackboard` is built at the composition root and shared — main gets `blackboardext.New(bb, "main")`, each subagent gets `New(bb, childID)`. Behavior unchanged.
+
 ## Adding Tools
 
-1. Create `internal/harness/tools/tooldef/tool_<name>.go`
-2. Implement `tooldef.Definition` interface: `Name()`, `Description()`, `Schema()`, `Execute()`
-3. Register: most tools go in `GetDefaultToolDefs()` in `internal/harness/tools/registry.go`. The `repl` tool (shared blackboard) is registered by `harness.New()` unless `WithBlackboardDisabled` is set; its sub-LM queries fall back to the main model unless `WithBlackboardModel` is set
-4. Tool descriptions are **instructions to the model**, not documentation — precise wording controls tool selection
-5. Tools never throw. Errors return `ToolResult{IsError: true}`. Loop doesn't break on tool errors
+All tools reach the model through the composite ToolPort (`internal/adapters/toolport/composite.go`), which mounts three source kinds in stable definition order: native registry tools (sorted by name), extension `core.ToolProvider` bundles (registration order), then `core.DynamicToolSource` snapshots (re-read at each turn's `BeginTurn`). Name collisions with an already-mounted tool are a construction error (dynamic collisions are skipped with a warning). The loop snapshots the port once per turn and passes the definitions into every `DoReasoning` call — the agent holds no tool state.
+
+Two ways to add a tool:
+
+1. **Native built-in** (file/shell-level tooling): create `internal/harness/tools/tooldef/tool_<name>.go`, implement `tooldef.Definition` (`Name()`, `Description()`, `Schema()`, `Execute()`), register it in the registry (built-ins in `NewRegistry`, or inject via `harness.WithTool`).
+2. **Extension tool**: implement `core.ToolProvider` on an extension — return `core.ToolSpec`s carrying their own `Execute` closure and an `Origin` like `"extension:<name>"`. No registry registration needed.
+
+Notes:
+
+- Tool descriptions are **instructions to the model**, not documentation — precise wording controls tool selection
+- Tools never throw. Errors return `ToolResult{IsError: true}`; panics are recovered into error results by `Composite.Execute`. Loop doesn't break on tool errors
 
 If the tool needs external state (skill registry, task graph), define a narrow interface in tooldef and accept it in the constructor. Don't import the concrete type.
 
@@ -71,6 +79,8 @@ If the tool needs external state (skill registry, task graph), define a narrow i
    ```
 2. Body is loaded lazily via `load_skill` tool — no registration code needed
 3. Skill metadata is discovered at startup from frontmatter only
+
+UX unchanged; new plumbing: skills surface through `internal/extensions/skillsext` — a `core.Extension` providing the `list_skills`/`load_skill` tools (`core.ToolProvider`) and the "Available skills…" system-prompt index (`core.PromptContributor`, appended by the composition root). The agent knows nothing about skills. The same extension instance is shared with subagents via the factory config (read-only registry).
 
 ## Providers
 
@@ -105,7 +115,7 @@ Memory (`internal/harness/memory.go`) is separate from the in-process `contextst
 All non-invariant runner behavior flows through `runner.AgentRunnerOption` functional options (`internal/harness/runner/agent_runner.go`), passed to `runner.NewAgentRunner(agent, opts...)`. To change runner behavior:
 
 - Swap the Agent (different model/provider)
-- Swap the ToolRegistry (`WithToolRegistry`, different tool set)
+- Swap the ToolRegistry (`WithToolRegistry`, different native tool set) or the whole ToolPort (`WithToolPort` — the harness passes the composite here; unset falls back to wrapping the registry)
 - Swap the ContextStore (`WithContextStore`) — required; the `core.ContextPort` implementation that owns this runner's conversation history
 - Swap the SystemPrompt (`WithSystemPrompt`)
 - Provide an `events.Emitter` to receive structured events from the loop (`WithEmitter`)
@@ -115,8 +125,11 @@ System reminders (todo state, etc.) no longer flow through the runner. They
 are injected each iteration by `core.Extension`s implementing
 `core.BeforeIterationHook` (e.g. `internal/extensions/reminders`), registered
 on `*core.Extensions` and passed to the runner via `runner.WithExtensions`.
-`harness.New` wires the default reminders extension around the harness's
-`todoFile`; add more via `harness.WithExtension`.
+`harness.New` wires the default extension set — reminders, skills
+(`skillsext`), blackboard (`blackboardext`, unless disabled), and subagents
+(`subagent.SpawnExt`, when depth > 0) — then appends caller extensions from
+`harness.WithExtension` (also re-exported as `tenzing.WithExtension` with the
+`Extension`/hook interfaces and `ToolSpec`).
 
 Don't modify the loop. Don't add fields to the `AgentRunner` struct. Configure via `runner.AgentRunnerOption`.
 

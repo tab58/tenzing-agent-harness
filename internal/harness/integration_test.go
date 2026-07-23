@@ -12,7 +12,6 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/reminders"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/snapshot"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/todo"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
@@ -270,7 +269,6 @@ func TestIntegration_ReadEditRevert_ThroughLoop(t *testing.T) {
 	runner, err := runner.NewAgentRunner(
 		agent,
 		runner.WithToolRegistry(registry),
-		runner.WithSkillsRegistry(skills.NewRegistry()),
 		runner.WithSystemPrompt("test"),
 		runner.WithContextStore(newTestContextStore()),
 	)
@@ -302,7 +300,6 @@ func TestIntegration_FinalAnswerOnly(t *testing.T) {
 	runner, err := runner.NewAgentRunner(
 		agent,
 		runner.WithToolRegistry(registry),
-		runner.WithSkillsRegistry(skills.NewRegistry()),
 		runner.WithSystemPrompt("test"),
 		runner.WithContextStore(newTestContextStore()),
 	)
@@ -327,7 +324,6 @@ func TestIntegration_ContextCanceled(t *testing.T) {
 	runner, err := runner.NewAgentRunner(
 		agent,
 		runner.WithToolRegistry(registry),
-		runner.WithSkillsRegistry(skills.NewRegistry()),
 		runner.WithSystemPrompt("test"),
 		runner.WithContextStore(newTestContextStore()),
 	)
@@ -353,7 +349,6 @@ func TestIntegration_UnknownTool(t *testing.T) {
 	runner, err := runner.NewAgentRunner(
 		agent,
 		runner.WithToolRegistry(registry),
-		runner.WithSkillsRegistry(skills.NewRegistry()),
 		runner.WithSystemPrompt("test"),
 		runner.WithContextStore(newTestContextStore()),
 	)
@@ -390,7 +385,6 @@ func TestIntegration_MultipleToolCalls(t *testing.T) {
 	r, err := runner.NewAgentRunner(
 		agent,
 		runner.WithToolRegistry(registry),
-		runner.WithSkillsRegistry(skills.NewRegistry()),
 		runner.WithSystemPrompt("test"),
 		runner.WithContextStore(newTestContextStore()),
 	)
@@ -461,7 +455,6 @@ func TestIntegration_ToolHookCalled(t *testing.T) {
 		agent,
 		runner.WithEmitter(collector),
 		runner.WithToolRegistry(registry),
-		runner.WithSkillsRegistry(skills.NewRegistry()),
 		runner.WithSystemPrompt("test"),
 		runner.WithContextStore(newTestContextStore()),
 	)
@@ -495,7 +488,6 @@ func TestTodoRemindersScopedPerRunner(t *testing.T) {
 		r, err := runner.NewAgentRunner(
 			agent,
 			runner.WithToolRegistry(registry),
-			runner.WithSkillsRegistry(skills.NewRegistry()),
 			runner.WithExtensions(exts),
 			runner.WithSystemPrompt("test"),
 			runner.WithContextStore(newTestContextStore()),

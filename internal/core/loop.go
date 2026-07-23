@@ -135,6 +135,10 @@ func (l *Loop) RunTurn(ctx context.Context, input string) (TurnResult, error) {
 	if err := l.fsm.TransitionStates(ctx, LoopTransitionReset); err != nil {
 		return TurnResult{}, fmt.Errorf("fsm reset: %w", err)
 	}
+	// Snapshot the tool surface for this turn: dynamic sources are re-read
+	// once per turn, and every reasoning call sees the same definitions.
+	l.tools.BeginTurn(ctx)
+	toolDefs := l.tools.Definitions()
 	for {
 		iteration++
 		if err := ctx.Err(); err != nil {
@@ -172,7 +176,7 @@ func (l *Loop) RunTurn(ctx context.Context, input string) (TurnResult, error) {
 			loopErr = fmt.Errorf("read context: %w", err)
 			break
 		}
-		reasoningResult, err := l.model.DoReasoning(ctx, messages, reminders)
+		reasoningResult, err := l.model.DoReasoning(ctx, messages, reminders, toolDefs)
 		if err != nil {
 			loopErr = fmt.Errorf("reasoning error: %w", err)
 			break

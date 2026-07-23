@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/blackboard"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/todo"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 
 	"github.com/tab58/llm-providers/common"
@@ -37,12 +39,10 @@ func (s *stubLLM) ProviderName() common.Provider { return common.ProviderOllama 
 type stubAgent struct{}
 
 func (s *stubAgent) GetCurrentModel() string                         { return "stub" }
-func (s *stubAgent) UpdateToolDefinitions(_ []common.ToolDefinition) {}
-func (s *stubAgent) UpdateSkillMap(_ map[string]string)              {}
 func (s *stubAgent) UpdateStreamCallback(_ func(string))             {}
 func (s *stubAgent) UpdateThinkingCallback(_ func(string))           {}
 
-func (s *stubAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string) (runner.ReasoningResult, error) {
+func (s *stubAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string, _ []common.ToolDefinition) (runner.ReasoningResult, error) {
 	return runner.ReasoningResult{FinalAnswer: "done"}, nil
 }
 
@@ -102,9 +102,15 @@ func TestSubAgentFactoryChildAtMaxDepthHasNoSpawnAgent(t *testing.T) {
 		Cwd:           t.TempDir(),
 	})
 
-	registry := factory.buildChildToolRegistry("a0")
-	for _, def := range registry.Definitions() {
-		if def.Name() == "spawn_agent" {
+	port, err := toolport.NewComposite(
+		factory.buildChildToolRegistry("a0"),
+		factory.childExtensions("a0", todo.NewTodoStore()),
+	)
+	if err != nil {
+		t.Fatalf("NewComposite: %v", err)
+	}
+	for _, def := range port.Definitions() {
+		if def.Name == "spawn_agent" {
 			t.Fatal("child at max depth should not have spawn_agent tool")
 		}
 	}
@@ -121,10 +127,16 @@ func TestSubAgentFactoryChildBelowMaxDepthHasSpawnAgent(t *testing.T) {
 		},
 	})
 
-	registry := factory.buildChildToolRegistry("a0")
+	port, err := toolport.NewComposite(
+		factory.buildChildToolRegistry("a0"),
+		factory.childExtensions("a0", todo.NewTodoStore()),
+	)
+	if err != nil {
+		t.Fatalf("NewComposite: %v", err)
+	}
 	found := false
-	for _, def := range registry.Definitions() {
-		if def.Name() == "spawn_agent" {
+	for _, def := range port.Definitions() {
+		if def.Name == "spawn_agent" {
 			found = true
 			break
 		}
@@ -144,6 +156,7 @@ func TestSubAgentFactoryImmutability(t *testing.T) {
 
 	depthBefore := factory.currentDepth
 	_ = factory.buildChildToolRegistry("a0")
+	_ = factory.childExtensions("a0", todo.NewTodoStore())
 
 	if factory.currentDepth != depthBefore {
 		t.Fatalf("factory currentDepth mutated: was %d, now %d", depthBefore, factory.currentDepth)
@@ -154,11 +167,9 @@ func TestSubAgentFactoryImmutability(t *testing.T) {
 type fixedAnswerAgent struct{ answer string }
 
 func (s *fixedAnswerAgent) GetCurrentModel() string                         { return "stub" }
-func (s *fixedAnswerAgent) UpdateToolDefinitions(_ []common.ToolDefinition) {}
-func (s *fixedAnswerAgent) UpdateSkillMap(_ map[string]string)              {}
 func (s *fixedAnswerAgent) UpdateStreamCallback(_ func(string))             {}
 func (s *fixedAnswerAgent) UpdateThinkingCallback(_ func(string))           {}
-func (s *fixedAnswerAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string) (runner.ReasoningResult, error) {
+func (s *fixedAnswerAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string, _ []common.ToolDefinition) (runner.ReasoningResult, error) {
 	return runner.ReasoningResult{FinalAnswer: s.answer}, nil
 }
 
@@ -249,20 +260,27 @@ func TestSpawnAgentNilBlackboardReturnsFullResult(t *testing.T) {
 	}
 }
 
-func TestChildRegistryHasREPLToolWhenBlackboardSet(t *testing.T) {
+func TestChildToolSurfaceHasREPLToolWhenBlackboardSet(t *testing.T) {
 	bb := newTestBlackboard(t)
 	factory := factoryWithAnswer(t, bb, "x")
 
-	registry := factory.buildChildToolRegistry("a99")
+	// repl mounts via the child's blackboard extension, not the registry.
+	port, err := toolport.NewComposite(
+		factory.buildChildToolRegistry("a99"),
+		factory.childExtensions("a99", todo.NewTodoStore()),
+	)
+	if err != nil {
+		t.Fatalf("NewComposite: %v", err)
+	}
 	found := false
-	for _, def := range registry.Definitions() {
-		if def.Name() == "repl" {
+	for _, def := range port.Definitions() {
+		if def.Name == "repl" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("child registry missing repl tool when blackboard is set")
+		t.Error("child tool surface missing repl tool when blackboard is set")
 	}
 }
 
@@ -306,7 +324,7 @@ type recordingAgent struct {
 	messages []common.Message
 }
 
-func (r *recordingAgent) DoReasoning(_ context.Context, messages []common.Message, _ []string) (runner.ReasoningResult, error) {
+func (r *recordingAgent) DoReasoning(_ context.Context, messages []common.Message, _ []string, _ []common.ToolDefinition) (runner.ReasoningResult, error) {
 	r.messages = append(r.messages, messages...)
 	return runner.ReasoningResult{FinalAnswer: "done"}, nil
 }

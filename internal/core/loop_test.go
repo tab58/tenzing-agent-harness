@@ -19,7 +19,7 @@ type fakeModel struct {
 	idx   int
 }
 
-func (f *fakeModel) DoReasoning(_ context.Context, _ []common.Message, _ []string) (ReasoningResult, error) {
+func (f *fakeModel) DoReasoning(_ context.Context, _ []common.Message, _ []string, _ []common.ToolDefinition) (ReasoningResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.idx >= len(f.steps) {
@@ -47,6 +47,7 @@ func newFakeTools(results map[string]ToolResult) *fakeTools {
 	return &fakeTools{results: results}
 }
 
+func (f *fakeTools) BeginTurn(_ context.Context)          {}
 func (f *fakeTools) Definitions() []common.ToolDefinition { return nil }
 func (f *fakeTools) Origin(name string) string            { return "native" }
 
