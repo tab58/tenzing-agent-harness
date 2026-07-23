@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/tab58/llm-providers/common"
 )
 
@@ -50,23 +52,28 @@ type LoopConfig struct {
 	Model        ModelPort
 	Tools        ToolPort
 	Context      ContextPort
-	Emitter      Emitter      // nil-safe
-	Extensions   *Extensions  // nil → NewExtensions()
-	SystemPrompt string       // exposed for logging; the ModelPort owns applying it
-	FSM          *LoopFSM     // nil → NewLoopFSM()
+	Emitter      Emitter     // nil-safe
+	Extensions   *Extensions // nil → NewExtensions()
+	SystemPrompt string      // exposed for logging; the ModelPort owns applying it
+	FSM          *LoopFSM    // nil → NewLoopFSM()
+	// ApprovalTimeout bounds how long an AskUser decision may wait for an
+	// ApprovalRequestedEvent response. 0 = deny immediately (safe for
+	// unattended drivers with nobody to answer).
+	ApprovalTimeout time.Duration
 }
 
 // Loop is the invariant agent reasoning-tool execution loop. It owns the FSM,
 // drives the ModelPort/ToolPort/ContextPort ports, and runs extension hooks.
 type Loop struct {
-	id         string
-	model      ModelPort
-	tools      ToolPort
-	context    ContextPort
-	emitter    Emitter
-	extensions *Extensions
-	sysPrompt  string
-	fsm        *LoopFSM
+	id              string
+	model           ModelPort
+	tools           ToolPort
+	context         ContextPort
+	emitter         Emitter
+	extensions      *Extensions
+	sysPrompt       string
+	fsm             *LoopFSM
+	approvalTimeout time.Duration
 }
 
 // NewLoop creates a Loop from the given config.
@@ -90,19 +97,90 @@ func NewLoop(cfg LoopConfig) (*Loop, error) {
 		cfg.FSM = NewLoopFSM()
 	}
 	return &Loop{
-		id:         cfg.ID,
-		model:      cfg.Model,
-		tools:      cfg.Tools,
-		context:    cfg.Context,
-		emitter:    cfg.Emitter,
-		extensions: cfg.Extensions,
-		sysPrompt:  cfg.SystemPrompt,
-		fsm:        cfg.FSM,
+		id:              cfg.ID,
+		model:           cfg.Model,
+		tools:           cfg.Tools,
+		context:         cfg.Context,
+		emitter:         cfg.Emitter,
+		extensions:      cfg.Extensions,
+		sysPrompt:       cfg.SystemPrompt,
+		fsm:             cfg.FSM,
+		approvalTimeout: cfg.ApprovalTimeout,
 	}, nil
 }
 
 // ID returns the loop's identifier.
 func (l *Loop) ID() string { return l.id }
+
+// batchCall is one tool call after the sequential decision phase, ready for
+// concurrent execution.
+type batchCall struct {
+	call     ToolCall
+	decision Decision
+	reason   string
+	hookErr  error
+	approval <-chan bool // non-nil when AskUser with an approver configured
+}
+
+// executeBatched runs one decided call: per-call events, decision handling
+// (including waiting out a pending approval), execution, and logging. Safe
+// to run concurrently with other calls — the emitter contract requires
+// goroutine-safe Emit (EventBus provides it).
+func (l *Loop) executeBatched(ctx context.Context, iteration int, bc batchCall) ToolResult {
+	l.emit(ToolExecutionStartedEvent{
+		BaseEvent: NewBaseEvent(EventToolExecutionStarted, l.id),
+		ToolName:  bc.call.Name,
+		Input:     bc.call.Input,
+	})
+	toolStart := time.Now()
+
+	var toolResult ToolResult
+	switch {
+	case bc.hookErr != nil:
+		toolResult = ToolResult{ToolUseID: bc.call.ID, Output: fmt.Sprintf("tool call blocked by extension: %v", bc.hookErr), IsError: true}
+	case bc.decision == Deny:
+		toolResult = ToolResult{ToolUseID: bc.call.ID, Output: fmt.Sprintf("tool call denied by policy: %s", bc.reason), IsError: true}
+	case bc.decision == AskUser:
+		if approved, denyReason := l.waitApproval(ctx, bc.approval, bc.reason); approved {
+			toolResult = l.tools.Execute(ctx, bc.call)
+		} else {
+			toolResult = ToolResult{ToolUseID: bc.call.ID, Output: denyReason, IsError: true}
+		}
+	default:
+		toolResult = l.tools.Execute(ctx, bc.call)
+	}
+
+	toolDuration := time.Since(toolStart)
+	if toolResult.IsError {
+		slog.Warn("tool error", "runner", l.id, "iter", iteration, "tool", bc.call.Name, "output", truncateLog(toolResult.Output, logOutputMaxLen))
+	}
+	slog.Debug("tool result", "runner", l.id, "iter", iteration, "tool", bc.call.Name, "is_error", toolResult.IsError, "duration", toolDuration.Round(time.Millisecond), "output_len", len(toolResult.Output), "output", truncateLog(toolResult.Output, logOutputMaxLen))
+	slog.Log(ctx, LevelTrace, "tool result full", "runner", l.id, "iter", iteration, "tool", bc.call.Name, "output", toolResult.Output)
+
+	l.emit(ToolExecutionFinishedEvent{
+		BaseEvent: NewBaseEvent(EventToolExecutionFinished, l.id),
+		ToolName:  bc.call.Name,
+		Duration:  toolDuration.Round(time.Millisecond),
+	})
+	if toolResult.IsError {
+		l.emit(ToolFailedEvent{
+			BaseEvent: NewBaseEvent(EventToolFailed, l.id),
+			ToolName:  bc.call.Name,
+			Input:     bc.call.Input,
+			Error:     toolResult.Output,
+			Duration:  toolDuration.Round(time.Millisecond),
+		})
+	} else {
+		l.emit(ToolSucceededEvent{
+			BaseEvent: NewBaseEvent(EventToolSucceeded, l.id),
+			ToolName:  bc.call.Name,
+			Input:     bc.call.Input,
+			Output:    toolResult.Output,
+			Duration:  toolDuration.Round(time.Millisecond),
+		})
+	}
+	return toolResult
+}
 
 func (l *Loop) emit(e Event) {
 	if l.emitter != nil {
@@ -116,6 +194,7 @@ func (l *Loop) RunTurn(ctx context.Context, input string) (TurnResult, error) {
 	iteration := 0
 	invalidFinalRetries := 0
 	loopStart := time.Now()
+	var cumInputTokens, cumOutputTokens int64
 
 	if err := l.context.AppendUser(ctx, input); err != nil {
 		return TurnResult{}, fmt.Errorf("append input: %w", err)
@@ -150,7 +229,13 @@ func (l *Loop) RunTurn(ctx context.Context, input string) (TurnResult, error) {
 			loopErr = fmt.Errorf("fsm start reasoning: %w", err)
 			break
 		}
-		turnCtx := &TurnContext{RunnerID: l.id, Iteration: iteration}
+		turnCtx := &TurnContext{
+			RunnerID:     l.id,
+			Iteration:    iteration,
+			Elapsed:      time.Since(loopStart),
+			InputTokens:  cumInputTokens,
+			OutputTokens: cumOutputTokens,
+		}
 		if err := l.extensions.RunBeforeIteration(ctx, turnCtx); err != nil {
 			loopErr = fmt.Errorf("before iteration hook: %w", err)
 			break
@@ -181,6 +266,8 @@ func (l *Loop) RunTurn(ctx context.Context, input string) (TurnResult, error) {
 			loopErr = fmt.Errorf("reasoning error: %w", err)
 			break
 		}
+		cumInputTokens += reasoningResult.Meta.InputTokens
+		cumOutputTokens += reasoningResult.Meta.OutputTokens
 		l.emit(ReasoningFinishedEvent{
 			BaseEvent:    NewBaseEvent(EventReasoningFinished, l.id),
 			Model:        reasoningResult.Meta.Model,
@@ -279,63 +366,35 @@ func (l *Loop) RunTurn(ctx context.Context, input string) (TurnResult, error) {
 			loopErr = fmt.Errorf("fsm start tool execution: %w", err)
 			break
 		}
-		// Execute every tool call from the response, in order. Results are
-		// fed back in the same order so each pairs with its tool_use id —
-		// skipping any would poison the history with "not executed" results.
-		outputs := make([]ToolResult, 0, len(reasoningResult.ToolCalls))
-		for _, toolCall := range reasoningResult.ToolCalls {
-			l.emit(ToolExecutionStartedEvent{
-				BaseEvent: NewBaseEvent(EventToolExecutionStarted, l.id),
-				ToolName:  toolCall.Name,
-				Input:     toolCall.Input,
-			})
-			toolStart := time.Now()
+		// Batch semantics: decisions run sequentially in issue order (hooks
+		// and approval requests fire immediately, non-blocking); execution
+		// runs concurrently; results land by index so feedback keeps issue
+		// order — skipping any would poison the history with "not executed"
+		// results. Post-hooks run sequentially in issue order after the
+		// barrier, and the context store is only touched after it.
+		pending := make([]batchCall, len(reasoningResult.ToolCalls))
+		for i, toolCall := range reasoningResult.ToolCalls {
 			tcc := &ToolCallContext{RunnerID: l.id, Call: &toolCall, Origin: l.tools.Origin(toolCall.Name)}
-			var toolResult ToolResult
-			if hookErr := l.extensions.RunToolCall(ctx, tcc); hookErr != nil {
-				toolResult = ToolResult{ToolUseID: toolCall.ID, Output: fmt.Sprintf("tool call blocked by extension: %v", hookErr), IsError: true}
-			} else {
-				switch tcc.Decision {
-				case Deny:
-					toolResult = ToolResult{ToolUseID: toolCall.ID, Output: fmt.Sprintf("tool call denied by policy: %s", tcc.Reason), IsError: true}
-				case AskUser:
-					// Approval flow arrives in Phase 5 (Task 16). Until then, unanswerable.
-					toolResult = ToolResult{ToolUseID: toolCall.ID, Output: "tool call requires approval but no approver is configured", IsError: true}
-				default:
-					toolResult = l.tools.Execute(ctx, toolCall)
-				}
+			hookErr := l.extensions.RunToolCall(ctx, tcc)
+			bc := batchCall{call: *tcc.Call, decision: tcc.Decision, reason: tcc.Reason, hookErr: hookErr}
+			if hookErr == nil && tcc.Decision == AskUser {
+				bc.approval = l.requestApproval(bc.call, bc.reason)
 			}
-			toolDuration := time.Since(toolStart)
-			if toolResult.IsError {
-				slog.Warn("tool error", "runner", l.id, "iter", iteration, "tool", toolCall.Name, "output", truncateLog(toolResult.Output, logOutputMaxLen))
-			}
-			slog.Debug("tool result", "runner", l.id, "iter", iteration, "tool", toolCall.Name, "is_error", toolResult.IsError, "duration", toolDuration.Round(time.Millisecond), "output_len", len(toolResult.Output), "output", truncateLog(toolResult.Output, logOutputMaxLen))
-			slog.Log(ctx, LevelTrace, "tool result full", "runner", l.id, "iter", iteration, "tool", toolCall.Name, "output", toolResult.Output)
+			pending[i] = bc
+		}
 
-			l.emit(ToolExecutionFinishedEvent{
-				BaseEvent: NewBaseEvent(EventToolExecutionFinished, l.id),
-				ToolName:  toolCall.Name,
-				Duration:  toolDuration.Round(time.Millisecond),
+		outputs := make([]ToolResult, len(pending))
+		g, gctx := errgroup.WithContext(ctx)
+		for i, bc := range pending {
+			g.Go(func() error {
+				outputs[i] = l.executeBatched(gctx, iteration, bc)
+				return nil
 			})
-			if toolResult.IsError {
-				l.emit(ToolFailedEvent{
-					BaseEvent: NewBaseEvent(EventToolFailed, l.id),
-					ToolName:  toolCall.Name,
-					Input:     toolCall.Input,
-					Error:     toolResult.Output,
-					Duration:  toolDuration.Round(time.Millisecond),
-				})
-			} else {
-				l.emit(ToolSucceededEvent{
-					BaseEvent: NewBaseEvent(EventToolSucceeded, l.id),
-					ToolName:  toolCall.Name,
-					Input:     toolCall.Input,
-					Output:    toolResult.Output,
-					Duration:  toolDuration.Round(time.Millisecond),
-				})
-			}
-			l.extensions.RunToolResult(ctx, &ToolResultContext{RunnerID: l.id, Call: toolCall, Result: &toolResult})
-			outputs = append(outputs, toolResult)
+		}
+		_ = g.Wait() // goroutines never return errors; tool failures are data
+
+		for i := range outputs {
+			l.extensions.RunToolResult(ctx, &ToolResultContext{RunnerID: l.id, Call: pending[i].call, Result: &outputs[i]})
 		}
 		if err := l.fsm.TransitionStates(ctx, LoopTransitionFinishToolExecution); err != nil {
 			loopErr = fmt.Errorf("fsm finish tool execution: %w", err)

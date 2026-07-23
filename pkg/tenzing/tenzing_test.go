@@ -12,9 +12,9 @@ import (
 
 type stubAgent struct{}
 
-func (s *stubAgent) GetCurrentModel() string                                         { return "stub-model" }
-func (s *stubAgent) UpdateStreamCallback(_ func(string))                             {}
-func (s *stubAgent) UpdateThinkingCallback(_ func(string))                           {}
+func (s *stubAgent) GetCurrentModel() string               { return "stub-model" }
+func (s *stubAgent) UpdateStreamCallback(_ func(string))   {}
+func (s *stubAgent) UpdateThinkingCallback(_ func(string)) {}
 
 func (s *stubAgent) DoReasoning(_ context.Context, _ []tenzing.Message, _ []string, _ []tenzing.LLMToolDefinition) (tenzing.ReasoningResult, error) {
 	return tenzing.ReasoningResult{FinalAnswer: "done"}, nil

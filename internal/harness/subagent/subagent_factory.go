@@ -11,6 +11,7 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/blackboardext"
+	"github.com/tab58/tenzing-agent-harness/internal/extensions/budgets"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/reminders"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/blackboard"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
@@ -229,6 +230,11 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 func (f *SubAgentFactory) childExtensions(agentID string, todoFile *todo.TodoFile) *core.Extensions {
 	childDepth := f.currentDepth + 1
 	exts := []core.Extension{reminders.New(todoFile.FormatReminder)}
+	if f.maxIterations > 0 {
+		// The child's iteration cap is a budget: graceful termination via
+		// TurnResult.Terminated rather than an ad-hoc loop counter.
+		exts = append(exts, budgets.New(budgets.Limits{MaxIterations: f.maxIterations}))
+	}
 	if f.skillsExt != nil {
 		exts = append(exts, f.skillsExt)
 	}

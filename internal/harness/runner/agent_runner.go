@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"time"
 
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
@@ -33,6 +34,7 @@ type agentRunnerOptions struct {
 	systemPrompt    string
 	emitter         events.Emitter
 	extensions      *core.Extensions
+	approvalTimeout time.Duration
 }
 
 type AgentRunnerOption func(*agentRunnerOptions)
@@ -101,6 +103,12 @@ func WithExtensions(exts *core.Extensions) AgentRunnerOption {
 	return func(o *agentRunnerOptions) { o.extensions = exts }
 }
 
+// WithApprovalTimeout bounds how long an AskUser tool call blocks awaiting
+// an ApprovalRequestedEvent response. 0 (the default) denies immediately.
+func WithApprovalTimeout(d time.Duration) AgentRunnerOption {
+	return func(o *agentRunnerOptions) { o.approvalTimeout = d }
+}
+
 // NewAgentRunner creates a new AgentRunner. It performs one-time wiring
 // (tool definitions, skill map, stream callbacks on the Agent) and builds
 // a core.Loop for RunLoop to delegate to.
@@ -144,13 +152,14 @@ func NewAgentRunner(agent Agent, opts ...AgentRunnerOption) (*AgentRunner, error
 	}
 
 	loop, err := core.NewLoop(core.LoopConfig{
-		ID:           o.id,
-		Model:        agent,
-		Tools:        tp,
-		Context:      o.contextStore,
-		Emitter:      o.emitter,
-		Extensions:   o.extensions,
-		SystemPrompt: o.systemPrompt,
+		ID:              o.id,
+		Model:           agent,
+		Tools:           tp,
+		Context:         o.contextStore,
+		Emitter:         o.emitter,
+		Extensions:      o.extensions,
+		SystemPrompt:    o.systemPrompt,
+		ApprovalTimeout: o.approvalTimeout,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create loop: %w", err)

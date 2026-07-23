@@ -9,8 +9,8 @@ import (
 
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/blackboard"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/todo"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/todo"
 
 	"github.com/tab58/llm-providers/common"
 )
@@ -38,9 +38,9 @@ func (s *stubLLM) ProviderName() common.Provider { return common.ProviderOllama 
 
 type stubAgent struct{}
 
-func (s *stubAgent) GetCurrentModel() string                         { return "stub" }
-func (s *stubAgent) UpdateStreamCallback(_ func(string))             {}
-func (s *stubAgent) UpdateThinkingCallback(_ func(string))           {}
+func (s *stubAgent) GetCurrentModel() string               { return "stub" }
+func (s *stubAgent) UpdateStreamCallback(_ func(string))   {}
+func (s *stubAgent) UpdateThinkingCallback(_ func(string)) {}
 
 func (s *stubAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string, _ []common.ToolDefinition) (runner.ReasoningResult, error) {
 	return runner.ReasoningResult{FinalAnswer: "done"}, nil
@@ -166,9 +166,9 @@ func TestSubAgentFactoryImmutability(t *testing.T) {
 // fixedAnswerAgent returns a canned final answer of any size.
 type fixedAnswerAgent struct{ answer string }
 
-func (s *fixedAnswerAgent) GetCurrentModel() string                         { return "stub" }
-func (s *fixedAnswerAgent) UpdateStreamCallback(_ func(string))             {}
-func (s *fixedAnswerAgent) UpdateThinkingCallback(_ func(string))           {}
+func (s *fixedAnswerAgent) GetCurrentModel() string               { return "stub" }
+func (s *fixedAnswerAgent) UpdateStreamCallback(_ func(string))   {}
+func (s *fixedAnswerAgent) UpdateThinkingCallback(_ func(string)) {}
 func (s *fixedAnswerAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string, _ []common.ToolDefinition) (runner.ReasoningResult, error) {
 	return runner.ReasoningResult{FinalAnswer: s.answer}, nil
 }

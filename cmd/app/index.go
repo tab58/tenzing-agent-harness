@@ -48,6 +48,9 @@ const indexHTML = `<!DOCTYPE html>
   .msg.tool-progress { color: var(--fg-dim); font-size: 0.8em; padding-left: 1rem; }
   .msg.error { color: var(--red); }
   .msg.error::before { content: '✗ '; }
+  .msg.approval { color: var(--yellow); border: 1px solid var(--yellow); border-radius: 4px; padding: 0.5rem; }
+  .msg.approval button { margin-right: 0.5rem; margin-top: 0.5rem; }
+  .msg.approval .deny { background: var(--red); }
   .msg.system { color: var(--fg-dim); font-size: 0.85em; }
   .msg.streaming { color: var(--fg); }
   .msg.streaming::after { content: '▊'; animation: blink 1s step-end infinite; }
@@ -180,6 +183,38 @@ es.addEventListener('tool_result', e => {
   const prefix = d.error === 'true' ? '✗ ' : '✓ ';
   const inp = d.input.length > 500 ? d.input.slice(0, 500) + '…' : d.input;
   addMsg('tool' + (d.agent ? ' sub' : ''), prefix + agentTag(d) + d.name + ' ' + inp + '\n' + lines.join('\n'));
+});
+
+es.addEventListener('approval_requested', e => {
+  finalizeStream();
+  const d = JSON.parse(e.data);
+  const inp = d.input.length > 500 ? d.input.slice(0, 500) + '…' : d.input;
+  const el = addMsg('approval', '⚠ ' + agentTag(d) + d.tool + ' wants to run:\n' + inp);
+
+  const approve = document.createElement('button');
+  approve.textContent = 'approve';
+  const deny = document.createElement('button');
+  deny.textContent = 'deny';
+  deny.className = 'deny';
+  const decide = async (approved) => {
+    approve.disabled = deny.disabled = true;
+    try {
+      await fetch('/approve', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({call_id: d.call_id, approved}),
+      });
+      el.append(' → ' + (approved ? 'approved' : 'denied'));
+    } catch(err) {
+      addMsg('error', err.message);
+    }
+  };
+  approve.onclick = () => decide(true);
+  deny.onclick = () => decide(false);
+  el.appendChild(document.createElement('br'));
+  el.appendChild(approve);
+  el.appendChild(deny);
+  chat.scrollTop = chat.scrollHeight;
 });
 
 es.addEventListener('subagent', e => {

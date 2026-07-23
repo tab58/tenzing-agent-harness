@@ -1,7 +1,12 @@
 package harness
 
 import (
+	"time"
+
 	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/extensions/budgets"
+	"github.com/tab58/tenzing-agent-harness/internal/extensions/mcpext"
+	"github.com/tab58/tenzing-agent-harness/internal/extensions/permissions"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
@@ -82,6 +87,26 @@ type harnessOptions struct {
 	// the default extensions (e.g. reminders). Order of WithExtension calls
 	// is hook execution order.
 	extensions []core.Extension
+
+	// permissionPolicy overrides the default tool permission policy.
+	// Nil means permissions.DefaultPolicy().
+	permissionPolicy *permissions.Policy
+
+	// permissionsDisabled skips registering the permissions extension
+	// entirely (explicit opt-out for headless/trusted drivers).
+	permissionsDisabled bool
+
+	// approvalTimeout bounds how long an AskUser tool call waits for an
+	// approval response before being denied.
+	approvalTimeout time.Duration
+
+	// budgetLimits, when non-zero, registers the budgets extension for the
+	// main loop (graceful termination on iteration/wall-clock/token caps).
+	budgetLimits budgets.Limits
+
+	// mcpServers are external MCP servers to mount as dynamic tool sources.
+	// The mcp extension is registered only when at least one is configured.
+	mcpServers []mcpext.ServerConfig
 }
 
 func defaultHarnessOptions() *harnessOptions {
@@ -94,6 +119,7 @@ func defaultHarnessOptions() *harnessOptions {
 		baseURLs:              make(map[common.Provider]string),
 		subagentMaxDepth:      1,
 		subagentMaxIterations: 100,
+		approvalTimeout:       120 * time.Second,
 	}
 }
 
@@ -238,4 +264,41 @@ func WithBlackboardDisabled() HarnessOption {
 // calls is hook execution order (after the default extensions).
 func WithExtension(ext core.Extension) HarnessOption {
 	return func(o *harnessOptions) { o.extensions = append(o.extensions, ext) }
+}
+
+// WithPermissionPolicy replaces the default tool permission policy
+// (permissions.DefaultPolicy: ask for code-executing/file-writing tools,
+// allow the rest).
+func WithPermissionPolicy(p permissions.Policy) HarnessOption {
+	return func(o *harnessOptions) { o.permissionPolicy = &p }
+}
+
+// WithPermissionsDisabled skips the permissions extension entirely — every
+// tool call runs unquestioned. Explicit opt-out for headless or fully
+// trusted drivers.
+func WithPermissionsDisabled() HarnessOption {
+	return func(o *harnessOptions) { o.permissionsDisabled = true }
+}
+
+// WithApprovalTimeout bounds how long an AskUser tool call waits for an
+// approval response before being denied. Default 120s; 0 denies immediately
+// (unattended drivers with nobody to answer).
+func WithApprovalTimeout(d time.Duration) HarnessOption {
+	return func(o *harnessOptions) { o.approvalTimeout = d }
+}
+
+// WithBudgets registers the budgets extension for the main loop: the turn
+// terminates gracefully (TurnResult.Terminated, surfaced by RunTurn as a
+// "terminated: ..." error) when any limit is exceeded. Zero fields are
+// unlimited.
+func WithBudgets(l budgets.Limits) HarnessOption {
+	return func(o *harnessOptions) { o.budgetLimits = l }
+}
+
+// WithMCPServer mounts an external MCP server (stdio transport) as a dynamic
+// tool source: its tools appear as "mcp__<server>__<tool>" and are re-listed
+// at each turn boundary. MCP-origin tools require approval under the default
+// permission policy. Repeat the option per server.
+func WithMCPServer(cfg mcpext.ServerConfig) HarnessOption {
+	return func(o *harnessOptions) { o.mcpServers = append(o.mcpServers, cfg) }
 }

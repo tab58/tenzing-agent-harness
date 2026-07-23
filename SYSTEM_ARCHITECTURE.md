@@ -21,13 +21,13 @@ The Harness creates an AgentRunner for the main session. A subagent spawns a fre
 
 **Provider agnosticism.** All LLM interaction flows through canonical types (`Message`, `ContentBlock`, `CompletionRequest/Response`). Provider implementations convert to/from SDK-specific types. Swapping providers requires zero changes above the provider layer.
 
-**Risk changes the process.** Tools carry a risk classification (read_only, draft, external_write). Read-only tools execute autonomously. Draft tools simulate without side effects. External writes require human approval before finalization. This is the draft-commit pattern: dangerous actions are first drafted, then explicitly committed. The permission check happens in the Runner before tool execution — not in the tool itself, not in the Agent. Injectable via `runner.AgentRunnerOption` so different runners can enforce different policies. *(Not yet implemented — Phase 4.)*
+**Risk changes the process.** *(IMPLEMENTED.)* The permissions extension (`internal/extensions/permissions`, a `core.ToolCallHook` registered FIRST in the default extension order) classifies each tool call by name: `Deny` > `Ask` > `Allow` > policy default. The default policy asks for anything that executes code or writes files (`bash`, `write`, `edit`, `revert`, `repl`, `spawn_agent`, `advisor`) and allows read-only/in-memory tools. `AskUser` makes the core loop emit `ApprovalRequestedEvent` and block (up to `ApprovalTimeout`, harness default 120s; timeout/cancel = deny) for a `Respond(bool)` — cmd/app forwards it over SSE as `approval_requested` and resolves it via `POST /approve {call_id, approved}` with approve/deny buttons in the embedded UI. Configure with `harness.WithPermissionPolicy`, opt out with `harness.WithPermissionsDisabled` (headless/trusted drivers), tune waiting with `harness.WithApprovalTimeout`. The check happens in the core loop before tool execution — not in the tool itself, not in the Agent.
 
-**Long tasks have budgets.** Every agent loop enforces hard limits: step budget (max iterations), time budget (wall-clock), token budget (per turn and cumulative), and cost budget (USD). When a budget is exhausted, the harness terminates gracefully and returns a structured result — not a crash. Budget checks sit alongside `ctx.Err()` at the top of the loop, injectable via config. Without budgets, a runaway loop burns money silently. *(Not yet implemented — Phase 4.)*
+**Long tasks have budgets.** *(IMPLEMENTED.)* The budgets extension (`internal/extensions/budgets`, a `core.BeforeIterationHook`) enforces per-turn limits — `MaxIterations`, `MaxWallClock`, `MaxTokens` (input+output cumulative); zero = unlimited. The loop populates `TurnContext.Elapsed/InputTokens/OutputTokens` before each iteration's hooks; when a limit trips the extension sets `Terminate` and the turn ends gracefully with `TurnResult{Terminated: reason}` — a result, not a crash. Wire via `harness.WithBudgets(limits)`; subagents get `MaxIterations` from `WithSubagentMaxIterations` (default 100) through the same extension. Cost budget (USD) is deferred — llm-providers exposes no pricing tables.
 
 **Context is assembled, not dumped.** The system prompt is ordered by stability for cache efficiency: Layer 0 (system policies, stable prefix, cached) → Layer 1 (skill definitions, rarely change, cached) → Layer 2 (session instructions, per conversation, not cached) → Layer 3 (JIT-retrieved tool outputs, fresh, not cached). Untrusted data (user input, tool output from external sources) is marked with trust labels so the harness can treat it differently. *(Partially implemented — skills use progressive disclosure, but no cache-aware ordering or trust labels yet.)*
 
-**Registries own implementations, Agent gets metadata.** Tools and skills follow the same wiring pattern: registries load from disk at startup, the Agent receives metadata (tool definitions, skill names/descriptions) as data via `AgentConfig`, and the AgentRunner dispatches execution at runtime. The Agent never touches a registry directly — it tells the LLM what capabilities exist, the Runner actually runs them.
+**Registries own implementations, Agent gets metadata.** Tools and skills follow the same wiring pattern: registries load from disk at startup, extensions surface them through the composite ToolPort and prompt fragments, and the core loop passes the per-turn tool definitions into every `DoReasoning` call. The Agent holds no capability state at all — it tells the LLM what capabilities exist (from the definitions handed to it per request), and the loop actually runs them.
 
 ```
 main.go
@@ -62,7 +62,7 @@ internal/
 │   ├── fsm.go                          Per-runner finite state machine (6 states, 6 transitions)
 │   ├── extension.go                    Extensions, hooks, Decision, TurnContext, TurnResult
 │   ├── event.go                        Event interface, BaseEvent, Emitter, EventType constants
-│   └── event_types.go                  All concrete event struct types (21 events)
+│   └── event_types.go                  All concrete event struct types (22 events; ApprovalRequestedEvent lives in approval.go)
 ├── adapters/                            Port implementations
 │   ├── contextstore/                   ContextPort: in-memory history, pairing, compression
 │   └── toolport/                       ToolPort: Composite (native + extension + dynamic mounts, panic recovery, SpecFromDefinition) and Wrap (plain registry port)
@@ -73,7 +73,10 @@ internal/
 ├── extensions/                          core.Extension implementations
 │   ├── reminders/                      BeforeIterationHook — injects TODO-plan-state system reminders
 │   ├── skillsext/                      ToolProvider (list_skills/load_skill) + PromptContributor (skills index)
-│   └── blackboardext/                  ToolProvider (repl) + SessionEndHook (closes the shared blackboard)
+│   ├── blackboardext/                  ToolProvider (repl) + SessionEndHook (closes the shared blackboard)
+│   ├── permissions/                    ToolCallHook — name/origin policy gating (default-on, runs first)
+│   ├── budgets/                        BeforeIterationHook — iteration/wall-clock/token limits → graceful Terminate
+│   └── mcpext/                         DynamicToolSource + session hooks — external MCP servers over stdio
 ├── agent/                              Concrete, stateless Agent implementation
 │   └── agent.go                        Agent struct, AgentConfig, DoReasoning — owns no history, no compression, no memory I/O
 └── harness/                            Composition root: wiring, config, event bus, memory persistence
@@ -213,18 +216,26 @@ Loop.RunTurn(ctx, input string) → (TurnResult, error)
         been used: context.AppendUser(ctx, a retry instruction) → loop to 4a
       - else: Stop, extensions.RunAfterTurn(ctx, &tr) (degrading), return
         TurnResult{FinalAnswer, Iterations, Duration}
-   h. Else (tool calls present):
+   h. Else (tool calls present) — batch semantics:
       - StartToolExecution
-      - for each ToolCall, in order: extensions.RunToolCall(ctx, tcc) (load-bearing;
-        hooks may escalate Decision to Deny/AskUser, never de-escalate; a hook
-        error itself also blocks execution with a synthetic result, distinct
-        from an explicit Deny) → on Allow, tools.Execute(ctx, call); on
-        Deny/AskUser, a synthetic error ToolResult (no execution) →
-        extensions.RunToolResult(ctx, trc) (degrading transform)
+      - DECISION PHASE, sequential in issue order: extensions.RunToolCall(ctx, tcc)
+        (load-bearing; hooks may escalate Decision to Deny/AskUser, never
+        de-escalate; a hook error itself also blocks execution with a synthetic
+        result, distinct from an explicit Deny). AskUser calls emit their
+        ApprovalRequestedEvent immediately (non-blocking).
+      - EXECUTION PHASE, concurrent (errgroup.WithContext): one goroutine per
+        call writes results[i] — Allow executes; Deny/hook-error produce
+        synthetic error results; AskUser waits out its approval channel in its
+        own goroutine (others don't wait on the straggler). Per-call events
+        (ToolExecutionStarted/Finished, succeeded/failed) fire inside the
+        goroutines — EventBus.Emit is goroutine-safe.
+      - after the barrier: extensions.RunToolResult(ctx, trc) sequentially in
+        issue order (degrading transform)
       - FinishToolExecution
       - context.AppendAssistant(ctx, reasoningResult.Meta.AssistantMessage), then
-        context.AppendToolResults(ctx, outputs) — results carry ToolUseID so the
-        store pairs them to the assistant's tool_use blocks
+        one context.AppendToolResults(ctx, outputs) in issue order — results
+        carry ToolUseID so the store pairs them to the assistant's tool_use
+        blocks; the context store is only touched after the barrier
       - loop to 4a
 5. On any error: Reset FSM, emit ErrorEvent, return the error
 ```
@@ -505,9 +516,9 @@ Typed event bus providing full observability of the agent loop. Events fire at F
 
 Layers emit via the narrow `Emitter` interface (`Emit(Event)`), never importing `EventBus` directly. The Harness creates the bus and passes it down.
 
-### Event Types (21)
+### Event Types (22)
 
-Session: `session.started`, `session.ended`. Turn: `turn.started`, `turn.completed`. FSM: `loop.started`, `loop.stopped`, `reasoning.started`, `reasoning.finished`, `tool_execution.started`, `tool_execution.finished`. Business: `llm.response`, `tool.succeeded`, `tool.failed`, `tool.progress`, `context.compressing` (reserved), `context.compressed`, `error`. Subagent: `subagent.started`, `subagent.stopped`. Task: `task.created`, `task.completed`.
+Session: `session.started`, `session.ended`. Turn: `turn.started`, `turn.completed`. FSM: `loop.started`, `loop.stopped`, `reasoning.started`, `reasoning.finished`, `tool_execution.started`, `tool_execution.finished`. Business: `llm.response`, `tool.succeeded`, `tool.failed`, `tool.progress`, `context.compressing` (reserved), `context.compressed`, `error`. Subagent: `subagent.started`, `subagent.stopped`. Task: `task.created`, `task.completed`. Approval: `approval.requested` (`ApprovalRequestedEvent` — carries `CallID`/`ToolName`/`Input`/`Reason` plus a non-serialized `Respond(approved bool)` callback; idempotent, safe from any goroutine; the loop blocks on it until response, context cancel, or `LoopConfig.ApprovalTimeout`, where timeout/cancel = deny and 0 denies immediately without emitting).
 
 All events embed `BaseEvent` (type, timestamp, runner ID) and are JSON-serializable.
 

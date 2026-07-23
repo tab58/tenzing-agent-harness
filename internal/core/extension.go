@@ -22,12 +22,19 @@ const (
 	Deny
 )
 
-// TurnContext is passed to BeforeIteration hooks each iteration.
+// TurnContext is passed to BeforeIteration hooks each iteration. The loop
+// populates the usage fields (elapsed time and cumulative token counts for
+// this turn) before running the hooks, so budget-style hooks can decide on
+// them.
 type TurnContext struct {
 	RunnerID  string
 	Iteration int
 	Reminders []string // hooks append; delivered as system reminders
 	Terminate string   // non-empty: graceful termination with this reason
+
+	Elapsed      time.Duration // time since the turn started
+	InputTokens  int64         // cumulative this turn
+	OutputTokens int64
 }
 
 // ToolCallContext is passed to OnToolCall hooks per call, in issue order.

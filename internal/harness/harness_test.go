@@ -17,9 +17,9 @@ import (
 
 type stubAgent struct{}
 
-func (s *stubAgent) GetCurrentModel() string                         { return "stub-model" }
-func (s *stubAgent) UpdateStreamCallback(_ func(string))             {}
-func (s *stubAgent) UpdateThinkingCallback(_ func(string))           {}
+func (s *stubAgent) GetCurrentModel() string               { return "stub-model" }
+func (s *stubAgent) UpdateStreamCallback(_ func(string))   {}
+func (s *stubAgent) UpdateThinkingCallback(_ func(string)) {}
 
 func (s *stubAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string, _ []common.ToolDefinition) (runner.ReasoningResult, error) {
 	return runner.ReasoningResult{FinalAnswer: "done"}, nil
@@ -346,4 +346,87 @@ func TestChildCompressionGoesToCache(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// Default-on permissions: bash escalates to AskUser, the approval event
+// reaches hooks, and a denial comes back to the model as an error result.
+func TestHarnessDefaultPermissionsAskAndDeny(t *testing.T) {
+	redirectHome(t)
+	agent := newScriptedAgent(
+		toolStep("bash", jsonInput(map[string]any{"command": "ls"})),
+		finalStep("done"),
+	)
+
+	var requested events.ApprovalRequestedEvent
+	h, err := New(testModel,
+		WithAgentBuilder(func(_ common.LLM, _ string) (runner.Agent, error) { return agent, nil }),
+		WithLLMFactory(stubFactory),
+		WithSystemPrompt("test"),
+		WithBlackboardDisabled(),
+		WithHooks(events.Hooks{
+			OnApprovalRequested: func(e events.ApprovalRequestedEvent) {
+				requested = e
+				e.Respond(false)
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer h.Shutdown()
+
+	answer, err := h.RunTurn(context.Background(), "list files")
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if answer != "done" {
+		t.Errorf("answer = %q", answer)
+	}
+	if requested.ToolName != "bash" {
+		t.Fatalf("approval requested for %q, want bash", requested.ToolName)
+	}
+
+	// The denial must reach the model as an error tool result.
+	calls := agent.capturedCalls()
+	if len(calls) != 2 {
+		t.Fatalf("agent calls = %d, want 2", len(calls))
+	}
+	second := calls[1].Messages
+	last := second[len(second)-1]
+	found := false
+	for _, block := range last.Content {
+		if strings.Contains(block.ToolOutput, "denied") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("tool result does not mention denial: %+v", last.Content)
+	}
+}
+
+// WithPermissionsDisabled: bash runs unquestioned.
+func TestHarnessPermissionsDisabledRunsToolsDirectly(t *testing.T) {
+	redirectHome(t)
+	dir := t.TempDir()
+	agent := newScriptedAgent(
+		toolStep("bash", jsonInput(map[string]any{"command": "echo hi > " + dir + "/out.txt"})),
+		finalStep("done"),
+	)
+
+	h, err := New(testModel,
+		WithAgentBuilder(func(_ common.LLM, _ string) (runner.Agent, error) { return agent, nil }),
+		WithLLMFactory(stubFactory),
+		WithSystemPrompt("test"),
+		WithBlackboardDisabled(),
+		WithPermissionsDisabled(),
+	)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer h.Shutdown()
+
+	if _, err := h.RunTurn(context.Background(), "write it"); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	assertFileContains(t, dir+"/out.txt", "hi")
 }

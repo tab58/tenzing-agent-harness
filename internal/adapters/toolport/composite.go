@@ -27,8 +27,8 @@ type Composite struct {
 	sources []core.DynamicToolSource
 
 	mu      sync.RWMutex
-	dynamic []core.ToolSpec           // snapshot from the last BeginTurn
-	byName  map[string]core.ToolSpec  // lowercased name → spec (static + snapshot)
+	dynamic []core.ToolSpec          // snapshot from the last BeginTurn
+	byName  map[string]core.ToolSpec // lowercased name → spec (static + snapshot)
 }
 
 // NewComposite builds a Composite from the native registry and the registered

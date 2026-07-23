@@ -27,6 +27,7 @@ const (
 	EventSubagentStopped       EventType = "subagent.stopped"
 	EventTaskCreated           EventType = "task.created"
 	EventTaskCompleted         EventType = "task.completed"
+	EventApprovalRequested     EventType = "approval.requested"
 )
 
 // Event is the common interface for all harness events.

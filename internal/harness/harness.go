@@ -14,6 +14,9 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/agent"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/blackboardext"
+	"github.com/tab58/tenzing-agent-harness/internal/extensions/budgets"
+	"github.com/tab58/tenzing-agent-harness/internal/extensions/mcpext"
+	"github.com/tab58/tenzing-agent-harness/internal/extensions/permissions"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/reminders"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/skillsext"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/advisor"
@@ -134,10 +137,26 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		mainRunnerID = runner.NewID()
 	}
 
-	// default extensions run first, then any caller-supplied via WithExtension
-	defaultExts := []core.Extension{
+	// default extensions run first, then any caller-supplied via WithExtension.
+	// Permissions come FIRST so later hooks observe (and may escalate, never
+	// lower) its decision.
+	var defaultExts []core.Extension
+	if !o.permissionsDisabled {
+		policy := permissions.DefaultPolicy()
+		if o.permissionPolicy != nil {
+			policy = *o.permissionPolicy
+		}
+		defaultExts = append(defaultExts, permissions.New(policy))
+	}
+	defaultExts = append(defaultExts,
 		reminders.New(todoFile.FormatReminder),
 		skillsExt,
+	)
+	if o.budgetLimits != (budgets.Limits{}) {
+		defaultExts = append(defaultExts, budgets.New(o.budgetLimits))
+	}
+	if len(o.mcpServers) > 0 {
+		defaultExts = append(defaultExts, mcpext.New(o.mcpServers...))
 	}
 	if bb != nil {
 		defaultExts = append(defaultExts, blackboardext.New(bb, "main"))
@@ -260,6 +279,7 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		runner.WithThinkingDeltaHandler(o.onThinkingDelta),
 		runner.WithSystemPrompt(mainSystemPrompt),
 		runner.WithExtensions(allExts),
+		runner.WithApprovalTimeout(o.approvalTimeout),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("unable to initialize runner: %w", err)
@@ -339,6 +359,7 @@ func hooksEmpty(h events.Hooks) bool {
 		h.OnContextCompressing == nil &&
 		h.OnContextCompressed == nil &&
 		h.OnError == nil &&
+		h.OnApprovalRequested == nil &&
 		h.OnSubagentStarted == nil &&
 		h.OnSubagentStopped == nil &&
 		h.OnTaskCreated == nil &&

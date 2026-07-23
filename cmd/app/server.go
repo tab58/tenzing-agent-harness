@@ -38,6 +38,13 @@ type agentServer struct {
 
 	clients   map[*sseClient]struct{}
 	clientsMu sync.RWMutex
+
+	// approvals holds pending AskUser responders keyed by tool-call ID.
+	// Entries are removed when answered; timed-out entries are dropped when
+	// the same call ID can no longer arrive (Respond is idempotent, so a
+	// late answer to a timed-out request is a harmless no-op).
+	approvals   map[string]func(bool)
+	approvalsMu sync.Mutex
 }
 
 func newAgentServer(model common.ModelDefinition, bus *events.EventBus, nx *nexus.Nexus, logB *app.LogBroadcaster, onTurnEnd func(), extraOpts ...harness.HarnessOption) (*agentServer, error) {
@@ -48,6 +55,7 @@ func newAgentServer(model common.ModelDefinition, bus *events.EventBus, nx *nexu
 		onTurnEnd: onTurnEnd,
 		done:      make(chan struct{}),
 		clients:   make(map[*sseClient]struct{}),
+		approvals: make(map[string]func(bool)),
 	}
 
 	opts := append([]harness.HarnessOption{
@@ -90,6 +98,14 @@ func (s *agentServer) registerRoutes(srv *httpserver.Server[router.MapAuthInfo])
 			Path:        "/cancel",
 		},
 		Handler: s.handleCancel,
+	})
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[approveInput, statusOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "approve",
+			Method:      http.MethodPost,
+			Path:        "/approve",
+		},
+		Handler: s.handleApprove,
 	})
 	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[struct{}, infoOutput, router.MapAuthInfo]{
 		Operation: huma.Operation{
@@ -202,6 +218,17 @@ func (s *agentServer) forwardEvents(ch <-chan events.Event) {
 				"tool":   e.ToolName,
 				"phase":  e.Phase,
 				"detail": e.Detail,
+			})
+		case events.ApprovalRequestedEvent:
+			s.approvalsMu.Lock()
+			s.approvals[e.CallID] = e.Respond
+			s.approvalsMu.Unlock()
+			s.broadcastSSEJSON("approval_requested", map[string]string{
+				"call_id": e.CallID,
+				"tool":    e.ToolName,
+				"input":   e.Input,
+				"reason":  e.Reason,
+				"agent":   subagents[e.RunnerID],
 			})
 		case nexus.ChannelErrorEvent:
 			s.broadcastSSEJSON("channel_error", map[string]any{
@@ -392,6 +419,33 @@ func (s *agentServer) handleCancel(_ context.Context, _ router.MapAuthInfo, _ *s
 	cancel()
 	out := &statusOutput{}
 	out.Body.Status = "cancelled"
+	return out, nil
+}
+
+type approveInput struct {
+	Body struct {
+		CallID   string `json:"call_id" doc:"Tool-call ID from the approval_requested event"`
+		Approved bool   `json:"approved" doc:"true to run the tool, false to deny"`
+	}
+}
+
+func (s *agentServer) handleApprove(_ context.Context, _ router.MapAuthInfo, in *approveInput) (*statusOutput, error) {
+	s.approvalsMu.Lock()
+	respond, ok := s.approvals[in.Body.CallID]
+	delete(s.approvals, in.Body.CallID)
+	s.approvalsMu.Unlock()
+
+	if !ok {
+		return nil, srverrors.Wrap(srverrors.ErrBadRequest, "no pending approval for call_id")
+	}
+	respond(in.Body.Approved)
+
+	out := &statusOutput{}
+	if in.Body.Approved {
+		out.Body.Status = "approved"
+	} else {
+		out.Body.Status = "denied"
+	}
 	return out, nil
 }
 

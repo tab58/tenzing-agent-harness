@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/tab58/llm-providers/common"
 )
@@ -72,9 +73,10 @@ func (f *fakeTools) executed() []ToolCall {
 
 // fakeContext records the call order as []string for assertion.
 type fakeContext struct {
-	mu       sync.Mutex
-	msgs     []common.Message
-	callLog  []string
+	mu          sync.Mutex
+	msgs        []common.Message
+	callLog     []string
+	toolResults [][]ToolResult // one entry per AppendToolResults call
 }
 
 func newFakeContext() *fakeContext {
@@ -110,6 +112,7 @@ func (f *fakeContext) AppendToolResults(_ context.Context, results []ToolResult)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.callLog = append(f.callLog, "AppendToolResults")
+	f.toolResults = append(f.toolResults, append([]ToolResult{}, results...))
 	blocks := make([]common.ContentBlock, len(results))
 	for i, r := range results {
 		blocks[i] = common.NewToolResultContent(r.ToolUseID, "", r.Output)
@@ -513,5 +516,379 @@ func TestInvalidFinalAnswerReason(t *testing.T) {
 				t.Errorf("expected %q to be valid, got reason %q", tt.answer, reason)
 			}
 		})
+	}
+}
+
+// --- approval flow (Task 16) ----------------------------------------------
+
+// askExtension escalates every tool call to AskUser.
+type askExtension struct{}
+
+func (askExtension) Name() string { return "ask-all" }
+func (askExtension) OnToolCall(_ context.Context, tcc *ToolCallContext) error {
+	if tcc.Decision < AskUser {
+		tcc.Decision = AskUser
+	}
+	tcc.Reason = "needs approval"
+	return nil
+}
+
+// respondingEmitter answers ApprovalRequestedEvents with a fixed verdict.
+// respond == nil ignores the request (for timeout tests).
+type respondingEmitter struct {
+	fakeEmitter
+	approve *bool // nil = never respond
+}
+
+func (e *respondingEmitter) Emit(ev Event) {
+	e.fakeEmitter.Emit(ev)
+	if req, ok := ev.(ApprovalRequestedEvent); ok && e.approve != nil {
+		verdict := *e.approve
+		go req.Respond(verdict)
+	}
+}
+
+func newApprovalLoop(t *testing.T, emitter Emitter, timeout time.Duration) (*Loop, *fakeTools) {
+	t.Helper()
+	model := &fakeModel{steps: []ReasoningResult{
+		toolCallResult(ToolCall{ID: "tc1", Name: "bash", Input: `{"cmd":"ls"}`}),
+		{FinalAnswer: "after approval"},
+	}}
+	tools := newFakeTools(map[string]ToolResult{"bash": {Output: "files"}})
+	l := newTestLoop(t, model, tools, newFakeContext(), func(cfg *LoopConfig) {
+		cfg.Emitter = emitter
+		cfg.Extensions = NewExtensions(askExtension{})
+		cfg.ApprovalTimeout = timeout
+	})
+	return l, tools
+}
+
+func TestRunTurnAskUserApproved(t *testing.T) {
+	yes := true
+	emitter := &respondingEmitter{approve: &yes}
+	l, tools := newApprovalLoop(t, emitter, 5*time.Second)
+
+	tr, err := l.RunTurn(context.Background(), "run it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.FinalAnswer != "after approval" {
+		t.Errorf("FinalAnswer = %q", tr.FinalAnswer)
+	}
+	if got := len(tools.executed()); got != 1 {
+		t.Fatalf("expected the approved tool to execute once, got %d", got)
+	}
+	found := false
+	for _, et := range emitter.eventTypes() {
+		if et == EventApprovalRequested {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("no ApprovalRequestedEvent emitted")
+	}
+}
+
+func TestRunTurnAskUserDenied(t *testing.T) {
+	no := false
+	emitter := &respondingEmitter{approve: &no}
+	l, tools := newApprovalLoop(t, emitter, 5*time.Second)
+
+	tr, err := l.RunTurn(context.Background(), "run it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.FinalAnswer != "after approval" {
+		t.Errorf("FinalAnswer = %q", tr.FinalAnswer)
+	}
+	if got := len(tools.executed()); got != 0 {
+		t.Fatalf("denied tool must not execute, got %d executions", got)
+	}
+}
+
+func TestRunTurnAskUserTimeout(t *testing.T) {
+	emitter := &respondingEmitter{approve: nil} // never responds
+	l, tools := newApprovalLoop(t, emitter, 10*time.Millisecond)
+
+	tr, err := l.RunTurn(context.Background(), "run it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.FinalAnswer != "after approval" {
+		t.Errorf("FinalAnswer = %q", tr.FinalAnswer)
+	}
+	if got := len(tools.executed()); got != 0 {
+		t.Fatalf("timed-out tool must not execute, got %d executions", got)
+	}
+}
+
+func TestRunTurnAskUserZeroTimeoutDeniesImmediately(t *testing.T) {
+	emitter := &respondingEmitter{approve: nil}
+	l, tools := newApprovalLoop(t, emitter, 0)
+
+	if _, err := l.RunTurn(context.Background(), "run it"); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(tools.executed()); got != 0 {
+		t.Fatalf("zero-timeout AskUser must deny without executing, got %d", got)
+	}
+	for _, et := range emitter.eventTypes() {
+		if et == EventApprovalRequested {
+			t.Error("zero timeout must not emit an approval request")
+		}
+	}
+}
+
+// usageCapturingExt records the TurnContext usage fields per iteration.
+type usageCapturingExt struct {
+	mu   sync.Mutex
+	seen []TurnContext
+}
+
+func (u *usageCapturingExt) Name() string { return "usage-capture" }
+func (u *usageCapturingExt) BeforeIteration(_ context.Context, tc *TurnContext) error {
+	u.mu.Lock()
+	u.seen = append(u.seen, *tc)
+	u.mu.Unlock()
+	return nil
+}
+
+func TestRunTurnPopulatesUsageInTurnContext(t *testing.T) {
+	step1 := toolCallResult(ToolCall{ID: "tc1", Name: "search", Input: `{}`})
+	step1.Meta.InputTokens = 100
+	step1.Meta.OutputTokens = 40
+	model := &fakeModel{steps: []ReasoningResult{
+		step1,
+		{FinalAnswer: "done", Meta: ResponseMeta{InputTokens: 200, OutputTokens: 60}},
+	}}
+	capture := &usageCapturingExt{}
+
+	l := newTestLoop(t, model, newFakeTools(nil), newFakeContext(), func(cfg *LoopConfig) {
+		cfg.Extensions = NewExtensions(capture)
+	})
+	if _, err := l.RunTurn(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(capture.seen) != 2 {
+		t.Fatalf("iterations seen = %d, want 2", len(capture.seen))
+	}
+	first, second := capture.seen[0], capture.seen[1]
+	if first.InputTokens != 0 || first.OutputTokens != 0 {
+		t.Errorf("first iteration usage = %d/%d, want 0/0", first.InputTokens, first.OutputTokens)
+	}
+	if second.InputTokens != 100 || second.OutputTokens != 40 {
+		t.Errorf("second iteration usage = %d/%d, want 100/40", second.InputTokens, second.OutputTokens)
+	}
+	if second.Elapsed <= 0 {
+		t.Errorf("second iteration Elapsed = %v, want > 0", second.Elapsed)
+	}
+}
+
+// --- batch concurrency (Task 19) ------------------------------------------
+
+// sleepyTools sleeps per tool name and records completion times.
+type sleepyTools struct {
+	mu        sync.Mutex
+	delays    map[string]time.Duration
+	completed map[string]time.Time
+}
+
+func newSleepyTools(delays map[string]time.Duration) *sleepyTools {
+	return &sleepyTools{delays: delays, completed: make(map[string]time.Time)}
+}
+
+func (s *sleepyTools) BeginTurn(_ context.Context)          {}
+func (s *sleepyTools) Definitions() []common.ToolDefinition { return nil }
+func (s *sleepyTools) Origin(string) string                 { return "native" }
+func (s *sleepyTools) Execute(_ context.Context, call ToolCall) ToolResult {
+	time.Sleep(s.delays[call.Name])
+	s.mu.Lock()
+	s.completed[call.Name] = time.Now()
+	s.mu.Unlock()
+	return ToolResult{ToolUseID: call.ID, Output: call.Name}
+}
+func (s *sleepyTools) completedAt(name string) time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.completed[name]
+}
+
+func TestBatchToolCallsRunConcurrently(t *testing.T) {
+	model := &fakeModel{steps: []ReasoningResult{
+		toolCallResult(
+			ToolCall{ID: "1", Name: "a", Input: `{}`},
+			ToolCall{ID: "2", Name: "b", Input: `{}`},
+			ToolCall{ID: "3", Name: "c", Input: `{}`},
+		),
+		{FinalAnswer: "done"},
+	}}
+	tools := newSleepyTools(map[string]time.Duration{
+		"a": 100 * time.Millisecond,
+		"b": 100 * time.Millisecond,
+		"c": 100 * time.Millisecond,
+	})
+
+	l := newTestLoop(t, model, tools, newFakeContext())
+	start := time.Now()
+	if _, err := l.RunTurn(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	wall := time.Since(start)
+	// sum = 300ms; concurrent ≈ 100ms. Generous margin: must beat sum/2.
+	if wall >= 150*time.Millisecond {
+		t.Errorf("batch wall = %v, want < 150ms (concurrent execution)", wall)
+	}
+}
+
+func TestBatchResultsKeepIssueOrder(t *testing.T) {
+	model := &fakeModel{steps: []ReasoningResult{
+		toolCallResult(
+			ToolCall{ID: "slow", Name: "a", Input: `{}`},
+			ToolCall{ID: "mid", Name: "b", Input: `{}`},
+			ToolCall{ID: "fast", Name: "c", Input: `{}`},
+		),
+		{FinalAnswer: "done"},
+	}}
+	// completion order is reverse of issue order
+	tools := newSleepyTools(map[string]time.Duration{
+		"a": 90 * time.Millisecond,
+		"b": 50 * time.Millisecond,
+		"c": 5 * time.Millisecond,
+	})
+	fctx := newFakeContext()
+
+	l := newTestLoop(t, model, tools, fctx)
+	if _, err := l.RunTurn(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(fctx.toolResults) != 1 {
+		t.Fatalf("AppendToolResults batches = %d, want 1", len(fctx.toolResults))
+	}
+	got := fctx.toolResults[0]
+	wantIDs := []string{"slow", "mid", "fast"}
+	if len(got) != len(wantIDs) {
+		t.Fatalf("results = %d, want %d", len(got), len(wantIDs))
+	}
+	for i, id := range wantIDs {
+		if got[i].ToolUseID != id {
+			t.Errorf("results[%d].ToolUseID = %q, want %q (issue order)", i, got[i].ToolUseID, id)
+		}
+	}
+}
+
+// askOneExt escalates a single named tool to AskUser.
+type askOneExt struct{ tool string }
+
+func (e askOneExt) Name() string { return "ask-one" }
+func (e askOneExt) OnToolCall(_ context.Context, tcc *ToolCallContext) error {
+	if tcc.Call.Name == e.tool && tcc.Decision < AskUser {
+		tcc.Decision = AskUser
+	}
+	return nil
+}
+
+// slowApprover approves after a delay, recording when it responded.
+type slowApprover struct {
+	fakeEmitter
+	delay time.Duration
+
+	mu          sync.Mutex
+	respondedAt time.Time
+}
+
+func (e *slowApprover) Emit(ev Event) {
+	e.fakeEmitter.Emit(ev)
+	if req, ok := ev.(ApprovalRequestedEvent); ok {
+		go func() {
+			time.Sleep(e.delay)
+			e.mu.Lock()
+			e.respondedAt = time.Now()
+			e.mu.Unlock()
+			req.Respond(true)
+		}()
+	}
+}
+
+func (e *slowApprover) when() time.Time {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.respondedAt
+}
+
+func TestBatchAskUserStragglerDoesNotBlockOthers(t *testing.T) {
+	model := &fakeModel{steps: []ReasoningResult{
+		toolCallResult(
+			ToolCall{ID: "1", Name: "danger", Input: `{}`},
+			ToolCall{ID: "2", Name: "fast1", Input: `{}`},
+			ToolCall{ID: "3", Name: "fast2", Input: `{}`},
+		),
+		{FinalAnswer: "done"},
+	}}
+	tools := newSleepyTools(map[string]time.Duration{
+		"danger": time.Millisecond,
+		"fast1":  5 * time.Millisecond,
+		"fast2":  5 * time.Millisecond,
+	})
+	approver := &slowApprover{delay: 150 * time.Millisecond}
+
+	l := newTestLoop(t, model, tools, newFakeContext(), func(cfg *LoopConfig) {
+		cfg.Emitter = approver
+		cfg.Extensions = NewExtensions(askOneExt{tool: "danger"})
+		cfg.ApprovalTimeout = 5 * time.Second
+	})
+	if _, err := l.RunTurn(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+
+	respondTime := approver.when()
+	if respondTime.IsZero() {
+		t.Fatal("approver never responded")
+	}
+	for _, name := range []string{"fast1", "fast2"} {
+		done := tools.completedAt(name)
+		if done.IsZero() {
+			t.Fatalf("%s never completed", name)
+		}
+		if !done.Before(respondTime) {
+			t.Errorf("%s completed at %v, after approval at %v — others must not wait on the straggler", name, done, respondTime)
+		}
+	}
+	if tools.completedAt("danger").IsZero() {
+		t.Error("approved straggler never executed")
+	}
+}
+
+func TestBatchEightConcurrentCallsContextSequence(t *testing.T) {
+	calls := make([]ToolCall, 8)
+	delays := make(map[string]time.Duration, 8)
+	for i := range calls {
+		name := fmt.Sprintf("t%d", i)
+		calls[i] = ToolCall{ID: fmt.Sprintf("id%d", i), Name: name, Input: `{}`}
+		delays[name] = time.Duration(i%4+1) * 5 * time.Millisecond
+	}
+	model := &fakeModel{steps: []ReasoningResult{
+		toolCallResult(calls...),
+		{FinalAnswer: "done"},
+	}}
+	fctx := newFakeContext()
+
+	l := newTestLoop(t, model, newSleepyTools(delays), fctx)
+	if _, err := l.RunTurn(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The loop must only touch the context store after the barrier — the
+	// call sequence is identical to the sequential implementation's.
+	want := []string{"AppendUser", "Messages", "AppendAssistant", "AppendToolResults", "Messages", "AppendAssistant"}
+	got := fctx.calls()
+	if len(got) != len(want) {
+		t.Fatalf("context calls = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("context call[%d] = %q, want %q", i, got[i], want[i])
+		}
 	}
 }

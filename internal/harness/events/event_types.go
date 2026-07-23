@@ -24,4 +24,5 @@ type (
 	SubagentStoppedEvent       = core.SubagentStoppedEvent
 	TaskCreatedEvent           = core.TaskCreatedEvent
 	TaskCompletedEvent         = core.TaskCompletedEvent
+	ApprovalRequestedEvent     = core.ApprovalRequestedEvent
 )

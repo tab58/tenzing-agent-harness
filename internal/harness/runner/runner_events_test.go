@@ -45,9 +45,9 @@ type minimalAgent struct {
 	messages [][]common.Message
 }
 
-func (a *minimalAgent) GetCurrentModel() string                         { return "" }
-func (a *minimalAgent) UpdateStreamCallback(_ func(string))             {}
-func (a *minimalAgent) UpdateThinkingCallback(_ func(string))           {}
+func (a *minimalAgent) GetCurrentModel() string               { return "" }
+func (a *minimalAgent) UpdateStreamCallback(_ func(string))   {}
+func (a *minimalAgent) UpdateThinkingCallback(_ func(string)) {}
 
 func (a *minimalAgent) DoReasoning(_ context.Context, messages []common.Message, _ []string, _ []common.ToolDefinition) (ReasoningResult, error) {
 	a.mu.Lock()

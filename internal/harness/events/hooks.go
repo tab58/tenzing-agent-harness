@@ -24,6 +24,7 @@ type Hooks struct {
 	OnSubagentStopped       func(SubagentStoppedEvent)
 	OnTaskCreated           func(TaskCreatedEvent)
 	OnTaskCompleted         func(TaskCompletedEvent)
+	OnApprovalRequested     func(ApprovalRequestedEvent)
 }
 
 // StartHooks subscribes to bus with a buffer of 64 and dispatches each
@@ -126,6 +127,10 @@ func dispatch(ev Event, h Hooks) {
 	case TaskCompletedEvent:
 		if h.OnTaskCompleted != nil {
 			h.OnTaskCompleted(e)
+		}
+	case ApprovalRequestedEvent:
+		if h.OnApprovalRequested != nil {
+			h.OnApprovalRequested(e)
 		}
 	}
 }

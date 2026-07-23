@@ -11,6 +11,9 @@ package tenzing
 
 import (
 	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/extensions/budgets"
+	"github.com/tab58/tenzing-agent-harness/internal/extensions/mcpext"
+	"github.com/tab58/tenzing-agent-harness/internal/extensions/permissions"
 	"github.com/tab58/tenzing-agent-harness/internal/harness"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
@@ -48,7 +51,26 @@ var (
 	WithThinkingDeltaHandler  = harness.WithThinkingDeltaHandler
 	WithBlackboardDisabled    = harness.WithBlackboardDisabled
 	WithExtension             = harness.WithExtension
+	WithPermissionPolicy      = harness.WithPermissionPolicy
+	WithPermissionsDisabled   = harness.WithPermissionsDisabled
+	WithApprovalTimeout       = harness.WithApprovalTimeout
 )
+
+// Tool permission policy (default-on: code-executing/file-writing tools ask
+// for approval; opt out with WithPermissionsDisabled).
+type PermissionPolicy = permissions.Policy
+
+var DefaultPermissionPolicy = permissions.DefaultPolicy
+
+// Budget limits for WithBudgets; zero fields are unlimited.
+type BudgetLimits = budgets.Limits
+
+var WithBudgets = harness.WithBudgets
+
+// MCP server config for WithMCPServer (stdio transport).
+type MCPServerConfig = mcpext.ServerConfig
+
+var WithMCPServer = harness.WithMCPServer
 
 // Extension system: implement Extension plus any of the capability hook
 // interfaces below and register via WithExtension.
@@ -150,4 +172,5 @@ type (
 	SubagentStoppedEvent       = events.SubagentStoppedEvent
 	TaskCreatedEvent           = events.TaskCreatedEvent
 	TaskCompletedEvent         = events.TaskCompletedEvent
+	ApprovalRequestedEvent     = events.ApprovalRequestedEvent
 )
