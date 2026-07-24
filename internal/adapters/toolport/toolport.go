@@ -9,17 +9,16 @@ import (
 	"github.com/tab58/llm-providers/common"
 
 	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
 )
 
 type registryPort struct {
-	reg *tools.Registry
+	reg *Registry
 }
 
-// Wrap adapts a tools.Registry into a core.ToolPort. The Execute method
+// Wrap adapts a Registry into a core.ToolPort. The Execute method
 // converts the registry's (ToolResult, error) return into a single ToolResult
 // (error becomes IsError=true), and recovers panics into error results.
-func Wrap(reg *tools.Registry) core.ToolPort { return &registryPort{reg: reg} }
+func Wrap(reg *Registry) core.ToolPort { return &registryPort{reg: reg} }
 
 func (p *registryPort) BeginTurn(ctx context.Context) {}
 

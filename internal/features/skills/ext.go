@@ -1,9 +1,9 @@
-// Package skillsext surfaces the skills registry as a core.Extension: the
+// Ext surfaces the skills registry as a core.Extension: the
 // list_skills/load_skill tools via core.ToolProvider and the skills index
 // block via core.PromptContributor. The agent itself knows nothing about
 // skills — the composition root registers this extension and assembles the
 // system prompt from PromptFragments.
-package skillsext
+package skills
 
 import (
 	"fmt"
@@ -12,7 +12,6 @@ import (
 
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
 )
 
 const origin = "extension:skills"
@@ -24,10 +23,10 @@ var (
 )
 
 type Ext struct {
-	reg *skills.Registry
+	reg *Registry
 }
 
-func New(reg *skills.Registry) *Ext {
+func NewExt(reg *Registry) *Ext {
 	return &Ext{reg: reg}
 }
 
@@ -37,8 +36,8 @@ func (e *Ext) Name() string { return "skills" }
 // mount path through the composite ToolPort.
 func (e *Ext) Tools() []core.ToolSpec {
 	return []core.ToolSpec{
-		tooldef.SpecFromDefinition(skills.NewListSkillsTool(e.reg), origin),
-		tooldef.SpecFromDefinition(skills.NewLoadSkillTool(e.reg), origin),
+		tooldef.SpecFromDefinition(NewListSkillsTool(e.reg), origin),
+		tooldef.SpecFromDefinition(NewLoadSkillTool(e.reg), origin),
 	}
 }
 

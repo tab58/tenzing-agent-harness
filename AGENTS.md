@@ -34,7 +34,7 @@ Four layers, hexagonal dependency direction: **Core → Adapters → Extensions 
 | -------------------------------------------------------------- | ---------------------------------------- | ------------------------------------- |
 | Core (`internal/core/`)                                        | Domain types, port interfaces (`ModelPort`, `ToolPort`, `ContextPort`), FSM, events, extension/hook contracts, loop (`Loop`, `RunTurn`) | Everything outside `core` — adapters, extensions, harness, CLI |
 | Adapters (`internal/adapters/`)                                | Core port interfaces; concrete implementations (`contextstore`, `toolport.Composite`/`Wrap`) | Harness, CLI, sessions                |
-| Extensions (`internal/extensions/`, plus `subagent.SpawnExt`)  | Core capability interfaces (`ToolProvider`, `PromptContributor`, session/iteration/tool hooks) and whatever feature they wrap (skills registry, blackboard, subagent factory) | The loop's internals, other extensions |
+| Extensions (`internal/features/<name>/`, plus `subagent.SpawnExt`)  | Core capability interfaces (`ToolProvider`, `PromptContributor`, session/iteration/tool hooks) and whatever feature they wrap (skills registry, blackboard, subagent factory) | The loop's internals, other extensions |
 | Composition root (`harness.go`, `harness_options.go`, `llm.go`; `AgentRunner` facade) | Everything below: builds adapters, default + user extensions, the composite ToolPort, assembles the system prompt, wires one runner per loop | Tool implementations' internals       |
 | Agent (`internal/adapters/agent/agent.go`)                     | LLM provider, message types — stateless: receives the full message list and per-turn tool definitions on every `DoReasoning` call, returns the assistant message rather than storing it | Filesystem, processes, tools, skills, conversation history/compression |
 
@@ -44,13 +44,13 @@ One deliberate exception to "never import upward": `harness.New` imports `intern
 
 ### Blackboard REPL
 
-`internal/harness/blackboard/` hosts the sandboxed Python REPL subprocess machinery (`repl.go`, `bootstrap.py`) plus the `Querier` interface and its LLM-backed implementation (`querier.go`) — the model-facing `rlm` tool and its offload path have been removed — alongside the `Blackboard` that builds on it: one persistent REPL per harness, shared by the main agent and all subagents through the `repl` tool. A single mutex serializes all access; write-own-slot is enforced in code — `bb` is a guard dict and creating/replacing a top-level key other than the executing agent's slot raises `PermissionError` (reads are unrestricted; the trusted Go `Deposit` path bypasses the guard). The blackboard's namespace (`bb` guard dict, `peek`, `bb_grep`) is injected via a setup exec (no blackboard-specific logic in `bootstrap.py`); `bootstrap.py`'s only related feature is a transport-level stdout cap (100k chars).
+`internal/features/blackboard/` hosts the sandboxed Python REPL subprocess machinery (`repl.go`, `bootstrap.py`) plus the `Querier` interface and its LLM-backed implementation (`querier.go`) — the model-facing `rlm` tool and its offload path have been removed — alongside the `Blackboard` that builds on it: one persistent REPL per harness, shared by the main agent and all subagents through the `repl` tool. A single mutex serializes all access; write-own-slot is enforced in code — `bb` is a guard dict and creating/replacing a top-level key other than the executing agent's slot raises `PermissionError` (reads are unrestricted; the trusted Go `Deposit` path bypasses the guard). The blackboard's namespace (`bb` guard dict, `peek`, `bb_grep`) is injected via a setup exec (no blackboard-specific logic in `bootstrap.py`); `bootstrap.py`'s only related feature is a transport-level stdout cap (100k chars).
 
 Known limit: `llm_query` inside the blackboard holds the REPL lock for all agents while it runs; keep individual calls small and prefer `llm_batch` for fan-out work. If this hurts, the upgrade path is an async callback queue — don't reach for it speculatively.
 
 Cancellation or transport failure mid-call resets the blackboard (contents lost, lazily restarted empty); agents must tolerate missing slots.
 
-Registration is via `internal/extensions/blackboardext`: a `core.Extension` providing the `repl` tool (`core.ToolProvider`, wrapping the same REPL tool implementation) and closing the blackboard on `core.SessionEndHook` (run by `Harness.Shutdown` with a 5s timeout). The `*blackboard.Blackboard` is built at the composition root and shared — main gets `blackboardext.New(bb, "main")`, each subagent gets `New(bb, childID)`. Behavior unchanged.
+Registration is via `internal/features/blackboard/ext.go` (package `blackboard`): a `core.Extension` providing the `repl` tool (`core.ToolProvider`, wrapping the same REPL tool implementation) and closing the blackboard on `core.SessionEndHook` (run by `Harness.Shutdown` with a 5s timeout). The `*blackboard.Blackboard` is built at the composition root and shared — main gets `blackboard.NewExt(bb, "main")`, each subagent gets `NewExt(bb, childID)`. Behavior unchanged.
 
 ## Adding Tools
 
@@ -80,11 +80,11 @@ If the tool needs external state (skill registry, task graph), define a narrow i
 2. Body is loaded lazily via `load_skill` tool — no registration code needed
 3. Skill metadata is discovered at startup from frontmatter only
 
-UX unchanged; new plumbing: skills surface through `internal/extensions/skillsext` — a `core.Extension` providing the `list_skills`/`load_skill` tools (`core.ToolProvider`) and the "Available skills…" system-prompt index (`core.PromptContributor`, appended by the composition root). The agent knows nothing about skills. The same extension instance is shared with subagents via the factory config (read-only registry).
+UX unchanged; new plumbing: skills surface through `internal/features/skills/ext.go` (package `skills`) — a `core.Extension` providing the `list_skills`/`load_skill` tools (`core.ToolProvider`) and the "Available skills…" system-prompt index (`core.PromptContributor`, appended by the composition root). The agent knows nothing about skills. The same extension instance is shared with subagents via the factory config (read-only registry).
 
 ## MCP Servers
 
-`harness.WithMCPServer(mcpext.ServerConfig{Name, Command, Args, Env})` (repeat per server; re-exported as `tenzing.WithMCPServer`/`tenzing.MCPServerConfig`) mounts an external MCP server over stdio. The `mcpext` extension (`internal/extensions/mcpext`) connects on session start (a dead server logs a warning and serves zero tools — deliberately NOT load-bearing), closes on session end, and implements `core.DynamicToolSource`: tools are re-listed at each turn's `BeginTurn` with a 30s cache and surface as `mcp__<server>__<tool>` with `Origin: "mcp:<server>"`. Trust: the default permission policy's `AskOrigins: ["mcp:"]` escalates every MCP-origin tool to approval unless its full name is explicitly allow-listed. SSE/HTTP transports and `listChanged` subscriptions are follow-ons.
+`harness.WithMCPServer(mcp.ServerConfig{Name, Command, Args, Env})` (repeat per server; re-exported as `tenzing.WithMCPServer`/`tenzing.MCPServerConfig`) mounts an external MCP server over stdio. The `mcp` extension (`internal/features/mcp`) connects on session start (a dead server logs a warning and serves zero tools — deliberately NOT load-bearing), closes on session end, and implements `core.DynamicToolSource`: tools are re-listed at each turn's `BeginTurn` with a 30s cache and surface as `mcp__<server>__<tool>` with `Origin: "mcp:<server>"`. Trust: the default permission policy's `AskOrigins: ["mcp:"]` escalates every MCP-origin tool to approval unless its full name is explicitly allow-listed. SSE/HTTP transports and `listChanged` subscriptions are follow-ons.
 
 ## Providers
 
@@ -130,10 +130,10 @@ All non-invariant runner behavior flows through `runner.AgentRunnerOption` funct
 
 System reminders (todo state, etc.) no longer flow through the runner. They
 are injected each iteration by `core.Extension`s implementing
-`core.BeforeIterationHook` (e.g. `internal/extensions/reminders`), registered
+`core.BeforeIterationHook` (e.g. `internal/features/reminders`), registered
 on `*core.Extensions` and passed to the runner via `runner.WithExtensions`.
 `harness.New` wires the default extension set — reminders, skills
-(`skillsext`), blackboard (`blackboardext`, unless disabled), and subagents
+(`skills.Ext`), blackboard (`blackboard.Ext`, unless disabled), and subagents
 (`subagent.SpawnExt`, when depth > 0) — then appends caller extensions from
 `harness.WithExtension` (also re-exported as `tenzing.WithExtension` with the
 `Extension`/hook interfaces and `ToolSpec`).
@@ -152,19 +152,19 @@ The FSM lives in `internal/core/fsm.go` and is per-Loop instance — subagents a
 | ------------------------ | ----------------------------------------------------- |
 | Core domain (types/FSM/events/loop/ports) | `internal/core/` |
 | Port adapters (contextstore, toolport) | `internal/adapters/` |
-| Extensions                | `internal/extensions/<name>/`                          |
+| Extensions                | `internal/features/<name>/`                          |
 | Tool authoring contract  | `internal/core/tooldef/tooldef.go`                    |
 | Built-in tool implementations | `internal/features/builtins/tool_*.go`          |
 | Provider implementations | external: `github.com/tab58/llm-providers`            |
-| Prompt templates         | `internal/harness/prompts/*.gotmpl`                   |
-| REPL subprocess machinery | `internal/harness/blackboard/` (Python REPL, Querier) |
+| Prompt templates         | `internal/features/prompts/*.gotmpl`                   |
+| REPL subprocess machinery | `internal/features/blackboard/` (Python REPL, Querier) |
 | Context management       | `internal/adapters/contextstore/` (implements `core.ContextPort`: history, tool_use/tool_result pairing, compression) |
 | App (HTTP/SSE server)    | `cmd/app/`                                            |
 | Public API facade        | `pkg/tenzing/` (aliases over `internal/harness`)      |
 | Test files               | Same directory as source, `*_test.go`                 |
 | Shared test helpers      | `**/testutil_test.go`                                 |
 | Sub-agent system         | `internal/harness/subagent/`                          |
-| Blackboard (shared REPL)  | `internal/harness/blackboard/` (persistent REPL, repl tool) |
+| Blackboard (shared REPL)  | `internal/features/blackboard/` (persistent REPL, repl tool) |
 | Event system              | `internal/core/` (vocabulary: `Event`, `EventType`, `BaseEvent`, `Emitter`); `internal/adapters/eventbus/` (`EventBus`, `Hooks`) |
 | Embedded assets          | Adjacent to consumer (e.g. `blackboard/bootstrap.py`) |
 | Nexus (input channels)   | `internal/app/nexus/`                                 |

@@ -6,9 +6,9 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
-	"github.com/tab58/tenzing-agent-harness/internal/extensions/budgets"
-	"github.com/tab58/tenzing-agent-harness/internal/extensions/mcpext"
-	"github.com/tab58/tenzing-agent-harness/internal/extensions/permissions"
+	"github.com/tab58/tenzing-agent-harness/internal/features/budgets"
+	"github.com/tab58/tenzing-agent-harness/internal/features/mcp"
+	"github.com/tab58/tenzing-agent-harness/internal/features/permissions"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 
 	"github.com/tab58/llm-providers/common"
@@ -106,7 +106,7 @@ type harnessOptions struct {
 
 	// mcpServers are external MCP servers to mount as dynamic tool sources.
 	// The mcp extension is registered only when at least one is configured.
-	mcpServers []mcpext.ServerConfig
+	mcpServers []mcp.ServerConfig
 }
 
 func defaultHarnessOptions() *harnessOptions {
@@ -299,6 +299,6 @@ func WithBudgets(l budgets.Limits) HarnessOption {
 // tool source: its tools appear as "mcp__<server>__<tool>" and are re-listed
 // at each turn boundary. MCP-origin tools require approval under the default
 // permission policy. Repeat the option per server.
-func WithMCPServer(cfg mcpext.ServerConfig) HarnessOption {
+func WithMCPServer(cfg mcp.ServerConfig) HarnessOption {
 	return func(o *harnessOptions) { o.mcpServers = append(o.mcpServers, cfg) }
 }

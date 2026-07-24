@@ -8,7 +8,6 @@ import (
 
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
 )
 
 // fakeTool implements tooldef.Definition for testing.
@@ -70,7 +69,7 @@ func TestExecute(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reg := tools.NewRegistry("")
+			reg := NewRegistry("")
 			if err := reg.Register(tt.tool); err != nil {
 				t.Fatal(err)
 			}
@@ -92,7 +91,7 @@ func TestExecute(t *testing.T) {
 }
 
 func TestOrigin(t *testing.T) {
-	reg := tools.NewRegistry("")
+	reg := NewRegistry("")
 	port := Wrap(reg)
 	if got := port.Origin("anything"); got != "native" {
 		t.Errorf("Origin = %q, want %q", got, "native")

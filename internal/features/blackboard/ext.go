@@ -1,17 +1,16 @@
-// Package blackboardext surfaces the shared blackboard REPL as a
-// core.Extension: the `repl` tool via core.ToolProvider and lifecycle
-// shutdown via core.SessionEndHook. The *blackboard.Blackboard instance is
-// constructed at the composition root and SHARED — the main agent and each
-// subagent get their own Ext wrapping the same blackboard under their own
-// agent ID (write-own-slot enforcement lives in the blackboard itself).
-package blackboardext
+// Ext surfaces the shared blackboard REPL as a core.Extension: the `repl`
+// tool via core.ToolProvider and lifecycle shutdown via core.SessionEndHook.
+// The *Blackboard instance is constructed at the composition root and
+// SHARED — the main agent and each subagent get their own Ext wrapping the
+// same blackboard under their own agent ID (write-own-slot enforcement
+// lives in the blackboard itself).
+package blackboard
 
 import (
 	"context"
 
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/blackboard"
 )
 
 const origin = "extension:blackboard"
@@ -23,11 +22,11 @@ var (
 )
 
 type Ext struct {
-	bb      *blackboard.Blackboard
+	bb      *Blackboard
 	agentID string
 }
 
-func New(bb *blackboard.Blackboard, agentID string) *Ext {
+func NewExt(bb *Blackboard, agentID string) *Ext {
 	return &Ext{bb: bb, agentID: agentID}
 }
 
@@ -37,7 +36,7 @@ func (e *Ext) Name() string { return "blackboard" }
 // mount path through the composite ToolPort.
 func (e *Ext) Tools() []core.ToolSpec {
 	return []core.ToolSpec{
-		tooldef.SpecFromDefinition(blackboard.NewREPLTool(e.bb, e.agentID), origin),
+		tooldef.SpecFromDefinition(NewREPLTool(e.bb, e.agentID), origin),
 	}
 }
 

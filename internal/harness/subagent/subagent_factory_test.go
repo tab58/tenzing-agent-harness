@@ -8,9 +8,9 @@ import (
 	"testing"
 
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/blackboard"
+	"github.com/tab58/tenzing-agent-harness/internal/features/blackboard"
+	"github.com/tab58/tenzing-agent-harness/internal/features/todo"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/todo"
 
 	"github.com/tab58/llm-providers/common"
 )

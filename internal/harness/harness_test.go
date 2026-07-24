@@ -10,7 +10,7 @@ import (
 
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/prompts"
+	"github.com/tab58/tenzing-agent-harness/internal/features/prompts"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 
 	"github.com/tab58/llm-providers/common"

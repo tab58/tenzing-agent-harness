@@ -1,4 +1,4 @@
-package mcpext
+package mcp
 
 import (
 	"context"

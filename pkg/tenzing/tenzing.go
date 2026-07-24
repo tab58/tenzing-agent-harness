@@ -13,9 +13,9 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
-	"github.com/tab58/tenzing-agent-harness/internal/extensions/budgets"
-	"github.com/tab58/tenzing-agent-harness/internal/extensions/mcpext"
-	"github.com/tab58/tenzing-agent-harness/internal/extensions/permissions"
+	"github.com/tab58/tenzing-agent-harness/internal/features/budgets"
+	"github.com/tab58/tenzing-agent-harness/internal/features/mcp"
+	"github.com/tab58/tenzing-agent-harness/internal/features/permissions"
 	"github.com/tab58/tenzing-agent-harness/internal/harness"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 )
@@ -68,7 +68,7 @@ type BudgetLimits = budgets.Limits
 var WithBudgets = harness.WithBudgets
 
 // MCP server config for WithMCPServer (stdio transport).
-type MCPServerConfig = mcpext.ServerConfig
+type MCPServerConfig = mcp.ServerConfig
 
 var WithMCPServer = harness.WithMCPServer
 

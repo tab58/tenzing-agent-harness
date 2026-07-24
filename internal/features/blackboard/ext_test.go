@@ -1,17 +1,15 @@
-package blackboardext
+package blackboard
 
 import (
 	"context"
 	"strings"
 	"testing"
-
-	"github.com/tab58/tenzing-agent-harness/internal/harness/blackboard"
 )
 
 func TestToolsReturnsREPLSpec(t *testing.T) {
-	bb := blackboard.New(blackboard.Config{WorkingDir: t.TempDir()})
+	bb := New(Config{WorkingDir: t.TempDir()})
 	t.Cleanup(func() { _ = bb.Close() })
-	ext := New(bb, "main")
+	ext := NewExt(bb, "main")
 
 	specs := ext.Tools()
 	if len(specs) != 1 {
@@ -26,8 +24,8 @@ func TestToolsReturnsREPLSpec(t *testing.T) {
 }
 
 func TestSessionEndClosesBlackboard(t *testing.T) {
-	bb := blackboard.New(blackboard.Config{WorkingDir: t.TempDir()})
-	ext := New(bb, "main")
+	bb := New(Config{WorkingDir: t.TempDir()})
+	ext := NewExt(bb, "main")
 
 	if err := ext.SessionEnd(context.Background()); err != nil {
 		t.Fatalf("SessionEnd: %v", err)

@@ -12,7 +12,6 @@ import (
 	"github.com/tab58/llm-providers/common"
 
 	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
 )
 
 // Composite is the harness ToolPort: it mounts the native tool registry,
@@ -32,7 +31,7 @@ type Composite struct {
 // NewComposite builds a Composite from the native registry and the registered
 // extensions. A static extension tool whose name collides with a native tool
 // (or another extension's) is a construction error.
-func NewComposite(native *tools.Registry, exts *core.Extensions) (*Composite, error) {
+func NewComposite(native *Registry, exts *core.Extensions) (*Composite, error) {
 	var static []core.ToolSpec
 
 	// native tools: wrap into ToolSpecs closing over the registry. The
@@ -70,7 +69,7 @@ func NewComposite(native *tools.Registry, exts *core.Extensions) (*Composite, er
 
 // nativeExecute returns the Execute closure for registry-backed tools,
 // converting the registry's (ToolResult, error) into a single core.ToolResult.
-func nativeExecute(reg *tools.Registry) func(ctx context.Context, call core.ToolCall) core.ToolResult {
+func nativeExecute(reg *Registry) func(ctx context.Context, call core.ToolCall) core.ToolResult {
 	return func(ctx context.Context, call core.ToolCall) core.ToolResult {
 		res, err := reg.Execute(ctx, call.Name, call.Input)
 		if err != nil {

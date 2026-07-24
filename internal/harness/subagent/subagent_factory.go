@@ -10,13 +10,11 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/contextstore"
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/internal/extensions/blackboardext"
-	"github.com/tab58/tenzing-agent-harness/internal/extensions/budgets"
-	"github.com/tab58/tenzing-agent-harness/internal/extensions/reminders"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/blackboard"
+	"github.com/tab58/tenzing-agent-harness/internal/features/blackboard"
+	"github.com/tab58/tenzing-agent-harness/internal/features/budgets"
+	"github.com/tab58/tenzing-agent-harness/internal/features/reminders"
+	"github.com/tab58/tenzing-agent-harness/internal/features/todo"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/todo"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
 
 	"github.com/tab58/llm-providers/common"
 )
@@ -238,7 +236,7 @@ func (f *SubAgentFactory) childExtensions(agentID string, todoFile *todo.TodoFil
 		exts = append(exts, f.skillsExt)
 	}
 	if f.blackboard != nil {
-		exts = append(exts, blackboardext.New(f.blackboard, agentID))
+		exts = append(exts, blackboard.NewExt(f.blackboard, agentID))
 	}
 	if childDepth < f.maxDepth {
 		childFactory := &SubAgentFactory{
@@ -258,6 +256,6 @@ func (f *SubAgentFactory) childExtensions(agentID string, todoFile *todo.TodoFil
 	return core.NewExtensions(exts...)
 }
 
-func (f *SubAgentFactory) buildChildToolRegistry(agentID string) *tools.Registry {
-	return tools.NewRegistry(f.cwd)
+func (f *SubAgentFactory) buildChildToolRegistry(agentID string) *toolport.Registry {
+	return toolport.NewRegistry(f.cwd)
 }

@@ -1,4 +1,4 @@
-package skillsext
+package skills
 
 import (
 	"context"
@@ -8,10 +8,9 @@ import (
 	"testing"
 
 	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
 )
 
-func newTestRegistry(t *testing.T) *skills.Registry {
+func newTestRegistry(t *testing.T) *Registry {
 	t.Helper()
 	dir := t.TempDir()
 	skillDir := filepath.Join(dir, "goskill")
@@ -22,13 +21,13 @@ func newTestRegistry(t *testing.T) *skills.Registry {
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	reg := skills.NewRegistry()
+	reg := NewRegistry()
 	reg.RegisterSkillDir(dir)
 	return reg
 }
 
 func TestPromptFragmentListsSkills(t *testing.T) {
-	ext := New(newTestRegistry(t))
+	ext := NewExt(newTestRegistry(t))
 	frag := ext.PromptFragment()
 	if !strings.Contains(frag, "Available skills") {
 		t.Errorf("fragment missing header: %q", frag)
@@ -39,14 +38,14 @@ func TestPromptFragmentListsSkills(t *testing.T) {
 }
 
 func TestPromptFragmentEmptyRegistry(t *testing.T) {
-	ext := New(skills.NewRegistry())
+	ext := NewExt(NewRegistry())
 	if frag := ext.PromptFragment(); frag != "" {
 		t.Errorf("expected empty fragment, got %q", frag)
 	}
 }
 
 func TestToolsAreListAndLoad(t *testing.T) {
-	ext := New(newTestRegistry(t))
+	ext := NewExt(newTestRegistry(t))
 	specs := ext.Tools()
 	if len(specs) != 2 {
 		t.Fatalf("expected 2 tool specs, got %d", len(specs))

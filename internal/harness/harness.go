@@ -9,25 +9,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/agent"
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/contextstore"
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
-	"github.com/tab58/tenzing-agent-harness/internal/adapters/agent"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/internal/extensions/blackboardext"
-	"github.com/tab58/tenzing-agent-harness/internal/extensions/budgets"
-	"github.com/tab58/tenzing-agent-harness/internal/extensions/mcpext"
-	"github.com/tab58/tenzing-agent-harness/internal/extensions/permissions"
-	"github.com/tab58/tenzing-agent-harness/internal/extensions/reminders"
-	"github.com/tab58/tenzing-agent-harness/internal/extensions/skillsext"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/advisor"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/blackboard"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/prompts"
+	"github.com/tab58/tenzing-agent-harness/internal/features/advisor"
+	"github.com/tab58/tenzing-agent-harness/internal/features/blackboard"
+	"github.com/tab58/tenzing-agent-harness/internal/features/budgets"
+	"github.com/tab58/tenzing-agent-harness/internal/features/mcp"
+	"github.com/tab58/tenzing-agent-harness/internal/features/permissions"
+	"github.com/tab58/tenzing-agent-harness/internal/features/prompts"
+	"github.com/tab58/tenzing-agent-harness/internal/features/reminders"
+	"github.com/tab58/tenzing-agent-harness/internal/features/skills"
+	"github.com/tab58/tenzing-agent-harness/internal/features/todo"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/subagent"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/todo"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
 
 	"github.com/tab58/llm-providers/common"
 )
@@ -116,11 +113,11 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 	for _, skillDir := range o.skillDirs {
 		skillsRegistry.RegisterSkillDir(skillDir)
 	}
-	skillsExt := skillsext.New(skillsRegistry)
+	skillsExt := skills.NewExt(skillsRegistry)
 
 	// The blackboard instance lives at the composition root and is SHARED:
 	// the main agent and every subagent wrap the same instance in their own
-	// blackboardext under their own agent ID.
+	// blackboard.Ext under their own agent ID.
 	var bb *blackboard.Blackboard
 	if !o.blackboardDisabled {
 		bb = blackboard.New(blackboard.Config{
@@ -156,10 +153,10 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		defaultExts = append(defaultExts, budgets.New(o.budgetLimits))
 	}
 	if len(o.mcpServers) > 0 {
-		defaultExts = append(defaultExts, mcpext.New(o.mcpServers...))
+		defaultExts = append(defaultExts, mcp.New(o.mcpServers...))
 	}
 	if bb != nil {
-		defaultExts = append(defaultExts, blackboardext.New(bb, "main"))
+		defaultExts = append(defaultExts, blackboard.NewExt(bb, "main"))
 	}
 	if o.subagentMaxDepth > 0 {
 		subagentLLM, err := llms.get(subagentModel)
@@ -181,7 +178,7 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 	}
 	allExts := core.NewExtensions(append(defaultExts, o.extensions...)...)
 
-	toolRegistry := tools.NewRegistry(cwd)
+	toolRegistry := toolport.NewRegistry(cwd)
 	toolRegistry.RegisterFromProvider(todoFile)
 
 	// Memory: the harness owns persistence. Summaries arrive on the event

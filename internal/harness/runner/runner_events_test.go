@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/contextstore"
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
 
 	"github.com/tab58/llm-providers/common"
 )
@@ -88,7 +88,7 @@ func TestRunnerEmitsTurnAndLoopEvents(t *testing.T) {
 	r, err := NewAgentRunner(
 		agent,
 		WithEmitter(collector),
-		WithToolRegistry(tools.NewRegistry("")),
+		WithToolRegistry(toolport.NewRegistry("")),
 		WithSystemPrompt("test"),
 		WithContextStore(newTestContextStore()),
 	)
@@ -127,7 +127,7 @@ func TestRunnerEmitsTurnAndLoopEvents(t *testing.T) {
 func TestRunnerEmitsToolEvents(t *testing.T) {
 	collector := &eventCollector{}
 
-	registry := tools.NewRegistry("")
+	registry := toolport.NewRegistry("")
 	registry.Register(&echoTool{})
 
 	agent := &minimalAgent{steps: []ReasoningResult{
@@ -169,7 +169,7 @@ func TestRunnerEmitsToolEvents(t *testing.T) {
 func TestRunnerExecutesAllToolCallsInBatch(t *testing.T) {
 	collector := &eventCollector{}
 
-	registry := tools.NewRegistry("")
+	registry := toolport.NewRegistry("")
 	registry.Register(&echoTool{})
 
 	agent := &minimalAgent{steps: []ReasoningResult{
@@ -277,7 +277,7 @@ func (denyExt) OnToolCall(ctx context.Context, tcc *core.ToolCallContext) error 
 func TestToolCallDeniedByExtension(t *testing.T) {
 	collector := &eventCollector{}
 
-	registry := tools.NewRegistry("")
+	registry := toolport.NewRegistry("")
 	tool := &countingEchoTool{}
 	registry.Register(tool)
 

@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/internal/extensions/reminders"
+	"github.com/tab58/tenzing-agent-harness/internal/features/reminders"
+	"github.com/tab58/tenzing-agent-harness/internal/features/snapshot"
+	"github.com/tab58/tenzing-agent-harness/internal/features/todo"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/snapshot"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/todo"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
 
 	"github.com/tab58/llm-providers/common"
 )
@@ -30,7 +30,7 @@ func TestIntegration_ReadTool(t *testing.T) {
 	content := "line one\nline two\nline three\n"
 	filePath := seedFile(t, workDir, "sample.txt", content)
 
-	registry := tools.NewRegistry("")
+	registry := toolport.NewRegistry("")
 
 	result, err := registry.Execute(context.Background(), "Read", jsonInput(map[string]any{
 		"file_path": filePath,
@@ -49,7 +49,7 @@ func TestIntegration_ReadTool(t *testing.T) {
 
 func TestIntegration_ReadTool_MissingFile(t *testing.T) {
 	workDir := t.TempDir()
-	registry := tools.NewRegistry("")
+	registry := toolport.NewRegistry("")
 
 	result, err := registry.Execute(context.Background(), "Read", jsonInput(map[string]any{
 		"file_path": filepath.Join(workDir, "nope.txt"),
@@ -71,7 +71,7 @@ func TestIntegration_WriteAndRevert(t *testing.T) {
 	writeTool := snapshot.NewWriteTool(snapshots)
 	revertTool := snapshot.NewRevertTool(snapshots)
 
-	registry := tools.NewRegistry("")
+	registry := toolport.NewRegistry("")
 	registry.Register(writeTool)
 	registry.Register(revertTool)
 
@@ -106,7 +106,7 @@ func TestIntegration_WriteAndRevert_NoSnapshot(t *testing.T) {
 	snapshots := snapshot.NewSnapshotStore()
 	revertTool := snapshot.NewRevertTool(snapshots)
 
-	registry := tools.NewRegistry("")
+	registry := toolport.NewRegistry("")
 	registry.Register(revertTool)
 
 	result, err := registry.Execute(context.Background(), "Revert", jsonInput(map[string]any{
@@ -125,7 +125,7 @@ func TestIntegration_EditTool(t *testing.T) {
 	workDir := t.TempDir()
 	filePath := seedFile(t, workDir, "editable.txt", "hello world")
 
-	registry := tools.NewRegistry("")
+	registry := toolport.NewRegistry("")
 
 	result, err := registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
 		"file_path":  filePath,
@@ -145,7 +145,7 @@ func TestIntegration_EditTool_NotFound(t *testing.T) {
 	workDir := t.TempDir()
 	filePath := seedFile(t, workDir, "editable.txt", "hello world")
 
-	registry := tools.NewRegistry("")
+	registry := toolport.NewRegistry("")
 
 	result, err := registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
 		"file_path":  filePath,
@@ -164,7 +164,7 @@ func TestIntegration_EditTool_NotUnique(t *testing.T) {
 	workDir := t.TempDir()
 	filePath := seedFile(t, workDir, "editable.txt", "aaa bbb aaa")
 
-	registry := tools.NewRegistry("")
+	registry := toolport.NewRegistry("")
 
 	result, err := registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
 		"file_path":  filePath,
@@ -184,7 +184,7 @@ func TestIntegration_EditTool_ReplaceAll(t *testing.T) {
 	workDir := t.TempDir()
 	filePath := seedFile(t, workDir, "editable.txt", "aaa bbb aaa")
 
-	registry := tools.NewRegistry("")
+	registry := toolport.NewRegistry("")
 
 	result, err := registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
 		"file_path":   filePath,
@@ -210,7 +210,7 @@ func TestIntegration_WriteEditRevert_FullCycle(t *testing.T) {
 	writeTool := snapshot.NewWriteTool(snapshots)
 	revertTool := snapshot.NewRevertTool(snapshots)
 
-	registry := tools.NewRegistry("")
+	registry := toolport.NewRegistry("")
 	registry.Register(writeTool)
 	registry.Register(revertTool)
 
@@ -261,7 +261,7 @@ func TestIntegration_ReadEditRevert_ThroughLoop(t *testing.T) {
 		finalStep("reverted"),
 	)
 
-	registry := tools.NewRegistry("")
+	registry := toolport.NewRegistry("")
 	registry.Register(snapshot.NewWriteTool(snapshots))
 	registry.Register(snapshot.NewRevertTool(snapshots))
 
@@ -295,7 +295,7 @@ func TestIntegration_ReadEditRevert_ThroughLoop(t *testing.T) {
 func TestIntegration_FinalAnswerOnly(t *testing.T) {
 	agent := newScriptedAgent(finalStep("direct answer"))
 
-	registry := tools.NewRegistry("")
+	registry := toolport.NewRegistry("")
 	runner, err := runner.NewAgentRunner(
 		agent,
 		runner.WithToolRegistry(registry),
@@ -319,7 +319,7 @@ func TestIntegration_FinalAnswerOnly(t *testing.T) {
 func TestIntegration_ContextCanceled(t *testing.T) {
 	agent := newScriptedAgent(finalStep("should not reach"))
 
-	registry := tools.NewRegistry("")
+	registry := toolport.NewRegistry("")
 	runner, err := runner.NewAgentRunner(
 		agent,
 		runner.WithToolRegistry(registry),
@@ -344,7 +344,7 @@ func TestIntegration_UnknownTool(t *testing.T) {
 		toolStep("nonexistent_tool", "{}"),
 	)
 
-	registry := tools.NewRegistry("")
+	registry := toolport.NewRegistry("")
 	runner, err := runner.NewAgentRunner(
 		agent,
 		runner.WithToolRegistry(registry),
@@ -379,7 +379,7 @@ func TestIntegration_MultipleToolCalls(t *testing.T) {
 		finalStep("read 3 files"),
 	)
 
-	registry := tools.NewRegistry("")
+	registry := toolport.NewRegistry("")
 
 	r, err := runner.NewAgentRunner(
 		agent,
@@ -448,7 +448,7 @@ func TestIntegration_ToolHookCalled(t *testing.T) {
 	)
 
 	collector := &testEventCollector{}
-	registry := tools.NewRegistry("")
+	registry := toolport.NewRegistry("")
 
 	r, err := runner.NewAgentRunner(
 		agent,
@@ -481,7 +481,7 @@ func TestIntegration_ToolHookCalled(t *testing.T) {
 func TestTodoRemindersScopedPerRunner(t *testing.T) {
 	newTodoRunner := func(store *todo.TodoFile, agent *ScriptedAgent) *runner.AgentRunner {
 		t.Helper()
-		registry := tools.NewRegistry("")
+		registry := toolport.NewRegistry("")
 		registry.RegisterFromProvider(store)
 		exts := core.NewExtensions(reminders.New(store.FormatReminder))
 		r, err := runner.NewAgentRunner(

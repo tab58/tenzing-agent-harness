@@ -1,11 +1,11 @@
-// Package mcpext mounts external MCP servers as a core.DynamicToolSource:
+// Package mcp mounts external MCP servers as a core.DynamicToolSource:
 // each configured server's tools appear as "mcp__<server>__<tool>" with
 // Origin "mcp:<server>", re-listed at each turn boundary (with a short
 // cache). Connections are opened on SessionStart and closed on SessionEnd.
 //
 // Tool-list change notifications (listChanged subscription) are a follow-on;
 // v1 polls ListTools through the CurrentTools cache below.
-package mcpext
+package mcp
 
 import (
 	"context"

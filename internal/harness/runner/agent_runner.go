@@ -9,8 +9,7 @@ import (
 
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/prompts"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
+	"github.com/tab58/tenzing-agent-harness/internal/features/prompts"
 )
 
 // AgentRunner is a thin facade over core.Loop. It owns construction-time
@@ -25,7 +24,7 @@ type AgentRunner struct {
 
 type agentRunnerOptions struct {
 	id              string
-	toolRegistry    *tools.Registry
+	toolRegistry    *toolport.Registry
 	toolPort        core.ToolPort
 	contextStore    core.ContextPort
 	onTextDelta     func(string)
@@ -75,7 +74,7 @@ func WithSystemPrompt(prompt string) AgentRunnerOption {
 	}
 }
 
-func WithToolRegistry(registry *tools.Registry) AgentRunnerOption {
+func WithToolRegistry(registry *toolport.Registry) AgentRunnerOption {
 	return func(o *agentRunnerOptions) {
 		o.toolRegistry = registry
 	}
