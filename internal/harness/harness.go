@@ -12,7 +12,7 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/contextstore"
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
-	"github.com/tab58/tenzing-agent-harness/internal/agent"
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/agent"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/blackboardext"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/budgets"
