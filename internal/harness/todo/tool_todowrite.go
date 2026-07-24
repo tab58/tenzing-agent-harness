@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 )
 
@@ -97,8 +97,8 @@ func (t *TodoWriteTool) Execute(ctx context.Context, exctx tooldef.ExecutionCont
 
 	if t.file.emitter != nil {
 		for _, task := range tasks {
-			t.file.emitter.Emit(events.TaskCreatedEvent{
-				BaseEvent:   events.NewBaseEvent(events.EventTaskCreated, ""),
+			t.file.emitter.Emit(core.TaskCreatedEvent{
+				BaseEvent:   core.NewBaseEvent(core.EventTaskCreated, ""),
 				TaskID:      task.ID,
 				Description: task.Description,
 			})

@@ -10,12 +10,12 @@
 package tenzing
 
 import (
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/budgets"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/mcpext"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/permissions"
 	"github.com/tab58/tenzing-agent-harness/internal/harness"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 )
@@ -142,35 +142,35 @@ const (
 
 // Event system, for WithEventBus / WithHooks consumers.
 type (
-	Event    = events.Event
-	EventBus = events.EventBus
-	Hooks    = events.Hooks
+	Event    = core.Event
+	EventBus = eventbus.EventBus
+	Hooks    = eventbus.Hooks
 )
 
-var NewEventBus = events.NewEventBus
+var NewEventBus = eventbus.NewEventBus
 
 // Typed events delivered to Hooks callbacks and EventBus subscribers.
 type (
-	SessionStartedEvent        = events.SessionStartedEvent
-	SessionEndedEvent          = events.SessionEndedEvent
-	TurnStartedEvent           = events.TurnStartedEvent
-	TurnCompletedEvent         = events.TurnCompletedEvent
-	LoopStartedEvent           = events.LoopStartedEvent
-	LoopStoppedEvent           = events.LoopStoppedEvent
-	ReasoningStartedEvent      = events.ReasoningStartedEvent
-	ReasoningFinishedEvent     = events.ReasoningFinishedEvent
-	ToolExecutionStartedEvent  = events.ToolExecutionStartedEvent
-	ToolExecutionFinishedEvent = events.ToolExecutionFinishedEvent
-	LLMResponseEvent           = events.LLMResponseEvent
-	ToolSucceededEvent         = events.ToolSucceededEvent
-	ToolFailedEvent            = events.ToolFailedEvent
-	ToolProgressEvent          = events.ToolProgressEvent
-	ContextCompressingEvent    = events.ContextCompressingEvent
-	ContextCompressedEvent     = events.ContextCompressedEvent
-	ErrorEvent                 = events.ErrorEvent
-	SubagentStartedEvent       = events.SubagentStartedEvent
-	SubagentStoppedEvent       = events.SubagentStoppedEvent
-	TaskCreatedEvent           = events.TaskCreatedEvent
-	TaskCompletedEvent         = events.TaskCompletedEvent
-	ApprovalRequestedEvent     = events.ApprovalRequestedEvent
+	SessionStartedEvent        = core.SessionStartedEvent
+	SessionEndedEvent          = core.SessionEndedEvent
+	TurnStartedEvent           = core.TurnStartedEvent
+	TurnCompletedEvent         = core.TurnCompletedEvent
+	LoopStartedEvent           = core.LoopStartedEvent
+	LoopStoppedEvent           = core.LoopStoppedEvent
+	ReasoningStartedEvent      = core.ReasoningStartedEvent
+	ReasoningFinishedEvent     = core.ReasoningFinishedEvent
+	ToolExecutionStartedEvent  = core.ToolExecutionStartedEvent
+	ToolExecutionFinishedEvent = core.ToolExecutionFinishedEvent
+	LLMResponseEvent           = core.LLMResponseEvent
+	ToolSucceededEvent         = core.ToolSucceededEvent
+	ToolFailedEvent            = core.ToolFailedEvent
+	ToolProgressEvent          = core.ToolProgressEvent
+	ContextCompressingEvent    = core.ContextCompressingEvent
+	ContextCompressedEvent     = core.ContextCompressedEvent
+	ErrorEvent                 = core.ErrorEvent
+	SubagentStartedEvent       = core.SubagentStartedEvent
+	SubagentStoppedEvent       = core.SubagentStoppedEvent
+	TaskCreatedEvent           = core.TaskCreatedEvent
+	TaskCompletedEvent         = core.TaskCompletedEvent
+	ApprovalRequestedEvent     = core.ApprovalRequestedEvent
 )

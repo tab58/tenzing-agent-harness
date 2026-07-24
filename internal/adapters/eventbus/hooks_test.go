@@ -1,19 +1,21 @@
-package events
+package eventbus
 
 import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 )
 
 func TestStartHooksDispatchesMatchingEvent(t *testing.T) {
 	bus := NewEventBus()
 	defer bus.Close()
 
-	var got LoopStartedEvent
+	var got core.LoopStartedEvent
 	var mu sync.Mutex
 	hooks := Hooks{
-		OnLoopStarted: func(ev LoopStartedEvent) {
+		OnLoopStarted: func(ev core.LoopStartedEvent) {
 			mu.Lock()
 			got = ev
 			mu.Unlock()
@@ -22,8 +24,8 @@ func TestStartHooksDispatchesMatchingEvent(t *testing.T) {
 
 	StartHooks(bus, hooks)
 
-	bus.Emit(LoopStartedEvent{
-		BaseEvent: NewBaseEvent(EventLoopStarted, "r1"),
+	bus.Emit(core.LoopStartedEvent{
+		BaseEvent: core.NewBaseEvent(core.EventLoopStarted, "r1"),
 		Input:     "test-input",
 	})
 
@@ -43,7 +45,7 @@ func TestStartHooksSkipsNilHooks(t *testing.T) {
 	StartHooks(bus, Hooks{})
 
 	// should not panic
-	bus.Emit(LoopStartedEvent{BaseEvent: NewBaseEvent(EventLoopStarted, "r1")})
+	bus.Emit(core.LoopStartedEvent{BaseEvent: core.NewBaseEvent(core.EventLoopStarted, "r1")})
 	time.Sleep(50 * time.Millisecond)
 }
 
@@ -52,18 +54,18 @@ func TestStartHooksStopHaltsDispatch(t *testing.T) {
 	var mu sync.Mutex
 	count := 0
 	stop := StartHooks(bus, Hooks{
-		OnTurnStarted: func(TurnStartedEvent) {
+		OnTurnStarted: func(core.TurnStartedEvent) {
 			mu.Lock()
 			count++
 			mu.Unlock()
 		},
 	})
 
-	bus.Emit(TurnStartedEvent{BaseEvent: NewBaseEvent(EventTurnStarted, "")})
+	bus.Emit(core.TurnStartedEvent{BaseEvent: core.NewBaseEvent(core.EventTurnStarted, "")})
 	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return count == 1 })
 
 	stop()
-	bus.Emit(TurnStartedEvent{BaseEvent: NewBaseEvent(EventTurnStarted, "")})
+	bus.Emit(core.TurnStartedEvent{BaseEvent: core.NewBaseEvent(core.EventTurnStarted, "")})
 
 	time.Sleep(50 * time.Millisecond) // give a wrong implementation the chance to dispatch
 	mu.Lock()
@@ -104,12 +106,12 @@ func TestStartHooksMultipleEventTypes(t *testing.T) {
 	var loopCalled, toolCalled bool
 
 	hooks := Hooks{
-		OnLoopStarted: func(_ LoopStartedEvent) {
+		OnLoopStarted: func(_ core.LoopStartedEvent) {
 			mu.Lock()
 			loopCalled = true
 			mu.Unlock()
 		},
-		OnToolSucceeded: func(_ ToolSucceededEvent) {
+		OnToolSucceeded: func(_ core.ToolSucceededEvent) {
 			mu.Lock()
 			toolCalled = true
 			mu.Unlock()
@@ -118,8 +120,8 @@ func TestStartHooksMultipleEventTypes(t *testing.T) {
 
 	StartHooks(bus, hooks)
 
-	bus.Emit(LoopStartedEvent{BaseEvent: NewBaseEvent(EventLoopStarted, "r1")})
-	bus.Emit(ToolSucceededEvent{BaseEvent: NewBaseEvent(EventToolSucceeded, "r1"), ToolName: "bash"})
+	bus.Emit(core.LoopStartedEvent{BaseEvent: core.NewBaseEvent(core.EventLoopStarted, "r1")})
+	bus.Emit(core.ToolSucceededEvent{BaseEvent: core.NewBaseEvent(core.EventToolSucceeded, "r1"), ToolName: "bash"})
 
 	time.Sleep(50 * time.Millisecond)
 

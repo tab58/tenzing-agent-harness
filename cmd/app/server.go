@@ -14,10 +14,11 @@ import (
 	srverrors "github.com/tab58/huma-http-server/errors"
 	"github.com/tab58/huma-http-server/router"
 
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/app"
 	"github.com/tab58/tenzing-agent-harness/internal/app/nexus"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 
 	"github.com/tab58/llm-providers/common"
 )
@@ -26,7 +27,7 @@ import (
 // stream, and JSON endpoints to start/cancel agent turns.
 type agentServer struct {
 	harness   *harness.Harness
-	bus       *events.EventBus
+	bus       *eventbus.EventBus
 	nexus     *nexus.Nexus // nil when no channels configured
 	logB      *app.LogBroadcaster
 	onTurnEnd func() // trigger flush hook; called after every turn
@@ -47,7 +48,7 @@ type agentServer struct {
 	approvalsMu sync.Mutex
 }
 
-func newAgentServer(model common.ModelDefinition, bus *events.EventBus, nx *nexus.Nexus, logB *app.LogBroadcaster, onTurnEnd func(), extraOpts ...harness.HarnessOption) (*agentServer, error) {
+func newAgentServer(model common.ModelDefinition, bus *eventbus.EventBus, nx *nexus.Nexus, logB *app.LogBroadcaster, onTurnEnd func(), extraOpts ...harness.HarnessOption) (*agentServer, error) {
 	s := &agentServer{
 		bus:       bus,
 		nexus:     nx,
@@ -166,41 +167,41 @@ func (s *agentServer) broadcastSSEJSON(event string, v any) {
 	s.broadcastSSE(event, string(b))
 }
 
-func (s *agentServer) forwardEvents(ch <-chan events.Event) {
+func (s *agentServer) forwardEvents(ch <-chan core.Event) {
 	// Sub-agent runners share the bus; map their runner IDs to blackboard
 	// slot names ("a1", ...) so tool events can be labeled per agent. Only
 	// this goroutine touches the map.
 	subagents := make(map[string]string)
 	for ev := range ch {
 		switch e := ev.(type) {
-		case events.SubagentStartedEvent:
+		case core.SubagentStartedEvent:
 			subagents[e.RunnerID] = e.AgentID
 			s.broadcastSSEJSON("subagent", map[string]string{
 				"agent":  e.AgentID,
 				"state":  "started",
 				"prompt": e.Prompt,
 			})
-		case events.SubagentStoppedEvent:
+		case core.SubagentStoppedEvent:
 			delete(subagents, e.RunnerID)
 			s.broadcastSSEJSON("subagent", map[string]string{
 				"agent":    e.AgentID,
 				"state":    "stopped",
 				"duration": e.Duration.String(),
 			})
-		case events.ToolExecutionStartedEvent:
+		case core.ToolExecutionStartedEvent:
 			s.broadcastSSEJSON("tool_start", map[string]string{
 				"name":  e.ToolName,
 				"input": e.Input,
 				"agent": subagents[e.RunnerID],
 			})
-		case events.ToolSucceededEvent:
+		case core.ToolSucceededEvent:
 			s.broadcastSSEJSON("tool_result", map[string]string{
 				"name":   e.ToolName,
 				"input":  e.Input,
 				"output": e.Output,
 				"agent":  subagents[e.RunnerID],
 			})
-		case events.ToolFailedEvent:
+		case core.ToolFailedEvent:
 			s.broadcastSSEJSON("tool_result", map[string]string{
 				"name":   e.ToolName,
 				"input":  e.Input,
@@ -208,18 +209,18 @@ func (s *agentServer) forwardEvents(ch <-chan events.Event) {
 				"error":  "true",
 				"agent":  subagents[e.RunnerID],
 			})
-		case events.LLMResponseEvent:
+		case core.LLMResponseEvent:
 			s.broadcastSSEJSON("llm_meta", map[string]int64{
 				"input_tokens":  e.InputTokens,
 				"output_tokens": e.OutputTokens,
 			})
-		case events.ToolProgressEvent:
+		case core.ToolProgressEvent:
 			s.broadcastSSEJSON("tool_progress", map[string]string{
 				"tool":   e.ToolName,
 				"phase":  e.Phase,
 				"detail": e.Detail,
 			})
-		case events.ApprovalRequestedEvent:
+		case core.ApprovalRequestedEvent:
 			s.approvalsMu.Lock()
 			s.approvals[e.CallID] = e.Respond
 			s.approvalsMu.Unlock()
@@ -370,7 +371,7 @@ func (s *agentServer) startNexusTurn(channels []string) bool {
 		return false
 	}
 	s.bus.Emit(nexus.TriggerEvent{
-		BaseEvent: events.NewBaseEvent(nexus.EventTrigger, "nexus"),
+		BaseEvent: core.NewBaseEvent(nexus.EventTrigger, "nexus"),
 		Channels:  channels,
 	})
 	return true

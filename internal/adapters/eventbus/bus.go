@@ -1,18 +1,20 @@
-package events
+package eventbus
 
 import (
 	"log/slog"
 	"sync"
+
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 )
 
-var _ Emitter = (*EventBus)(nil)
+var _ core.Emitter = (*EventBus)(nil)
 
-// EventBus implements Emitter and fans out events to buffered subscriber channels.
-// Emit is non-blocking: if a subscriber's buffer is full, the event is dropped.
-// All methods are safe for concurrent use.
+// EventBus implements core.Emitter and fans out events to buffered subscriber
+// channels. Emit is non-blocking: if a subscriber's buffer is full, the
+// event is dropped. All methods are safe for concurrent use.
 type EventBus struct {
 	mu          sync.RWMutex
-	subscribers []chan Event
+	subscribers []chan core.Event
 	closed      bool
 }
 
@@ -23,17 +25,17 @@ func NewEventBus() *EventBus {
 
 // Subscribe registers a new subscriber and returns a receive-only channel.
 // bufSize controls the channel buffer capacity.
-func (b *EventBus) Subscribe(bufSize int) <-chan Event {
+func (b *EventBus) Subscribe(bufSize int) <-chan core.Event {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	ch := make(chan Event, bufSize)
+	ch := make(chan core.Event, bufSize)
 	b.subscribers = append(b.subscribers, ch)
 	return ch
 }
 
 // Unsubscribe removes the subscriber and closes its channel.
-func (b *EventBus) Unsubscribe(ch <-chan Event) {
+func (b *EventBus) Unsubscribe(ch <-chan core.Event) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -48,7 +50,7 @@ func (b *EventBus) Unsubscribe(ch <-chan Event) {
 
 // Emit sends the event to all subscribers. If a subscriber's buffer is full the
 // event is dropped and a warning is logged. Emit is a no-op after Close.
-func (b *EventBus) Emit(event Event) {
+func (b *EventBus) Emit(event core.Event) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 

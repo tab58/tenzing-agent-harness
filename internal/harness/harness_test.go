@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/prompts"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 
@@ -198,7 +199,7 @@ func TestHarnessEmitsTurnEventsOnRunTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var types []events.EventType
+	var types []core.EventType
 	for {
 		select {
 		case ev := <-ch:
@@ -208,7 +209,7 @@ func TestHarnessEmitsTurnEventsOnRunTurn(t *testing.T) {
 		}
 	}
 check:
-	hasType := func(et events.EventType) bool {
+	hasType := func(et core.EventType) bool {
 		for _, t := range types {
 			if t == et {
 				return true
@@ -216,10 +217,10 @@ check:
 		}
 		return false
 	}
-	if !hasType(events.EventTurnStarted) {
+	if !hasType(core.EventTurnStarted) {
 		t.Error("missing TurnStarted event")
 	}
-	if !hasType(events.EventTurnCompleted) {
+	if !hasType(core.EventTurnCompleted) {
 		t.Error("missing TurnCompleted event")
 	}
 }
@@ -303,8 +304,8 @@ func TestCompressionEventPersistsMemory(t *testing.T) {
 	h := newTestHarness(t)
 	defer h.Shutdown()
 
-	h.EventBus().Emit(events.ContextCompressedEvent{
-		BaseEvent: events.NewBaseEvent(events.EventContextCompressed, h.ConversationID()),
+	h.EventBus().Emit(core.ContextCompressedEvent{
+		BaseEvent: core.NewBaseEvent(core.EventContextCompressed, h.ConversationID()),
 		Summary:   "persisted by subscriber",
 	})
 	configDir, _ := memoryDirs()
@@ -330,8 +331,8 @@ func TestChildCompressionGoesToCache(t *testing.T) {
 	defer h.Shutdown()
 
 	childID := h.ConversationID() + "_deadbeef"
-	h.EventBus().Emit(events.ContextCompressedEvent{
-		BaseEvent: events.NewBaseEvent(events.EventContextCompressed, childID),
+	h.EventBus().Emit(core.ContextCompressedEvent{
+		BaseEvent: core.NewBaseEvent(core.EventContextCompressed, childID),
 		Summary:   "child summary",
 	})
 	_, cacheDir := memoryDirs()
@@ -357,14 +358,14 @@ func TestHarnessDefaultPermissionsAskAndDeny(t *testing.T) {
 		finalStep("done"),
 	)
 
-	var requested events.ApprovalRequestedEvent
+	var requested core.ApprovalRequestedEvent
 	h, err := New(testModel,
 		WithAgentBuilder(func(_ common.LLM, _ string) (runner.Agent, error) { return agent, nil }),
 		WithLLMFactory(stubFactory),
 		WithSystemPrompt("test"),
 		WithBlackboardDisabled(),
-		WithHooks(events.Hooks{
-			OnApprovalRequested: func(e events.ApprovalRequestedEvent) {
+		WithHooks(eventbus.Hooks{
+			OnApprovalRequested: func(e core.ApprovalRequestedEvent) {
 				requested = e
 				e.Respond(false)
 			},

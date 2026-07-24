@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/contextstore"
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
 	"github.com/tab58/tenzing-agent-harness/internal/agent"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
@@ -21,7 +22,6 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/skillsext"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/advisor"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/blackboard"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/prompts"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
@@ -36,14 +36,14 @@ type Harness struct {
 	mainAgentRunner *runner.AgentRunner
 	toolPort        *toolport.Composite
 	todoFile        *todo.TodoFile
-	eventBus        *events.EventBus
+	eventBus        *eventbus.EventBus
 	stopHooks       func()
 	stopMemoryHook  func()
 	extensions      *core.Extensions
 }
 
 // EventBus returns the harness event bus. It is always non-nil.
-func (h *Harness) EventBus() *events.EventBus {
+func (h *Harness) EventBus() *eventbus.EventBus {
 	return h.eventBus
 }
 
@@ -104,7 +104,7 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 	// register hooks to event bus
 	var stopHooks func()
 	if !hooksEmpty(o.hooks) {
-		stopHooks = events.StartHooks(o.eventBus, o.hooks)
+		stopHooks = eventbus.StartHooks(o.eventBus, o.hooks)
 	}
 
 	// set up todo store
@@ -198,8 +198,8 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		}
 	}
 
-	stopMemoryHook := events.StartHooks(o.eventBus, events.Hooks{
-		OnContextCompressed: func(e events.ContextCompressedEvent) {
+	stopMemoryHook := eventbus.StartHooks(o.eventBus, eventbus.Hooks{
+		OnContextCompressed: func(e core.ContextCompressedEvent) {
 			memory.persist(e.RunnerID, e.Summary)
 		},
 	})
@@ -341,7 +341,7 @@ func (h *Harness) RunTurn(ctx context.Context, query string) (string, error) {
 }
 
 // hooksEmpty reports whether no hook callbacks are set in h.
-func hooksEmpty(h events.Hooks) bool {
+func hooksEmpty(h eventbus.Hooks) bool {
 	return h.OnSessionStarted == nil &&
 		h.OnSessionEnded == nil &&
 		h.OnTurnStarted == nil &&

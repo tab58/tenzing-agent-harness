@@ -9,7 +9,6 @@ import (
 
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/prompts"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
 )
@@ -32,14 +31,14 @@ type agentRunnerOptions struct {
 	onTextDelta     func(string)
 	onThinkingDelta func(string)
 	systemPrompt    string
-	emitter         events.Emitter
+	emitter         core.Emitter
 	extensions      *core.Extensions
 	approvalTimeout time.Duration
 }
 
 type AgentRunnerOption func(*agentRunnerOptions)
 
-func WithEmitter(emitter events.Emitter) AgentRunnerOption {
+func WithEmitter(emitter core.Emitter) AgentRunnerOption {
 	return func(o *agentRunnerOptions) {
 		o.emitter = emitter
 	}

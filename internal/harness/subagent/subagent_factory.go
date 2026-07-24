@@ -14,7 +14,6 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/budgets"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/reminders"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/blackboard"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/todo"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
@@ -39,7 +38,7 @@ type SubAgentFactoryConfig struct {
 	MaxDepth      int
 	MaxIterations int
 	Cwd           string
-	Emitter       events.Emitter
+	Emitter       core.Emitter
 	Blackboard    *blackboard.Blackboard
 	// ParentID is the spawning runner's ID; child IDs chain from it
 	// ("438314ea" -> "438314ea_085c6444"). Empty means no prefix.
@@ -56,7 +55,7 @@ type SubAgentFactory struct {
 	currentDepth  int
 	maxIterations int
 	cwd           string
-	emitter       events.Emitter
+	emitter       core.Emitter
 	blackboard    *blackboard.Blackboard
 	parentID      string
 	skillsExt     core.Extension
@@ -163,8 +162,8 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 	}
 
 	if f.emitter != nil {
-		f.emitter.Emit(events.SubagentStartedEvent{
-			BaseEvent: events.NewBaseEvent(events.EventSubagentStarted, childRunner.ID()),
+		f.emitter.Emit(core.SubagentStartedEvent{
+			BaseEvent: core.NewBaseEvent(core.EventSubagentStarted, childRunner.ID()),
 			AgentID:   agentID,
 			Prompt:    task,
 		})
@@ -187,8 +186,8 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 	if err != nil {
 		slog.Error("[subagent] failed", "depth", childDepth, "duration", duration.Round(time.Millisecond), "error", err)
 		if f.emitter != nil {
-			f.emitter.Emit(events.SubagentStoppedEvent{
-				BaseEvent: events.NewBaseEvent(events.EventSubagentStopped, childRunner.ID()),
+			f.emitter.Emit(core.SubagentStoppedEvent{
+				BaseEvent: core.NewBaseEvent(core.EventSubagentStopped, childRunner.ID()),
 				AgentID:   agentID,
 				Duration:  duration.Round(time.Millisecond),
 			})
@@ -198,8 +197,8 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 
 	slog.Info("[subagent] completed", "depth", childDepth, "duration", duration.Round(time.Millisecond), "answer_len", len(result))
 	if f.emitter != nil {
-		f.emitter.Emit(events.SubagentStoppedEvent{
-			BaseEvent: events.NewBaseEvent(events.EventSubagentStopped, childRunner.ID()),
+		f.emitter.Emit(core.SubagentStoppedEvent{
+			BaseEvent: core.NewBaseEvent(core.EventSubagentStopped, childRunner.ID()),
 			AgentID:   agentID,
 			Duration:  duration.Round(time.Millisecond),
 		})

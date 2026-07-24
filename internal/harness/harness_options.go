@@ -3,11 +3,11 @@ package harness
 import (
 	"time"
 
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/budgets"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/mcpext"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/permissions"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 
@@ -55,7 +55,7 @@ type harnessOptions struct {
 	onThinkingDelta func(string)
 
 	// eventBus is an event bus that transports all events
-	eventBus *events.EventBus
+	eventBus *eventbus.EventBus
 
 	// mainSystemPrompt is the system prompt of the main agent
 	mainSystemPrompt string
@@ -67,7 +67,7 @@ type harnessOptions struct {
 
 	// hooks holds optional typed callbacks dispatched from the event
 	// bus. Only set hooks fire; leave the rest nil.
-	hooks events.Hooks
+	hooks eventbus.Hooks
 
 	// extraTools are additional tools to add the registry
 	extraTools map[string]tooldef.Definition
@@ -111,7 +111,7 @@ type harnessOptions struct {
 
 func defaultHarnessOptions() *harnessOptions {
 	return &harnessOptions{
-		eventBus: events.NewEventBus(),
+		eventBus: eventbus.NewEventBus(),
 		skillDirs: []string{
 			"~/.claude/skills",
 		},
@@ -213,7 +213,7 @@ func WithTool(tool tooldef.Definition) HarnessOption {
 	}
 }
 
-func WithHooks(hooks events.Hooks) HarnessOption {
+func WithHooks(hooks eventbus.Hooks) HarnessOption {
 	return func(o *harnessOptions) {
 		o.hooks = hooks
 	}
@@ -234,7 +234,7 @@ func WithConversationID(id string) HarnessOption {
 	}
 }
 
-func WithEventBus(bus *events.EventBus) HarnessOption {
+func WithEventBus(bus *eventbus.EventBus) HarnessOption {
 	return func(o *harnessOptions) {
 		o.eventBus = bus
 	}

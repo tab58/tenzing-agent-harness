@@ -12,7 +12,6 @@ import (
 
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/contextstore"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 
@@ -22,19 +21,19 @@ import (
 // testEventCollector captures emitted events for assertion in tests.
 type testEventCollector struct {
 	mu   sync.Mutex
-	evts []events.Event
+	evts []core.Event
 }
 
-func (c *testEventCollector) Emit(ev events.Event) {
+func (c *testEventCollector) Emit(ev core.Event) {
 	c.mu.Lock()
 	c.evts = append(c.evts, ev)
 	c.mu.Unlock()
 }
 
-func (c *testEventCollector) byType(t events.EventType) []events.Event {
+func (c *testEventCollector) byType(t core.EventType) []core.Event {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var out []events.Event
+	var out []core.Event
 	for _, ev := range c.evts {
 		if ev.Type() == t {
 			out = append(out, ev)

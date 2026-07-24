@@ -1,30 +1,32 @@
-package events
+package eventbus
+
+import "github.com/tab58/tenzing-agent-harness/internal/core"
 
 // Hooks holds optional typed callback functions, one per event type.
 // Set only the hooks you care about; nil hooks are silently skipped.
 type Hooks struct {
-	OnSessionStarted        func(SessionStartedEvent)
-	OnSessionEnded          func(SessionEndedEvent)
-	OnTurnStarted           func(TurnStartedEvent)
-	OnTurnCompleted         func(TurnCompletedEvent)
-	OnLoopStarted           func(LoopStartedEvent)
-	OnLoopStopped           func(LoopStoppedEvent)
-	OnReasoningStarted      func(ReasoningStartedEvent)
-	OnReasoningFinished     func(ReasoningFinishedEvent)
-	OnToolExecutionStarted  func(ToolExecutionStartedEvent)
-	OnToolExecutionFinished func(ToolExecutionFinishedEvent)
-	OnLLMResponse           func(LLMResponseEvent)
-	OnToolSucceeded         func(ToolSucceededEvent)
-	OnToolFailed            func(ToolFailedEvent)
-	OnToolProgress          func(ToolProgressEvent)
-	OnContextCompressing    func(ContextCompressingEvent)
-	OnContextCompressed     func(ContextCompressedEvent)
-	OnError                 func(ErrorEvent)
-	OnSubagentStarted       func(SubagentStartedEvent)
-	OnSubagentStopped       func(SubagentStoppedEvent)
-	OnTaskCreated           func(TaskCreatedEvent)
-	OnTaskCompleted         func(TaskCompletedEvent)
-	OnApprovalRequested     func(ApprovalRequestedEvent)
+	OnSessionStarted        func(core.SessionStartedEvent)
+	OnSessionEnded          func(core.SessionEndedEvent)
+	OnTurnStarted           func(core.TurnStartedEvent)
+	OnTurnCompleted         func(core.TurnCompletedEvent)
+	OnLoopStarted           func(core.LoopStartedEvent)
+	OnLoopStopped           func(core.LoopStoppedEvent)
+	OnReasoningStarted      func(core.ReasoningStartedEvent)
+	OnReasoningFinished     func(core.ReasoningFinishedEvent)
+	OnToolExecutionStarted  func(core.ToolExecutionStartedEvent)
+	OnToolExecutionFinished func(core.ToolExecutionFinishedEvent)
+	OnLLMResponse           func(core.LLMResponseEvent)
+	OnToolSucceeded         func(core.ToolSucceededEvent)
+	OnToolFailed            func(core.ToolFailedEvent)
+	OnToolProgress          func(core.ToolProgressEvent)
+	OnContextCompressing    func(core.ContextCompressingEvent)
+	OnContextCompressed     func(core.ContextCompressedEvent)
+	OnError                 func(core.ErrorEvent)
+	OnSubagentStarted       func(core.SubagentStartedEvent)
+	OnSubagentStopped       func(core.SubagentStoppedEvent)
+	OnTaskCreated           func(core.TaskCreatedEvent)
+	OnTaskCompleted         func(core.TaskCompletedEvent)
+	OnApprovalRequested     func(core.ApprovalRequestedEvent)
 }
 
 // StartHooks subscribes to bus with a buffer of 64 and dispatches each
@@ -42,93 +44,93 @@ func StartHooks(bus *EventBus, hooks Hooks) (stop func()) {
 	return func() { bus.Unsubscribe(ch) }
 }
 
-func dispatch(ev Event, h Hooks) {
+func dispatch(ev core.Event, h Hooks) {
 	switch e := ev.(type) {
-	case SessionStartedEvent:
+	case core.SessionStartedEvent:
 		if h.OnSessionStarted != nil {
 			h.OnSessionStarted(e)
 		}
-	case SessionEndedEvent:
+	case core.SessionEndedEvent:
 		if h.OnSessionEnded != nil {
 			h.OnSessionEnded(e)
 		}
-	case TurnStartedEvent:
+	case core.TurnStartedEvent:
 		if h.OnTurnStarted != nil {
 			h.OnTurnStarted(e)
 		}
-	case TurnCompletedEvent:
+	case core.TurnCompletedEvent:
 		if h.OnTurnCompleted != nil {
 			h.OnTurnCompleted(e)
 		}
-	case LoopStartedEvent:
+	case core.LoopStartedEvent:
 		if h.OnLoopStarted != nil {
 			h.OnLoopStarted(e)
 		}
-	case LoopStoppedEvent:
+	case core.LoopStoppedEvent:
 		if h.OnLoopStopped != nil {
 			h.OnLoopStopped(e)
 		}
-	case ReasoningStartedEvent:
+	case core.ReasoningStartedEvent:
 		if h.OnReasoningStarted != nil {
 			h.OnReasoningStarted(e)
 		}
-	case ReasoningFinishedEvent:
+	case core.ReasoningFinishedEvent:
 		if h.OnReasoningFinished != nil {
 			h.OnReasoningFinished(e)
 		}
-	case ToolExecutionStartedEvent:
+	case core.ToolExecutionStartedEvent:
 		if h.OnToolExecutionStarted != nil {
 			h.OnToolExecutionStarted(e)
 		}
-	case ToolExecutionFinishedEvent:
+	case core.ToolExecutionFinishedEvent:
 		if h.OnToolExecutionFinished != nil {
 			h.OnToolExecutionFinished(e)
 		}
-	case LLMResponseEvent:
+	case core.LLMResponseEvent:
 		if h.OnLLMResponse != nil {
 			h.OnLLMResponse(e)
 		}
-	case ToolSucceededEvent:
+	case core.ToolSucceededEvent:
 		if h.OnToolSucceeded != nil {
 			h.OnToolSucceeded(e)
 		}
-	case ToolFailedEvent:
+	case core.ToolFailedEvent:
 		if h.OnToolFailed != nil {
 			h.OnToolFailed(e)
 		}
-	case ToolProgressEvent:
+	case core.ToolProgressEvent:
 		if h.OnToolProgress != nil {
 			h.OnToolProgress(e)
 		}
-	case ContextCompressingEvent:
+	case core.ContextCompressingEvent:
 		if h.OnContextCompressing != nil {
 			h.OnContextCompressing(e)
 		}
-	case ContextCompressedEvent:
+	case core.ContextCompressedEvent:
 		if h.OnContextCompressed != nil {
 			h.OnContextCompressed(e)
 		}
-	case ErrorEvent:
+	case core.ErrorEvent:
 		if h.OnError != nil {
 			h.OnError(e)
 		}
-	case SubagentStartedEvent:
+	case core.SubagentStartedEvent:
 		if h.OnSubagentStarted != nil {
 			h.OnSubagentStarted(e)
 		}
-	case SubagentStoppedEvent:
+	case core.SubagentStoppedEvent:
 		if h.OnSubagentStopped != nil {
 			h.OnSubagentStopped(e)
 		}
-	case TaskCreatedEvent:
+	case core.TaskCreatedEvent:
 		if h.OnTaskCreated != nil {
 			h.OnTaskCreated(e)
 		}
-	case TaskCompletedEvent:
+	case core.TaskCompletedEvent:
 		if h.OnTaskCompleted != nil {
 			h.OnTaskCompleted(e)
 		}
-	case ApprovalRequestedEvent:
+	case core.ApprovalRequestedEvent:
 		if h.OnApprovalRequested != nil {
 			h.OnApprovalRequested(e)
 		}

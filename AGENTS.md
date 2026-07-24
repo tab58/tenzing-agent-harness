@@ -125,7 +125,7 @@ All non-invariant runner behavior flows through `runner.AgentRunnerOption` funct
 - Swap the ToolRegistry (`WithToolRegistry`, different native tool set) or the whole ToolPort (`WithToolPort` — the harness passes the composite here; unset falls back to wrapping the registry)
 - Swap the ContextStore (`WithContextStore`) — required; the `core.ContextPort` implementation that owns this runner's conversation history
 - Swap the SystemPrompt (`WithSystemPrompt`)
-- Provide an `events.Emitter` to receive structured events from the loop (`WithEmitter`)
+- Provide a `core.Emitter` to receive structured events from the loop (`WithEmitter`)
 - Provide `WithTextDeltaHandler`/`WithThinkingDeltaHandler` callbacks for streaming text
 
 System reminders (todo state, etc.) no longer flow through the runner. They
@@ -164,7 +164,7 @@ The FSM lives in `internal/core/fsm.go` and is per-Loop instance — subagents a
 | Shared test helpers      | `**/testutil_test.go`                                 |
 | Sub-agent system         | `internal/harness/subagent/`                          |
 | Blackboard (shared REPL)  | `internal/harness/blackboard/` (persistent REPL, repl tool) |
-| Event system             | `internal/harness/events/`                            |
+| Event system              | `internal/core/` (vocabulary: `Event`, `EventType`, `BaseEvent`, `Emitter`); `internal/adapters/eventbus/` (`EventBus`, `Hooks`) |
 | Embedded assets          | Adjacent to consumer (e.g. `blackboard/bootstrap.py`) |
 | Nexus (input channels)   | `internal/app/nexus/`                                 |
 | Nexus channel tools      | `internal/app/nexus/tools/`                           |

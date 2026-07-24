@@ -15,11 +15,11 @@ import (
 	"github.com/tab58/llm-providers/common"
 	"github.com/tab58/llm-providers/ollama"
 
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/app"
 	"github.com/tab58/tenzing-agent-harness/internal/app/nexus"
 	nexustools "github.com/tab58/tenzing-agent-harness/internal/app/nexus/tools"
 	"github.com/tab58/tenzing-agent-harness/internal/harness"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 )
 
@@ -64,7 +64,7 @@ func NewAppContainer() (*AppContainer, error) {
 
 	model := ollama.Model_GLM5_2_Cloud.(common.ModelDefinition)
 
-	bus := events.NewEventBus()
+	bus := eventbus.NewEventBus()
 
 	nexusCfg, err := nexus.LoadConfig(cfg.NexusConfig)
 	if err != nil {

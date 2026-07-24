@@ -1,13 +1,15 @@
-package events
+package eventbus
 
 import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 )
 
 func TestEventBusImplementsEmitter(t *testing.T) {
-	var _ Emitter = NewEventBus()
+	var _ core.Emitter = NewEventBus()
 }
 
 func TestSubscribeReceivesEmittedEvents(t *testing.T) {
@@ -15,20 +17,20 @@ func TestSubscribeReceivesEmittedEvents(t *testing.T) {
 	defer bus.Close()
 
 	ch := bus.Subscribe(10)
-	ev := LoopStartedEvent{
-		BaseEvent: NewBaseEvent(EventLoopStarted, "r1"),
+	ev := core.LoopStartedEvent{
+		BaseEvent: core.NewBaseEvent(core.EventLoopStarted, "r1"),
 		Input:     "hello",
 	}
 	bus.Emit(ev)
 
 	select {
 	case got := <-ch:
-		if got.Type() != EventLoopStarted {
-			t.Errorf("Type() = %q, want %q", got.Type(), EventLoopStarted)
+		if got.Type() != core.EventLoopStarted {
+			t.Errorf("Type() = %q, want %q", got.Type(), core.EventLoopStarted)
 		}
-		lse, ok := got.(LoopStartedEvent)
+		lse, ok := got.(core.LoopStartedEvent)
 		if !ok {
-			t.Fatalf("expected LoopStartedEvent, got %T", got)
+			t.Fatalf("expected core.LoopStartedEvent, got %T", got)
 		}
 		if lse.Input != "hello" {
 			t.Errorf("Input = %q, want %q", lse.Input, "hello")
@@ -45,13 +47,13 @@ func TestMultipleSubscribers(t *testing.T) {
 	ch1 := bus.Subscribe(10)
 	ch2 := bus.Subscribe(10)
 
-	bus.Emit(LoopStartedEvent{BaseEvent: NewBaseEvent(EventLoopStarted, "r1")})
+	bus.Emit(core.LoopStartedEvent{BaseEvent: core.NewBaseEvent(core.EventLoopStarted, "r1")})
 
-	for _, ch := range []<-chan Event{ch1, ch2} {
+	for _, ch := range []<-chan core.Event{ch1, ch2} {
 		select {
 		case got := <-ch:
-			if got.Type() != EventLoopStarted {
-				t.Errorf("Type() = %q, want %q", got.Type(), EventLoopStarted)
+			if got.Type() != core.EventLoopStarted {
+				t.Errorf("Type() = %q, want %q", got.Type(), core.EventLoopStarted)
 			}
 		case <-time.After(time.Second):
 			t.Fatal("subscriber did not receive event")
@@ -65,11 +67,11 @@ func TestEmitDropsWhenBufferFull(t *testing.T) {
 
 	ch := bus.Subscribe(1)
 
-	bus.Emit(LoopStartedEvent{BaseEvent: NewBaseEvent(EventLoopStarted, "r1")})
-	bus.Emit(LoopStoppedEvent{BaseEvent: NewBaseEvent(EventLoopStopped, "r1")})
+	bus.Emit(core.LoopStartedEvent{BaseEvent: core.NewBaseEvent(core.EventLoopStarted, "r1")})
+	bus.Emit(core.LoopStoppedEvent{BaseEvent: core.NewBaseEvent(core.EventLoopStopped, "r1")})
 
 	got := <-ch
-	if got.Type() != EventLoopStarted {
+	if got.Type() != core.EventLoopStarted {
 		t.Errorf("expected first event, got %q", got.Type())
 	}
 
@@ -87,7 +89,7 @@ func TestUnsubscribe(t *testing.T) {
 	ch := bus.Subscribe(10)
 	bus.Unsubscribe(ch)
 
-	bus.Emit(LoopStartedEvent{BaseEvent: NewBaseEvent(EventLoopStarted, "r1")})
+	bus.Emit(core.LoopStartedEvent{BaseEvent: core.NewBaseEvent(core.EventLoopStarted, "r1")})
 
 	select {
 	case _, ok := <-ch:
@@ -105,7 +107,7 @@ func TestCloseClosesAllSubscribers(t *testing.T) {
 
 	bus.Close()
 
-	for _, ch := range []<-chan Event{ch1, ch2} {
+	for _, ch := range []<-chan core.Event{ch1, ch2} {
 		_, ok := <-ch
 		if ok {
 			t.Error("channel should be closed after Close")
@@ -118,7 +120,7 @@ func TestEmitAfterCloseIsNoop(t *testing.T) {
 	bus.Close()
 
 	// should not panic
-	bus.Emit(LoopStartedEvent{BaseEvent: NewBaseEvent(EventLoopStarted, "r1")})
+	bus.Emit(core.LoopStartedEvent{BaseEvent: core.NewBaseEvent(core.EventLoopStarted, "r1")})
 }
 
 func TestConcurrentEmit(t *testing.T) {
@@ -132,7 +134,7 @@ func TestConcurrentEmit(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			bus.Emit(LoopStartedEvent{BaseEvent: NewBaseEvent(EventLoopStarted, "r1")})
+			bus.Emit(core.LoopStartedEvent{BaseEvent: core.NewBaseEvent(core.EventLoopStarted, "r1")})
 		}()
 	}
 	wg.Wait()

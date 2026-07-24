@@ -8,7 +8,6 @@ import (
 
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/contextstore"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 
@@ -17,19 +16,19 @@ import (
 
 type eventCollector struct {
 	mu     sync.Mutex
-	events []events.Event
+	events []core.Event
 }
 
-func (c *eventCollector) Emit(ev events.Event) {
+func (c *eventCollector) Emit(ev core.Event) {
 	c.mu.Lock()
 	c.events = append(c.events, ev)
 	c.mu.Unlock()
 }
 
-func (c *eventCollector) byType(t events.EventType) []events.Event {
+func (c *eventCollector) byType(t core.EventType) []core.Event {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var out []events.Event
+	var out []core.Event
 	for _, ev := range c.events {
 		if ev.Type() == t {
 			out = append(out, ev)
@@ -105,23 +104,23 @@ func TestRunnerEmitsTurnAndLoopEvents(t *testing.T) {
 		t.Errorf("answer = %q, want %q", answer, "done")
 	}
 
-	if len(collector.byType(events.EventTurnStarted)) != 1 {
-		t.Errorf("expected 1 TurnStarted, got %d", len(collector.byType(events.EventTurnStarted)))
+	if len(collector.byType(core.EventTurnStarted)) != 1 {
+		t.Errorf("expected 1 TurnStarted, got %d", len(collector.byType(core.EventTurnStarted)))
 	}
-	if len(collector.byType(events.EventLoopStarted)) != 1 {
-		t.Errorf("expected 1 LoopStarted, got %d", len(collector.byType(events.EventLoopStarted)))
+	if len(collector.byType(core.EventLoopStarted)) != 1 {
+		t.Errorf("expected 1 LoopStarted, got %d", len(collector.byType(core.EventLoopStarted)))
 	}
-	if len(collector.byType(events.EventReasoningStarted)) != 1 {
-		t.Errorf("expected 1 ReasoningStarted, got %d", len(collector.byType(events.EventReasoningStarted)))
+	if len(collector.byType(core.EventReasoningStarted)) != 1 {
+		t.Errorf("expected 1 ReasoningStarted, got %d", len(collector.byType(core.EventReasoningStarted)))
 	}
-	if len(collector.byType(events.EventReasoningFinished)) != 1 {
-		t.Errorf("expected 1 ReasoningFinished, got %d", len(collector.byType(events.EventReasoningFinished)))
+	if len(collector.byType(core.EventReasoningFinished)) != 1 {
+		t.Errorf("expected 1 ReasoningFinished, got %d", len(collector.byType(core.EventReasoningFinished)))
 	}
-	if len(collector.byType(events.EventLoopStopped)) != 1 {
-		t.Errorf("expected 1 LoopStopped, got %d", len(collector.byType(events.EventLoopStopped)))
+	if len(collector.byType(core.EventLoopStopped)) != 1 {
+		t.Errorf("expected 1 LoopStopped, got %d", len(collector.byType(core.EventLoopStopped)))
 	}
-	if len(collector.byType(events.EventTurnCompleted)) != 1 {
-		t.Errorf("expected 1 TurnCompleted, got %d", len(collector.byType(events.EventTurnCompleted)))
+	if len(collector.byType(core.EventTurnCompleted)) != 1 {
+		t.Errorf("expected 1 TurnCompleted, got %d", len(collector.byType(core.EventTurnCompleted)))
 	}
 }
 
@@ -152,14 +151,14 @@ func TestRunnerEmitsToolEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(collector.byType(events.EventToolExecutionStarted)) != 1 {
-		t.Errorf("expected 1 ToolExecutionStarted, got %d", len(collector.byType(events.EventToolExecutionStarted)))
+	if len(collector.byType(core.EventToolExecutionStarted)) != 1 {
+		t.Errorf("expected 1 ToolExecutionStarted, got %d", len(collector.byType(core.EventToolExecutionStarted)))
 	}
-	if len(collector.byType(events.EventToolSucceeded)) != 1 {
-		t.Errorf("expected 1 ToolSucceeded, got %d", len(collector.byType(events.EventToolSucceeded)))
+	if len(collector.byType(core.EventToolSucceeded)) != 1 {
+		t.Errorf("expected 1 ToolSucceeded, got %d", len(collector.byType(core.EventToolSucceeded)))
 	}
-	if len(collector.byType(events.EventToolExecutionFinished)) != 1 {
-		t.Errorf("expected 1 ToolExecutionFinished, got %d", len(collector.byType(events.EventToolExecutionFinished)))
+	if len(collector.byType(core.EventToolExecutionFinished)) != 1 {
+		t.Errorf("expected 1 ToolExecutionFinished, got %d", len(collector.byType(core.EventToolExecutionFinished)))
 	}
 }
 
@@ -197,10 +196,10 @@ func TestRunnerExecutesAllToolCallsInBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := len(collector.byType(events.EventToolExecutionStarted)); got != 3 {
+	if got := len(collector.byType(core.EventToolExecutionStarted)); got != 3 {
 		t.Errorf("expected 3 ToolExecutionStarted, got %d", got)
 	}
-	if got := len(collector.byType(events.EventToolSucceeded)); got != 3 {
+	if got := len(collector.byType(core.EventToolSucceeded)); got != 3 {
 		t.Errorf("expected 3 ToolSucceeded, got %d", got)
 	}
 
@@ -307,11 +306,11 @@ func TestToolCallDeniedByExtension(t *testing.T) {
 		t.Errorf("expected tool to never execute, invoked %d times", got)
 	}
 
-	failed := collector.byType(events.EventToolFailed)
+	failed := collector.byType(core.EventToolFailed)
 	if len(failed) != 1 {
 		t.Fatalf("expected 1 ToolFailedEvent, got %d", len(failed))
 	}
-	ev, ok := failed[0].(events.ToolFailedEvent)
+	ev, ok := failed[0].(core.ToolFailedEvent)
 	if !ok {
 		t.Fatalf("event is not ToolFailedEvent: %T", failed[0])
 	}

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 )
 
@@ -35,14 +35,14 @@ type Task struct {
 type TodoFile struct {
 	mu      sync.Mutex
 	tasks   []Task
-	emitter events.Emitter
+	emitter core.Emitter
 }
 
 func NewTodoStore() *TodoFile {
 	return &TodoFile{}
 }
 
-func (f *TodoFile) SetEmitter(e events.Emitter) {
+func (f *TodoFile) SetEmitter(e core.Emitter) {
 	f.emitter = e
 }
 
@@ -100,8 +100,8 @@ func (f *TodoFile) CreateTask(desc string, dependsOn []string, priority TaskPrio
 	f.save(tasks)
 
 	if f.emitter != nil {
-		f.emitter.Emit(events.TaskCreatedEvent{
-			BaseEvent:   events.NewBaseEvent(events.EventTaskCreated, ""),
+		f.emitter.Emit(core.TaskCreatedEvent{
+			BaseEvent:   core.NewBaseEvent(core.EventTaskCreated, ""),
 			TaskID:      task.ID,
 			Description: desc,
 		})
@@ -141,8 +141,8 @@ func (f *TodoFile) UpdateTask(taskID string, status string, result string) error
 	f.save(updated)
 
 	if f.emitter != nil && status == "done" {
-		f.emitter.Emit(events.TaskCompletedEvent{
-			BaseEvent: events.NewBaseEvent(events.EventTaskCompleted, ""),
+		f.emitter.Emit(core.TaskCompletedEvent{
+			BaseEvent: core.NewBaseEvent(core.EventTaskCompleted, ""),
 			TaskID:    taskID,
 		})
 	}

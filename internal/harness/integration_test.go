@@ -10,7 +10,6 @@ import (
 
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/reminders"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/snapshot"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/todo"
@@ -467,10 +466,10 @@ func TestIntegration_ToolHookCalled(t *testing.T) {
 		t.Fatalf("RunLoop error: %v", err)
 	}
 
-	succeeded := collector.byType(events.EventToolSucceeded)
+	succeeded := collector.byType(core.EventToolSucceeded)
 	if len(succeeded) != 1 {
 		t.Errorf("expected 1 ToolSucceeded event, got %d", len(succeeded))
-	} else if ev, ok := succeeded[0].(events.ToolSucceededEvent); !ok || ev.ToolName != "Read" {
+	} else if ev, ok := succeeded[0].(core.ToolSucceededEvent); !ok || ev.ToolName != "Read" {
 		t.Errorf("expected ToolSucceeded for Read, got %v", succeeded[0])
 	}
 }
@@ -628,7 +627,7 @@ func TestIntegration_ResumeSeedsContextStoreFromPersistedMemory(t *testing.T) {
 	}
 
 	// Compression persistence dispatches asynchronously off the event bus
-	// (see harness.go's stopMemoryHook / events.StartHooks) — poll like
+	// (see harness.go's stopMemoryHook / eventbus.StartHooks) — poll like
 	// TestCompressionEventPersistsMemory does.
 	configDir, _ := memoryDirs()
 	deadline := time.Now().Add(2 * time.Second)

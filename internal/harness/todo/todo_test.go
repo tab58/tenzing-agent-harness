@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 )
 
 func TestWriteAndReadTasks(t *testing.T) {
@@ -216,19 +216,19 @@ func TestFormatReminderEmptyReturnsEmpty(t *testing.T) {
 
 type eventCollector struct {
 	mu   sync.Mutex
-	evts []events.Event
+	evts []core.Event
 }
 
-func (c *eventCollector) Emit(ev events.Event) {
+func (c *eventCollector) Emit(ev core.Event) {
 	c.mu.Lock()
 	c.evts = append(c.evts, ev)
 	c.mu.Unlock()
 }
 
-func (c *eventCollector) byType(et events.EventType) []events.Event {
+func (c *eventCollector) byType(et core.EventType) []core.Event {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var out []events.Event
+	var out []core.Event
 	for _, ev := range c.evts {
 		if ev.Type() == et {
 			out = append(out, ev)
@@ -244,7 +244,7 @@ func TestEmitsTaskCreatedEvent(t *testing.T) {
 
 	tf.CreateTask("new task", nil, PriorityMedium)
 
-	created := collector.byType(events.EventTaskCreated)
+	created := collector.byType(core.EventTaskCreated)
 	if len(created) != 1 {
 		t.Fatalf("expected 1 TaskCreated, got %d", len(created))
 	}
@@ -258,7 +258,7 @@ func TestEmitsTaskCompletedEvent(t *testing.T) {
 	task, _ := tf.CreateTask("task", nil, PriorityMedium)
 	tf.UpdateTask(task.ID, "done", "")
 
-	completed := collector.byType(events.EventTaskCompleted)
+	completed := collector.byType(core.EventTaskCompleted)
 	if len(completed) != 1 {
 		t.Fatalf("expected 1 TaskCompleted, got %d", len(completed))
 	}
