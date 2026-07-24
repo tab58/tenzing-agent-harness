@@ -1,9 +1,3 @@
-// Ext surfaces the shared blackboard REPL as a core.Extension: the `repl`
-// tool via core.ToolProvider and lifecycle shutdown via core.SessionEndHook.
-// The *Blackboard instance is constructed at the composition root and
-// SHARED — the main agent and each subagent get their own Ext wrapping the
-// same blackboard under their own agent ID (write-own-slot enforcement
-// lives in the blackboard itself).
 package blackboard
 
 import (
@@ -21,6 +15,12 @@ var (
 	_ core.SessionEndHook = (*Ext)(nil)
 )
 
+// Ext surfaces the shared blackboard REPL as a core.Extension: the `repl`
+// tool via core.ToolProvider and lifecycle shutdown via core.SessionEndHook.
+// The *Blackboard instance is constructed at the composition root and
+// SHARED — the main agent and each subagent get their own Ext wrapping the
+// same blackboard under their own agent ID (write-own-slot enforcement
+// lives in the blackboard itself).
 type Ext struct {
 	bb      *Blackboard
 	agentID string

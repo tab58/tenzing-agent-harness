@@ -17,7 +17,7 @@ import (
 // TurnResult into the (string, error) contract the harness expects.
 type AgentRunner struct {
 	id           string
-	agent        Agent
+	agent        core.Agent
 	loop         *core.Loop
 	systemPrompt string
 }
@@ -110,7 +110,7 @@ func WithApprovalTimeout(d time.Duration) AgentRunnerOption {
 // NewAgentRunner creates a new AgentRunner. It performs one-time wiring
 // (tool definitions, skill map, stream callbacks on the Agent) and builds
 // a core.Loop for RunLoop to delegate to.
-func NewAgentRunner(agent Agent, opts ...AgentRunnerOption) (*AgentRunner, error) {
+func NewAgentRunner(agent core.Agent, opts ...AgentRunnerOption) (*AgentRunner, error) {
 	if agent == nil {
 		return nil, fmt.Errorf("no agent defined")
 	}

@@ -8,9 +8,9 @@ import (
 	"testing"
 
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/features/blackboard"
 	"github.com/tab58/tenzing-agent-harness/internal/features/todo"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 
 	"github.com/tab58/llm-providers/common"
 )
@@ -42,8 +42,8 @@ func (s *stubAgent) GetCurrentModel() string               { return "stub" }
 func (s *stubAgent) UpdateStreamCallback(_ func(string))   {}
 func (s *stubAgent) UpdateThinkingCallback(_ func(string)) {}
 
-func (s *stubAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string, _ []common.ToolDefinition) (runner.ReasoningResult, error) {
-	return runner.ReasoningResult{FinalAnswer: "done"}, nil
+func (s *stubAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string, _ []common.ToolDefinition) (core.ReasoningResult, error) {
+	return core.ReasoningResult{FinalAnswer: "done"}, nil
 }
 
 func TestNewSubAgentFactory(t *testing.T) {
@@ -52,7 +52,7 @@ func TestNewSubAgentFactory(t *testing.T) {
 		MaxDepth:      2,
 		MaxIterations: 10,
 		Cwd:           t.TempDir(),
-		AgentBuilder: func(llm common.LLM, sp string) (runner.Agent, error) {
+		AgentBuilder: func(llm common.LLM, sp string) (core.Agent, error) {
 			return &stubAgent{}, nil
 		},
 	})
@@ -80,7 +80,7 @@ func TestSubAgentFactorySpawnsAgent(t *testing.T) {
 		MaxDepth:      1,
 		MaxIterations: 5,
 		Cwd:           t.TempDir(),
-		AgentBuilder: func(llm common.LLM, sp string) (runner.Agent, error) {
+		AgentBuilder: func(llm common.LLM, sp string) (core.Agent, error) {
 			return &stubAgent{}, nil
 		},
 	})
@@ -122,7 +122,7 @@ func TestSubAgentFactoryChildBelowMaxDepthHasSpawnAgent(t *testing.T) {
 		MaxDepth:      2,
 		MaxIterations: 5,
 		Cwd:           t.TempDir(),
-		AgentBuilder: func(llm common.LLM, sp string) (runner.Agent, error) {
+		AgentBuilder: func(llm common.LLM, sp string) (core.Agent, error) {
 			return &stubAgent{}, nil
 		},
 	})
@@ -169,8 +169,8 @@ type fixedAnswerAgent struct{ answer string }
 func (s *fixedAnswerAgent) GetCurrentModel() string               { return "stub" }
 func (s *fixedAnswerAgent) UpdateStreamCallback(_ func(string))   {}
 func (s *fixedAnswerAgent) UpdateThinkingCallback(_ func(string)) {}
-func (s *fixedAnswerAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string, _ []common.ToolDefinition) (runner.ReasoningResult, error) {
-	return runner.ReasoningResult{FinalAnswer: s.answer}, nil
+func (s *fixedAnswerAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string, _ []common.ToolDefinition) (core.ReasoningResult, error) {
+	return core.ReasoningResult{FinalAnswer: s.answer}, nil
 }
 
 func newTestBlackboard(t *testing.T) *blackboard.Blackboard {
@@ -191,7 +191,7 @@ func factoryWithAnswer(t *testing.T, bb *blackboard.Blackboard, answer string) *
 		MaxIterations: 5,
 		Cwd:           t.TempDir(),
 		Blackboard:    bb,
-		AgentBuilder: func(llm common.LLM, sp string) (runner.Agent, error) {
+		AgentBuilder: func(llm common.LLM, sp string) (core.Agent, error) {
 			return &fixedAnswerAgent{answer: answer}, nil
 		},
 	})
@@ -292,7 +292,7 @@ func TestSubAgentSystemPromptIncludesWorkingDir(t *testing.T) {
 	factory := NewSubAgentFactory(SubAgentFactoryConfig{
 		AgentLLM: &stubLLM{},
 		Cwd:      cwd,
-		AgentBuilder: func(llm common.LLM, sp string) (runner.Agent, error) {
+		AgentBuilder: func(llm common.LLM, sp string) (core.Agent, error) {
 			capturedPrompt = sp
 			return &stubAgent{}, nil
 		},
@@ -324,9 +324,9 @@ type recordingAgent struct {
 	messages []common.Message
 }
 
-func (r *recordingAgent) DoReasoning(_ context.Context, messages []common.Message, _ []string, _ []common.ToolDefinition) (runner.ReasoningResult, error) {
+func (r *recordingAgent) DoReasoning(_ context.Context, messages []common.Message, _ []string, _ []common.ToolDefinition) (core.ReasoningResult, error) {
 	r.messages = append(r.messages, messages...)
-	return runner.ReasoningResult{FinalAnswer: "done"}, nil
+	return core.ReasoningResult{FinalAnswer: "done"}, nil
 }
 
 // Regression: sub-agents obeyed task-prompt instructions to deposit under
@@ -340,7 +340,7 @@ func TestSpawnAgentTaskInoculatedWithOwnSlot(t *testing.T) {
 		Cwd:        t.TempDir(),
 		Blackboard: bb,
 		ParentID:   "beef0000",
-		AgentBuilder: func(_ common.LLM, _ string) (runner.Agent, error) {
+		AgentBuilder: func(_ common.LLM, _ string) (core.Agent, error) {
 			return rec, nil
 		},
 	})

@@ -28,19 +28,22 @@ No CI pipeline yet. Run `go build ./...` and `go test ./...` before declaring wo
 
 ## Layer Boundaries
 
-Four layers, hexagonal dependency direction: **Core → Adapters → Extensions → Composition Root**.
+Five layers, hexagonal dependency direction: **Core → Adapters → Features → Composition Root → App**.
 
-| Layer                                                          | Knows about                              | Does NOT know about                   |
-| -------------------------------------------------------------- | ---------------------------------------- | ------------------------------------- |
-| Core (`internal/core/`)                                        | Domain types, port interfaces (`ModelPort`, `ToolPort`, `ContextPort`), FSM, events, extension/hook contracts, loop (`Loop`, `RunTurn`) | Everything outside `core` — adapters, extensions, harness, CLI |
-| Adapters (`internal/adapters/`)                                | Core port interfaces; concrete implementations (`contextstore`, `toolport.Composite`/`Wrap`) | Harness, CLI, sessions                |
-| Extensions (`internal/features/<name>/`, plus `subagent.SpawnExt`)  | Core capability interfaces (`ToolProvider`, `PromptContributor`, session/iteration/tool hooks) and whatever feature they wrap (skills registry, blackboard, subagent factory) | The loop's internals, other extensions |
-| Composition root (`harness.go`, `harness_options.go`, `llm.go`; `AgentRunner` facade) | Everything below: builds adapters, default + user extensions, the composite ToolPort, assembles the system prompt, wires one runner per loop | Tool implementations' internals       |
-| Agent (`internal/adapters/agent/agent.go`)                     | LLM provider, message types — stateless: receives the full message list and per-turn tool definitions on every `DoReasoning` call, returns the assistant message rather than storing it | Filesystem, processes, tools, skills, conversation history/compression |
+| Layer             | Folder                                                              | Knows about                              | Does NOT know about                   |
+| ------------------ | -------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------- |
+| Core               | `internal/core/` (+ `core/tooldef`)                                   | Domain types, all ports (`ModelPort`, `ToolPort`, `ContextPort`), extension/hook contracts (`Extensions`, hooks, `Decision`), the loop/FSM/turn/events, the `core.Agent` contract, the tool authoring contract (`tooldef.Definition`, `ExecutionContext`, `Schema`) | Everything else — adapters, features, harness, app |
+| Adapters           | `internal/adapters/` (`agent`, `contextstore`, `eventbus`, `toolport`) | Core only; concrete implementations of core ports — `agent` implements `core.Agent`, `contextstore` implements `ContextPort`, `eventbus` implements `Emitter` (+ `Hooks` dispatch), `toolport` implements `ToolPort` (`Composite`/`Wrap`) plus the native `Registry` | Features, harness, app |
+| Features           | `internal/features/<name>/` (plus `subagent.SpawnExt`, which lives in `harness/subagent` — see exception below) | Core only (+ `core/tooldef`); each package colocates its implementation with its `core.Extension` registration in `ext.go` | Other features, adapters, harness internals |
+| Composition root   | `internal/harness/` (`harness.go`, `harness_options.go`, `llm.go`, `memory.go`; `runner/` facade; `subagent/` as a child composition root) | Everything below: builds adapters, the default + caller extension set, the composite ToolPort, assembles the system prompt, wires one runner per loop | Tool implementations' internals       |
+| App                | `internal/app/nexus/` (+ `internal/app/` wiring, `cmd/app/`)          | Harness's public surface (`RunTurn`, `WithTool` registration) | —                                      |
 
-**Never import upward.** Core imports nothing from `internal/`. Adapters import core, never harness. Tools don't import harness. Agent doesn't import runner. If you need cross-layer communication, use an interface injected via config.
+**Never import upward.** Core imports nothing from `internal/` — it does import the external module `github.com/tab58/llm-providers/common` for canonical message/tool types (`ProviderToolDefinition = common.ToolDefinition`), which is a boundary crossing to an external dependency, not an internal layering violation. Adapters import core, never features or harness. Features import core only. Agent (`internal/adapters/agent`) doesn't import runner. If you need cross-layer communication, use an interface injected via config.
 
-One deliberate exception to "never import upward": `harness.New` imports `internal/adapters/agent` in exactly one place — the unexported `defaultAgentBuilder` fallback — so a harness works out of the box with no brain injection. All other harness code talks only to the `runner.Agent` interface. Callers with a custom brain override it via `harness.WithAgentBuilder(builder)`.
+Two deliberate exceptions to "never import upward":
+
+1. `harness.New` imports `internal/adapters/agent` in exactly one place — the unexported `defaultAgentBuilder` fallback — so a harness works out of the box with no brain injection. All other harness code talks only to the `core.Agent` interface. Callers with a custom brain override it via `harness.WithAgentBuilder(builder)`.
+2. `internal/harness/subagent` is a **child composition root**: it deliberately imports both `internal/features/*` (to share the skills/blackboard extensions and assemble a child's extension set) and `internal/harness/runner` (to build the child's `AgentRunner`) — the same wiring job `harness.go` does for the main agent, done again per spawn.
 
 ### Blackboard REPL
 
@@ -58,7 +61,7 @@ All tools reach the model through the composite ToolPort (`internal/adapters/too
 
 Two ways to add a tool:
 
-1. **Native built-in** (file/shell-level tooling): create `internal/features/builtins/tool_<name>.go`, implement `tooldef.Definition` (`Name()`, `Description()`, `Schema()`, `Execute()`, from `internal/core/tooldef`), register it in the registry (built-ins in `NewRegistry`, or inject via `harness.WithTool`).
+1. **Native built-in** (file/shell-level tooling): create `internal/features/builtins/tool_<name>.go`, implement `tooldef.Definition` (`Name()`, `Description()`, `Schema()`, `Execute()`, from `internal/core/tooldef`), and add it to `builtins.Defaults()` — the composition root seeds every `toolport.NewRegistry` with that set — or inject via `harness.WithTool`.
 2. **Extension tool**: implement `core.ToolProvider` on an extension — return `core.ToolSpec`s carrying their own `Execute` closure and an `Origin` like `"extension:<name>"`. No registry registration needed.
 
 Notes:
@@ -97,7 +100,7 @@ Models are `common.Model` values (`common.ModelDefinition{Name, MaxTokens, Conte
 
 ## Constructing a Harness
 
-`harness.New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, error)` is the harness constructor. External consumers use the public facade `pkg/tenzing` — pure type/func aliases over `internal/harness` (plus the `runner`, `tooldef`, and `events` types its options reference) exposing `tenzing.New` + `Harness.RunTurn` for a single programmatic loop. `pkg/tenzing/models.go` re-exports `common.Model`/`ModelDefinition`/`Provider` and the standard llm-providers models (provider-prefixed, asserted to `ModelDefinition`). `pkg/tenzing/llm.go` re-exports the LLM client layer so consumers never import llm-providers directly: `LLM` (= `common.LLM`) and every type its methods touch (`CompletionRequest`/`CompletionResponse`, `ContentBlock`, `Message`, role/content-type/streaming/stop-reason types with their consts, `Usage`/`TokenCount`/`ModelInfo`), message/content constructors, `CombinedText`, the sentinel errors, and the client constructors `LLMFromModel` (explicit API key) / `LLMFromEnv` with `ClientOption`/`WithBaseURL`. Naming: `common.ToolDefinition` is aliased as `LLMToolDefinition` because `tenzing.ToolDefinition` is the harness-side `tooldef.Definition`. New harness options, Hooks event types, llm-providers standard models, or additions to the `common.LLM` surface must be re-exported there in the same change. The brain defaults to the built-in agent implementation (`internal/adapters/agent`); override with `WithAgentBuilder`.
+`harness.New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, error)` is the harness constructor. External consumers use the public facade `pkg/tenzing` — pure type/func aliases over `internal/harness` (plus the `runner`, `tooldef`, `core`, and `adapters/eventbus` types its options reference) exposing `tenzing.New` + `Harness.RunTurn` for a single programmatic loop. `pkg/tenzing/models.go` re-exports `common.Model`/`ModelDefinition`/`Provider` and the standard llm-providers models (provider-prefixed, asserted to `ModelDefinition`). `pkg/tenzing/llm.go` re-exports the LLM client layer so consumers never import llm-providers directly: `LLM` (= `common.LLM`) and every type its methods touch (`CompletionRequest`/`CompletionResponse`, `ContentBlock`, `Message`, role/content-type/streaming/stop-reason types with their consts, `Usage`/`TokenCount`/`ModelInfo`), message/content constructors, `CombinedText`, the sentinel errors, and the client constructors `LLMFromModel` (explicit API key) / `LLMFromEnv` with `ClientOption`/`WithBaseURL`. Naming: `common.ToolDefinition` is aliased as `LLMToolDefinition` because `tenzing.ToolDefinition` is the harness-side `tooldef.Definition`. New harness options, Hooks event types, llm-providers standard models, or additions to the `common.LLM` surface must be re-exported there in the same change. The brain defaults to the built-in agent implementation (`internal/adapters/agent`); override with `WithAgentBuilder`.
 
 `HarnessConfig` no longer exists. Behavior is configured via flat `HarnessOption` functions (`internal/harness/harness_options.go`):
 
@@ -151,8 +154,8 @@ The FSM lives in `internal/core/fsm.go` and is per-Loop instance — subagents a
 | Pattern                  | Location                                              |
 | ------------------------ | ----------------------------------------------------- |
 | Core domain (types/FSM/events/loop/ports) | `internal/core/` |
-| Port adapters (contextstore, toolport) | `internal/adapters/` |
-| Extensions                | `internal/features/<name>/`                          |
+| Port adapters (agent, contextstore, eventbus, toolport) | `internal/adapters/` |
+| Features (core.Extension implementations) | `internal/features/<name>/` |
 | Tool authoring contract  | `internal/core/tooldef/tooldef.go`                    |
 | Built-in tool implementations | `internal/features/builtins/tool_*.go`          |
 | Provider implementations | external: `github.com/tab58/llm-providers`            |
@@ -165,7 +168,7 @@ The FSM lives in `internal/core/fsm.go` and is per-Loop instance — subagents a
 | Shared test helpers      | `**/testutil_test.go`                                 |
 | Sub-agent system         | `internal/harness/subagent/`                          |
 | Blackboard (shared REPL)  | `internal/features/blackboard/` (persistent REPL, repl tool) |
-| Event system              | `internal/core/` (vocabulary: `Event`, `EventType`, `BaseEvent`, `Emitter`); `internal/adapters/eventbus/` (`EventBus`, `Hooks`) |
+| Event system             | `internal/core/` (vocabulary: `Event`, `EventType`, `BaseEvent`, `Emitter`); `internal/adapters/eventbus/` (`EventBus`, `Hooks`) |
 | Embedded assets          | Adjacent to consumer (e.g. `blackboard/bootstrap.py`) |
 | Nexus (input channels)   | `internal/app/nexus/`                                 |
 | Nexus channel tools      | `internal/app/nexus/tools/`                           |

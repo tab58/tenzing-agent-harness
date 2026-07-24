@@ -10,7 +10,6 @@ import (
 	"github.com/tab58/llm-providers/common"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
-	"github.com/tab58/tenzing-agent-harness/internal/features/builtins"
 )
 
 type ToolProvider interface {
@@ -22,30 +21,16 @@ type Registry struct {
 	workingDir string
 }
 
-// NewRegistry creates a Registry with the built-in tools registered.
+// NewRegistry creates an empty Registry. Callers register tools via
+// Register (e.g. seed the standard set with builtins.Defaults()).
 // workingDir, when non-empty, is passed to tools via ExecutionContext so
 // relative paths resolve against it; empty means each tool falls back to
 // the process working directory.
 func NewRegistry(workingDir string) *Registry {
-	r := &Registry{
+	return &Registry{
 		tools:      make(map[string]tooldef.Definition),
 		workingDir: workingDir,
 	}
-
-	// basic tools
-	basicTools := []tooldef.Definition{
-		&builtins.BashTool{},
-		&builtins.ReadTool{},
-		&builtins.EditTool{},
-		&builtins.GrepTool{},
-		&builtins.GlobTool{},
-	}
-
-	for _, def := range basicTools {
-		r.Register(def)
-	}
-
-	return r
 }
 
 func (r *Registry) Register(def tooldef.Definition) error {

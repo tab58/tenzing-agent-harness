@@ -8,7 +8,6 @@ import (
 	"runtime/debug"
 
 	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 
 	"github.com/tab58/llm-providers/common"
 )
@@ -16,7 +15,7 @@ import (
 // maxTokensStdResponse caps output tokens per LLM request.
 const maxTokensStdResponse int64 = 32768
 
-var _ runner.Agent = (*Agent)(nil)
+var _ core.Agent = (*Agent)(nil)
 
 type Agent struct {
 	model        common.LLM
@@ -113,7 +112,7 @@ func (a *Agent) doStreamingReasoning(ctx context.Context, req common.CompletionR
 // The agent neither stores nor mutates them — the returned
 // Meta.AssistantMessage carries the model's response back for the caller to
 // append.
-func (a *Agent) DoReasoning(ctx context.Context, messages []common.Message, systemReminders []string, tools []common.ToolDefinition) (runner.ReasoningResult, error) {
+func (a *Agent) DoReasoning(ctx context.Context, messages []common.Message, systemReminders []string, tools []common.ToolDefinition) (core.ReasoningResult, error) {
 	// add system reminders to system prompt
 	system := a.systemPrompt
 	for _, r := range systemReminders {
@@ -131,13 +130,13 @@ func (a *Agent) DoReasoning(ctx context.Context, messages []common.Message, syst
 	}
 
 	slog.Debug("llm request", "model", model, "messages", len(messages), "tools", len(tools))
-	if slog.Default().Enabled(ctx, runner.LevelTrace) {
-		slog.Log(ctx, runner.LevelTrace, "llm request system prompt", "model", model, "system", system)
+	if slog.Default().Enabled(ctx, core.LevelTrace) {
+		slog.Log(ctx, core.LevelTrace, "llm request system prompt", "model", model, "system", system)
 		if raw, err := json.Marshal(messages); err == nil {
-			slog.Log(ctx, runner.LevelTrace, "llm request messages", "model", model, "messages_json", string(raw))
+			slog.Log(ctx, core.LevelTrace, "llm request messages", "model", model, "messages_json", string(raw))
 		}
 		if raw, err := json.Marshal(tools); err == nil {
-			slog.Log(ctx, runner.LevelTrace, "llm request tools", "model", model, "tools_json", string(raw))
+			slog.Log(ctx, core.LevelTrace, "llm request tools", "model", model, "tools_json", string(raw))
 		}
 	}
 
@@ -151,7 +150,7 @@ func (a *Agent) DoReasoning(ctx context.Context, messages []common.Message, syst
 	}
 	if err != nil {
 		slog.Error("llm call failed", "model", model, "error", err, "messages", len(messages), "stack", string(debug.Stack()))
-		return runner.ReasoningResult{}, fmt.Errorf("llm call (%s): %w", model, err)
+		return core.ReasoningResult{}, fmt.Errorf("llm call (%s): %w", model, err)
 	}
 
 	slog.Info("llm response", "model", resp.Model, "response_id", resp.ID, "input_tokens", resp.Usage.InputTokens, "output_tokens", resp.Usage.OutputTokens, "stop_reason", resp.StopReason)
@@ -160,7 +159,7 @@ func (a *Agent) DoReasoning(ctx context.Context, messages []common.Message, syst
 	}
 
 	// get the response details for logging
-	meta := runner.ResponseMeta{
+	meta := core.ResponseMeta{
 		Model:            resp.Model,
 		ResponseID:       resp.ID,
 		InputTokens:      resp.Usage.InputTokens,
@@ -182,14 +181,14 @@ func (a *Agent) DoReasoning(ctx context.Context, messages []common.Message, syst
 				Input: string(tc.ToolInput),
 			}
 		}
-		return runner.ReasoningResult{
+		return core.ReasoningResult{
 			ToolCalls: calls,
 			Meta:      meta,
 		}, nil
 	}
 
 	// if there are no tool calls, then just return the response
-	return runner.ReasoningResult{
+	return core.ReasoningResult{
 		FinalAnswer: resp.Text(),
 		Meta:        meta,
 	}, nil

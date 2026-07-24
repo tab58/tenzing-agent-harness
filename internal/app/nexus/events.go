@@ -3,7 +3,7 @@ package nexus
 import "github.com/tab58/tenzing-agent-harness/internal/core"
 
 // Nexus event types published on the harness event bus. Defined here (not
-// in the events package) so the harness stays ignorant of nexus.
+// in core) so core stays ignorant of nexus.
 const (
 	EventChannelError  core.EventType = "nexus.channel_error"
 	EventChannelStatus core.EventType = "nexus.channel_status"

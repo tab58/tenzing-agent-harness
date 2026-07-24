@@ -2,18 +2,19 @@
 
 ## Design Goals
 
-**Four-layer hexagonal architecture: Core → Adapters → Extensions → Composition Root.**
+**Five-layer hexagonal architecture: Core → Adapters → Features → Composition Root → App.**
 
-- **Core** (`internal/core/`) — the invariant domain. Types (`ToolCall`, `ToolResult`, `ReasoningResult`, `ResponseMeta`), port interfaces (`ModelPort`, `ToolPort`, `ContextPort`), the FSM, events, the extension system (`Extensions`, hooks, `Decision`), and the agent loop (`Loop`, `RunTurn`). Core imports nothing from this repo's `internal/` tree — adapters and extensions import core, never the reverse.
-- **Adapters** (`internal/adapters/`) — port implementations. `contextstore/` implements `ContextPort` (in-memory history, tool_use/tool_result pairing, compression). `toolport/` wraps `tools.Registry` as `ToolPort` (error-as-ToolResult conversion, panic recovery). The `Agent` interface in `runner/agent.go` extends `ModelPort` with construction-time wiring methods; the concrete agent (`internal/agent/`) implements it.
-- **Extensions** (`internal/extensions/`) — optional hooks that plug into the loop via `core.Extensions` (e.g. `reminders/` for system reminders). They implement core hook interfaces (`BeforeIterationHook`, `ToolCallHook`, etc.) and are registered at construction.
-- **Composition Root** — `harness.New` (the outermost shell) and `AgentRunner` (thin facade). The harness wires adapters, extensions, and tools, and assembles the system prompt (base + extension `PromptFragments`); `AgentRunner` performs one-time agent wiring (stream callbacks) and delegates to `core.Loop.RunTurn`, translating `TurnResult` into the `(string, error)` contract the harness expects.
+- **Core** (`internal/core/`, + `core/tooldef`) — the invariant domain. Types (`ToolCall`, `ToolResult`, `ReasoningResult`, `ResponseMeta`), port interfaces (`ModelPort`, `ToolPort`, `ContextPort`), the FSM, events, the extension system (`Extensions`, hooks, `Decision`), the agent loop (`Loop`, `RunTurn`), the `core.Agent` contract, and the tool authoring contract (`tooldef.Definition`, `ExecutionContext`, `Schema`, `NewToolResult`, `SpecFromDefinition`). Core imports nothing from this repo's `internal/` tree — it does import the external module `github.com/tab58/llm-providers/common` for canonical message/tool types (`ProviderToolDefinition = common.ToolDefinition`). Adapters and features import core, never the reverse.
+- **Adapters** (`internal/adapters/`) — port implementations. `agent/` implements `core.Agent` (the stateless ModelPort-side brain). `contextstore/` implements `ContextPort` (in-memory history, tool_use/tool_result pairing, compression; `compressor/` subpackage). `eventbus/` implements `core.Emitter` (`EventBus`) and dispatches typed `Hooks`. `toolport/` implements `ToolPort` — `Composite` (native + extension + dynamic mounts, panic recovery) and `Wrap` (plain single-registry port) — plus the native tool `Registry` (`NewRegistry(cwd)` creates it empty; composition roots seed it from `builtins.Defaults()`).
+- **Features** (`internal/features/<name>/`) — optional hooks that plug into the loop via `core.Extensions` (`advisor`, `blackboard`, `budgets`, `builtins`, `mcp`, `permissions`, `prompts`, `reminders`, `skills`, `snapshot`, `todo`). Each package imports core only (+ `core/tooldef`) and colocates its implementation with its `core.Extension` registration in `ext.go`. They implement core hook interfaces (`BeforeIterationHook`, `ToolCallHook`, etc.) and are registered at construction.
+- **Composition Root** (`internal/harness/`) — `harness.New` (the outermost shell) and `AgentRunner` (thin facade in `runner/`). The harness wires adapters, features, and tools, and assembles the system prompt (base + extension `PromptFragments`); `AgentRunner` performs one-time agent wiring (stream callbacks) and delegates to `core.Loop.RunTurn`, translating `TurnResult` into the `(string, error)` contract the harness expects. `internal/harness/subagent` is a deliberate **child composition root**: it imports both features and runner to build each spawned child's `AgentRunner` the same way `harness.go` builds the main one.
+- **App** (`internal/app/nexus/`, plus `internal/app/` wiring and `cmd/app/`) — consumes the harness's public surface (`RunTurn`, `WithTool`) to drive the HTTP/SSE server and channel monitoring; knows nothing below the composition root.
 
 The Harness creates an AgentRunner for the main session. A subagent spawns a fresh AgentRunner with its own Loop, FSM, and message history. This separation means you can swap the agent (different LLM, different strategy) without touching execution infrastructure, swap the harness (CLI → server, local → remote) without touching decision logic, and reuse the loop for subagents without coupling them to the CLI layer.
 
 **Everything that isn't invariant is configurable.** The loop (perception → action → observation), the FSM, and the dispatch pattern (`name → handler(input)`) are structural invariants — they live in `core.Loop` and never change. Everything else is injectable: which model (via `ModelPort`), which tools (via `ToolPort`), which context store (via `ContextPort`), which extensions, which system prompt. This allows piece-by-piece optimization without touching the loop.
 
-**Port interfaces are the DI surface.** All non-invariant loop behavior flows through `ModelPort`, `ToolPort`, `ContextPort`, and `Extensions`. The `AgentRunner` options (`WithToolRegistry`, `WithSkillsRegistry`, etc.) remain the external API but internally build the ports and delegate to `core.NewLoop`.
+**Port interfaces are the DI surface.** All non-invariant loop behavior flows through `ModelPort`, `ToolPort`, `ContextPort`, and `Extensions`. The `AgentRunner` options (`WithToolRegistry`, `WithToolPort`, `WithContextStore`, etc.) remain the external API but internally build the ports and delegate to `core.NewLoop`.
 
 **The loop never changes.** Perception → action → observation is the single primitive. New capabilities are added by registering tools or wrapping the loop with new mechanisms (planning, subagents, context compression) — never by modifying the loop itself.
 
@@ -21,27 +22,27 @@ The Harness creates an AgentRunner for the main session. A subagent spawns a fre
 
 **Provider agnosticism.** All LLM interaction flows through canonical types (`Message`, `ContentBlock`, `CompletionRequest/Response`). Provider implementations convert to/from SDK-specific types. Swapping providers requires zero changes above the provider layer.
 
-**Risk changes the process.** *(IMPLEMENTED.)* The permissions extension (`internal/extensions/permissions`, a `core.ToolCallHook` registered FIRST in the default extension order) classifies each tool call by name: `Deny` > `Ask` > `Allow` > policy default. The default policy asks for anything that executes code or writes files (`bash`, `write`, `edit`, `revert`, `repl`, `spawn_agent`, `advisor`) and allows read-only/in-memory tools. `AskUser` makes the core loop emit `ApprovalRequestedEvent` and block (up to `ApprovalTimeout`, harness default 120s; timeout/cancel = deny) for a `Respond(bool)` — cmd/app forwards it over SSE as `approval_requested` and resolves it via `POST /approve {call_id, approved}` with approve/deny buttons in the embedded UI. Configure with `harness.WithPermissionPolicy`, opt out with `harness.WithPermissionsDisabled` (headless/trusted drivers), tune waiting with `harness.WithApprovalTimeout`. The check happens in the core loop before tool execution — not in the tool itself, not in the Agent.
+**Risk changes the process.** *(IMPLEMENTED.)* The permissions extension (`internal/features/permissions`, a `core.ToolCallHook` registered FIRST in the default extension order) classifies each tool call by name: `Deny` > `Ask` > `Allow` > policy default. The default policy asks for anything that executes code or writes files (`bash`, `write`, `edit`, `revert`, `repl`, `spawn_agent`, `advisor`) and allows read-only/in-memory tools. `AskUser` makes the core loop emit `ApprovalRequestedEvent` and block (up to `ApprovalTimeout`, harness default 120s; timeout/cancel = deny) for a `Respond(bool)` — cmd/app forwards it over SSE as `approval_requested` and resolves it via `POST /approve {call_id, approved}` with approve/deny buttons in the embedded UI. Configure with `harness.WithPermissionPolicy`, opt out with `harness.WithPermissionsDisabled` (headless/trusted drivers), tune waiting with `harness.WithApprovalTimeout`. The check happens in the core loop before tool execution — not in the tool itself, not in the Agent.
 
-**Long tasks have budgets.** *(IMPLEMENTED.)* The budgets extension (`internal/extensions/budgets`, a `core.BeforeIterationHook`) enforces per-turn limits — `MaxIterations`, `MaxWallClock`, `MaxTokens` (input+output cumulative); zero = unlimited. The loop populates `TurnContext.Elapsed/InputTokens/OutputTokens` before each iteration's hooks; when a limit trips the extension sets `Terminate` and the turn ends gracefully with `TurnResult{Terminated: reason}` — a result, not a crash. Wire via `harness.WithBudgets(limits)`; subagents get `MaxIterations` from `WithSubagentMaxIterations` (default 100) through the same extension. Cost budget (USD) is deferred — llm-providers exposes no pricing tables.
+**Long tasks have budgets.** *(IMPLEMENTED.)* The budgets extension (`internal/features/budgets`, a `core.BeforeIterationHook`) enforces per-turn limits — `MaxIterations`, `MaxWallClock`, `MaxTokens` (input+output cumulative); zero = unlimited. The loop populates `TurnContext.Elapsed/InputTokens/OutputTokens` before each iteration's hooks; when a limit trips the extension sets `Terminate` and the turn ends gracefully with `TurnResult{Terminated: reason}` — a result, not a crash. Wire via `harness.WithBudgets(limits)`; subagents get `MaxIterations` from `WithSubagentMaxIterations` (default 100) through the same extension. Cost budget (USD) is deferred — llm-providers exposes no pricing tables.
 
 **Context is assembled, not dumped.** The system prompt is ordered by stability for cache efficiency: Layer 0 (system policies, stable prefix, cached) → Layer 1 (skill definitions, rarely change, cached) → Layer 2 (session instructions, per conversation, not cached) → Layer 3 (JIT-retrieved tool outputs, fresh, not cached). Untrusted data (user input, tool output from external sources) is marked with trust labels so the harness can treat it differently. *(Partially implemented — skills use progressive disclosure, but no cache-aware ordering or trust labels yet.)*
 
 **Registries own implementations, Agent gets metadata.** Tools and skills follow the same wiring pattern: registries load from disk at startup, extensions surface them through the composite ToolPort and prompt fragments, and the core loop passes the per-turn tool definitions into every `DoReasoning` call. The Agent holds no capability state at all — it tells the LLM what capabilities exist (from the definitions handed to it per request), and the loop actually runs them.
 
 ```
-main.go
-  ├── skills.NewRegistry()              → empty registry; RegisterSkillDir(dir)
-  │                                        scans each dir for skill metadata
-  ├── tools.NewRegistry(cwd, defs...)   → holds tool implementations
-  │     └── includes skill tools that reference skill registry
+harness.New(...)
+  ├── skills.NewRegistry()                  → empty registry; RegisterSkillDir(dir)
+  │                                            scans each dir for skill metadata
+  ├── toolport.NewRegistry(cwd)              → empty registry
+  │     └── builtins.Defaults() registered   → seeds the standard native tool set
   │
   ├── Agent gets metadata only:
-  │     ├── toolRegistry.ProviderDefinitions()  → what tools exist
-  │     └── skillRegistry.Discover()            → what skills exist
+  │     ├── toolPort.Definitions()           → what tools exist (native + extension + dynamic)
+  │     └── skills.Ext.PromptFragment()      → what skills exist (system-prompt index)
   │
-  └── AgentRunner gets registries for execution:
-        └── toolRegistry                        → executes tool calls
+  └── AgentRunner gets ports for execution:
+        └── toolport.Composite               → executes tool calls
 ```
 
 ---
@@ -55,73 +56,106 @@ cmd/app/server.go                       agentServer — routes (/query, /cancel,
 cmd/app/index.go                        Embedded chat UI (single-page HTML served at /)
 
 internal/
-├── core/                                Invariant domain: types, FSM, events, loop; imports nothing internal
-│   ├── turn.go                         Domain types (ToolCall, ToolResult, ReasoningResult, ResponseMeta)
+├── core/                                Invariant domain: types, FSM, events, loop, all ports, the Agent
+│                                        contract, tool authoring contract; imports nothing from internal/
+│   ├── agent.go                        Agent interface (the runner-facing "brain" contract)
+│   ├── turn.go                         Domain types (ToolCall, ToolResult, ReasoningResult, ResponseMeta,
+│   │                                    ProviderToolDefinition = common.ToolDefinition, ToolSpec)
 │   ├── ports.go                        Port interfaces (ModelPort, ToolPort, ContextPort)
 │   ├── loop.go                         Loop struct, NewLoop, RunTurn — the invariant agent loop
 │   ├── fsm.go                          Per-runner finite state machine (6 states, 6 transitions)
 │   ├── extension.go                    Extensions, hooks, Decision, TurnContext, TurnResult
 │   ├── event.go                        Event interface, BaseEvent, Emitter, EventType constants
-│   └── event_types.go                  All concrete event struct types (22 events; ApprovalRequestedEvent lives in approval.go)
-├── adapters/                            Port implementations
+│   ├── event_types.go                  Concrete event struct types (ApprovalRequestedEvent lives in approval.go)
+│   ├── approval.go                     ApprovalRequestedEvent, Loop.requestApproval/waitApproval
+│   └── tooldef/                        Tool authoring contract
+│       └── tooldef.go                  Definition, ExecutionContext, Schema, NewToolResult, SpecFromDefinition
+├── adapters/                            Port implementations; import core only
+│   ├── agent/                          core.Agent: stateless ModelPort-side brain
+│   │   └── agent.go                    Agent struct, AgentConfig, DoReasoning — owns no history/tools/memory
 │   ├── contextstore/                   ContextPort: in-memory history, pairing, compression
-│   └── toolport/                       ToolPort: Composite (native + extension + dynamic mounts, panic recovery, SpecFromDefinition) and Wrap (plain registry port)
+│   │   ├── store.go                    Store — implements core.ContextPort
+│   │   └── compressor/                 Three-layer compression
+│   │       └── compressor.go           Compressor — EstimateSize, MaybeCompress
+│   ├── eventbus/                       core.Emitter implementation + typed Hooks dispatcher
+│   │   ├── bus.go                      EventBus — fan-out to buffered subscriber channels
+│   │   └── hooks.go                    Hooks struct, StartHooks — typed callback dispatch off the bus
+│   └── toolport/                       ToolPort: Composite (native + extension + dynamic mounts, panic
+│       │                                recovery) and Wrap (plain registry port), plus the native Registry
+│       ├── composite.go                Composite, NewComposite
+│       ├── registry.go                 Registry, NewRegistry(cwd) — empty; composition roots seed it
+│       └── toolport.go                 Wrap(registry) → core.ToolPort
 ├── app/                                 App-level wiring shared by cmd/app
 │   ├── logsse.go                        LogBroadcaster — io.Writer teeing slog output to /debug SSE
 │   └── nexus/                          Input channel monitoring (see "Nexus" below)
 │       └── tools/                      Channel tools: list_channels, read_channel, search_channel
-├── extensions/                          core.Extension implementations
-│   ├── reminders/                      BeforeIterationHook — injects TODO-plan-state system reminders
-│   ├── skillsext/                      ToolProvider (list_skills/load_skill) + PromptContributor (skills index)
-│   ├── blackboardext/                  ToolProvider (repl) + SessionEndHook (closes the shared blackboard)
+├── features/                            core.Extension implementations; each imports core only (+ tooldef)
+│                                        and colocates its registration in ext.go
+│   ├── advisor/                        Tool — stateless one-shot LLM consult, registered only via
+│   │                                    WithAdvisorModel
+│   ├── blackboard/                     Shared Python REPL (Blackboard, REPL, Querier) + its Ext
+│   │   ├── blackboard.go               Blackboard: lazy-start REPL, Execute/Deposit
+│   │   ├── bootstrap.py                Embedded Python REPL (//go:embed)
+│   │   ├── ext.go                      Ext — ToolProvider (repl) + SessionEndHook (blackboard.NewExt)
+│   │   ├── preview.go                  Preview (fixed-truncation summaries); package doc lives here
+│   │   ├── querier.go                  Querier interface + llmQuerier (stateless one-shot LLM calls)
+│   │   ├── repl.go                     Python subprocess + JSON-line IPC
+│   │   └── tool_repl.go                repl tool (REPLTool)
+│   ├── budgets/                        BeforeIterationHook — iteration/wall-clock/token limits → graceful
+│   │                                    Terminate
+│   ├── builtins/                       Native built-in tools + Defaults() seed set
+│   │   ├── defaults.go                 Defaults() — bash, Read, Edit, Grep, Glob
+│   │   ├── file_tracker.go             Read-before-edit enforcement (content hashing)
+│   │   ├── fsutil.go                   Atomic file writes, per-path locks
+│   │   ├── tool_bash.go                Shell command execution (120s timeout)
+│   │   ├── tool_edit.go                String replacement in file
+│   │   ├── tool_glob.go                File pattern matching
+│   │   ├── tool_grep.go                Regex search across files (cap 500)
+│   │   └── tool_read.go                File read with line numbers
+│   ├── mcp/                            DynamicToolSource + session hooks — external MCP servers over stdio
+│   │   └── ext.go                      Ext, ServerConfig, New — package mcp (harness.WithMCPServer(mcp.ServerConfig{...}))
 │   ├── permissions/                    ToolCallHook — name/origin policy gating (default-on, runs first)
-│   ├── budgets/                        BeforeIterationHook — iteration/wall-clock/token limits → graceful Terminate
-│   └── mcpext/                         DynamicToolSource + session hooks — external MCP servers over stdio
-├── agent/                              Concrete, stateless Agent implementation
-│   └── agent.go                        Agent struct, AgentConfig, DoReasoning — owns no history, no compression, no memory I/O
-└── harness/                            Composition root: wiring, config, event bus, memory persistence
-    ├── harness.go                      New(), Harness struct, Shutdown, RunTurn — builds ports/adapters and wires core.Loop via runner.AgentRunner
+│   ├── prompts/                        System prompt construction
+│   │   ├── prompts.go                  DefaultSystemPrompt()
+│   │   └── default_main.gotmpl         Base system prompt template
+│   ├── reminders/                      BeforeIterationHook — injects TODO-plan-state system reminders
+│   ├── skills/                         Skill discovery & lazy loading + its Ext
+│   │   ├── ext.go                      Ext — ToolProvider (list_skills/load_skill) + PromptContributor
+│   │   │                                (skills index); skills.NewExt
+│   │   ├── registry.go                 Discover frontmatter at startup, Load on demand
+│   │   ├── tool_list_skills.go         List available skills (interface: SkillLister)
+│   │   └── tool_load_skill.go          Load skill content (interface: SkillContentLoader)
+│   ├── snapshot/                       Pre-write file snapshots backing the Write/Revert tools
+│   │   ├── snapshot_store.go           In-memory file snapshot store
+│   │   ├── tool_snapshot_write.go      File write with pre-write snapshot
+│   │   └── tool_snapshot_revert.go     Restore file from snapshot
+│   └── todo/                           In-memory planning system
+│       ├── todo_file.go                TodoFile — per-instance in-memory store with IDs, deps, priorities,
+│       │                                topo sort; SetEmitter(core.Emitter)
+│       ├── tool_todowrite.go           Bulk-write plan with dependency-by-index
+│       ├── tool_todocreate.go          Add single task mid-execution
+│       ├── tool_todoupdate.go          Update task status by ID
+│       ├── tool_todonext.go            Get next unblocked task
+│       └── tool_todoread.go            Read plan in dependency order
+└── harness/                            Composition root: wiring, config, memory persistence
+    ├── harness.go                      New(), Harness struct, Shutdown, RunTurn — builds ports/adapters and
+    │                                    wires core.Loop via runner.AgentRunner; defaultAgentBuilder falls
+    │                                    back to adapters/agent (the one upward import)
     ├── harness_options.go              HarnessOption functional options (no config struct)
-    ├── llm.go                          llmCache, defaultLLMFactory — per-(provider,model,baseURL) client caching
-    ├── memory.go                       memoryStore — persists ContextCompressedEvent summaries per conversation to disk; loaded back on WithConversationID resume
+    ├── llm.go                          llmCache, defaultLLMFactory — per-(provider,model,baseURL) client
+    │                                    caching
+    ├── memory.go                       memoryStore — persists ContextCompressedEvent summaries per
+    │                                    conversation to disk; loaded back on WithConversationID resume
     ├── runner/                         AgentRunner facade over core.Loop
-    │   ├── agent.go                    Agent interface (extends core.ModelPort with construction-time wiring methods)
-    │   ├── agent_runner.go             AgentRunner, AgentRunnerOption, NewAgentRunner — one-time agent wiring, builds core.Loop, RunLoop delegates to Loop.RunTurn
+    │   ├── agent.go                    AgentBuilder func(common.LLM, string) (core.Agent, error)
+    │   ├── agent_runner.go             AgentRunner, AgentRunnerOption, NewAgentRunner — one-time agent
+    │   │                                wiring, builds core.Loop, RunLoop delegates to Loop.RunTurn
     │   └── loop_fsm.go                 FSM type/const aliases from core
-    ├── events/                         Event bus & typed hooks
-    │   ├── event.go, event_types.go    Type aliases over the core event types
-    │   ├── bus.go                      EventBus — fan-out to buffered subscriber channels
-    │   ├── emitter.go                  Emitter interface alias
-    │   └── hooks.go                    Hooks struct, StartHooks — typed callback dispatch off the bus
-    ├── prompts/                        System prompt construction
-    ├── skills/                         Skill discovery & lazy loading
-    │   ├── registry.go                 Discover frontmatter at startup, Load on demand
-    │   ├── tool_list_skills.go         List available skills (interface: SkillLister)
-    │   └── tool_load_skill.go          Load skill content (interface: SkillContentLoader)
-    ├── tools/                          Tool dispatch system
-    │   └── registry.go                 Name→Definition map, Execute(), GetDefaultToolDefs()
-    ├── snapshot/                       Pre-write file snapshots backing the Write/Revert tools
-    │   ├── snapshot_store.go           In-memory file snapshot store
-    │   ├── tool_snapshot_write.go      File write with pre-write snapshot
-    │   └── tool_snapshot_revert.go     Restore file from snapshot
-    ├── todo/                           In-memory planning system
-    │   ├── todo_file.go                TodoFile — per-instance in-memory store with IDs, deps, priorities, topo sort
-    │   ├── tool_todowrite.go           Bulk-write plan with dependency-by-index
-    │   ├── tool_todocreate.go          Add single task mid-execution
-    │   ├── tool_todoupdate.go          Update task status by ID
-    │   ├── tool_todonext.go            Get next unblocked task
-    │   └── tool_todoread.go            Read plan in dependency order
-    ├── advisor/                        advisor tool — stateless one-shot LLM consult, registered only via WithAdvisorModel
-    ├── blackboard/                     Shared Python REPL package (Blackboard, REPL, Querier)
-    │   ├── blackboard.go               Blackboard: lazy-start REPL, Execute/Deposit
-    │   ├── bootstrap.py                Embedded Python REPL (//go:embed)
-    │   ├── preview.go                  Preview (fixed-truncation summaries)
-    │   ├── querier.go                  Querier interface + llmQuerier (stateless one-shot LLM calls)
-    │   ├── repl.go                     Python subprocess + JSON-line IPC
-    │   └── tool_repl.go                repl tool (REPLTool)
-    └── subagent/                       Sub-agent delegation
-        ├── subagent_factory.go         SubAgentFactory — builds child AgentRunner + Agent + contextstore.Store + child extensions/composite
-        ├── spawn_ext.go                SpawnExt — mounts spawn_agent as a core.Extension (in-package to avoid an import cycle)
+    └── subagent/                       Sub-agent delegation — a child composition root (imports features +
+                                          runner by design)
+        ├── subagent_factory.go         SubAgentFactory — builds child AgentRunner + Agent + contextstore.Store
+        ├── spawn_ext.go                SpawnExt — mounts spawn_agent as a core.Extension (in-package to avoid
+        │                                an import cycle)
         └── tool_spawn_agent.go         spawn_agent tool + AgentFactory interface
 
 LLM provider layer: external module github.com/tab58/llm-providers
@@ -131,16 +165,6 @@ LLM provider layer: external module github.com/tab58/llm-providers
 ├── openai_compat/                      Shared OpenAI-compatible base + 429 retry
 ├── ratelimit/                          TokenBucket, Semaphore, Wrap decorator
 └── logger/                             Optional diagnostics logger
-
-internal/harness/tools/tooldef/         Tool implementations (Write/Revert now in harness/snapshot/, skill tools in harness/skills/, todo tools in harness/todo/ — see tree above)
-├── definition.go                       Definition interface, Schema, ToolCall, ToolResult
-├── tool_bash.go                        Shell command execution (120s timeout)
-├── tool_read.go                        File read with line numbers
-├── tool_edit.go                        String replacement in file
-├── tool_grep.go                        Regex search across files (cap 500)
-├── tool_glob.go                        File pattern matching
-├── file_tracker.go                     Read-before-edit enforcement (content hashing)
-└── fsutil.go                           Atomic file writes, per-path locks
 ```
 
 ## Core Loop (`internal/core/loop.go`)
@@ -267,11 +291,11 @@ type ResponseMeta struct {
 }
 ```
 
-`ReasoningResult`/`ResponseMeta` live in `internal/core/turn.go`; `runner.ReasoningResult`/`runner.ResponseMeta` are aliases. `core.ModelPort` (`internal/core/ports.go`) mirrors this `DoReasoning` signature — `Agent` is the runner-facing name for the same contract, extended with the `Update*` wiring calls.
+The `Agent` interface shown above is `core.Agent`, declared in `internal/core/agent.go`; `ReasoningResult`/`ResponseMeta` live alongside it in `internal/core/turn.go`. There is no separate runner-facing alias — the runner (`internal/harness/runner`) works with `core.Agent` directly. `core.ModelPort` (`internal/core/ports.go`) mirrors the `DoReasoning` signature; `core.Agent` extends it with the `Update*` construction-time wiring calls.
 
 The Agent is **stateless**: `messages` is the full conversation history, rebuilt from the runner's `core.ContextPort` on every call, and `tools` is the tool surface for the turn, snapshotted from the loop's `core.ToolPort`. The agent neither stores nor mutates them, and returns the model's full response via `Meta.AssistantMessage` rather than appending it anywhere — the runner does that, against its `ContextPort`. `systemReminders` carries the current todo plan state.
 
-The concrete implementation lives in `internal/agent/`. Tool definitions are applied per-request from the `tools` parameter — the agent holds no tool state.
+The concrete implementation lives in `internal/adapters/agent/` (package `agent`). Tool definitions are applied per-request from the `tools` parameter — the agent holds no tool state.
 
 ```go
 type AgentConfig struct {
@@ -304,15 +328,16 @@ Deliberately thin orchestrator. Holds the main runner, optionally registers the 
 ```go
 type Harness struct {
     mainAgentRunner *runner.AgentRunner
-    toolRegistry    *tools.Registry
+    toolPort        *toolport.Composite
     todoFile        *todo.TodoFile
-    eventBus        *events.EventBus
-    stopHooks       func()          // unsubscribes caller-supplied events.Hooks
+    eventBus        *eventbus.EventBus
+    stopHooks       func()          // unsubscribes caller-supplied eventbus.Hooks
     stopMemoryHook  func()          // unsubscribes the ContextCompressedEvent -> memory.go persister
-    blackboard      *blackboard.Blackboard
     extensions      *core.Extensions
 }
 ```
+
+The shared `*blackboard.Blackboard` is built locally inside `New()` (not a Harness field) and wrapped in a `blackboard.NewExt(bb, "main")` extension alongside the subagent factory's per-child `NewExt(bb, childID)` — one instance, shared.
 
 Constructor: `New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, error)`. `HarnessConfig` no longer exists; behavior is configured via flat `HarnessOption` functions (`internal/harness/harness_options.go`) applied over `defaultHarnessOptions()`:
 
@@ -322,11 +347,11 @@ Constructor: `New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Har
 - `WithLLMFactory` — replaces the default env-var-based LLM factory (`provider.LLMFromEnv`) entirely; the test seam for injecting fakes.
 - `WithProviderBaseURL(provider, url)` — per-provider base URL override, consumed by the default factory only.
 - `WithBlackboardDisabled` — the shared blackboard REPL (`repl` tool, see "Blackboard (Shared REPL)" under Tool System) is on by default; this disables it.
-- `WithDisabledTool`, `WithSkillsDir`, `WithTool`, `WithHooks(events.Hooks)`, `WithSystemPrompt`, `WithEventBus`, `WithTextDeltaHandler`, `WithThinkingDeltaHandler` — remaining registry/observability knobs.
+- `WithDisabledTool`, `WithSkillsDir`, `WithTool`, `WithHooks(eventbus.Hooks)`, `WithSystemPrompt`, `WithEventBus`, `WithTextDeltaHandler`, `WithThinkingDeltaHandler`, `WithBudgets`, `WithMCPServer`, `WithPermissionPolicy`, `WithPermissionsDisabled`, `WithApprovalTimeout`, `WithConversationID`, `WithExtension` — remaining registry/observability/extension knobs.
 
 LLM clients are cached per (provider, model, base URL) via an internal `llmCache` (`internal/harness/llm.go`), so roles sharing a model definition share one client and its rate limiter.
 
-The brain defaults to the built-in agent implementation: when no `WithAgentBuilder` is set, `harness.New` falls back to an unexported adapter over `agent.New` (`internal/agent`). This is the one place `internal/harness` imports `internal/agent`; all other harness code depends only on the `runner.Agent` interface.
+The brain defaults to the built-in agent implementation: when no `WithAgentBuilder` is set, `harness.New` falls back to an unexported `defaultAgentBuilder` wrapping `agent.New` (`internal/adapters/agent`). This is the one place `internal/harness` imports `internal/adapters/agent`; all other harness code depends only on the `core.Agent` interface.
 
 ### Turns
 
@@ -347,8 +372,9 @@ type Registry struct {
 }
 ```
 
-- `NewRegistry(workingDir, tools...)` — creates registry with working directory for tool execution
+- `NewRegistry(workingDir)` — creates an **empty** registry with a working directory for tool execution; composition roots seed it by looping `builtins.Defaults()` through `Register`
 - `Register(def)` — adds tool, fails if name exists
+- `RegisterFromProvider(provider)` — registers every tool a `ToolProvider` (`GetTools() []tooldef.Definition`) exposes
 - `Execute(ctx, name, input)` — lookup, build `ExecutionContext` with registry's `workingDir`, run tool, return `ToolResult`
 - `CopyWithout(names...)` — clone registry excluding named tools (preserves `workingDir`)
 - `Definitions()` — return all registered tool definitions
@@ -390,7 +416,7 @@ Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn
 | `Glob` | File patterns | Supports `**` wildcard |
 | `Revert` | Restore file | Pops from snapshot store (one-shot) |
 | `spawn_agent` | Delegate operational task | Spawns child AgentRunner with full tools, blocks until complete, returns final answer |
-| `repl` | Shared persistent REPL (blackboard) | Slot `main` for the main agent, `a1`/`a2`/… for subagents; single mutex serializes all access; output truncated at 2000 chars |
+| `repl` | Shared persistent REPL (blackboard) | Slot `main` for the main agent, a hierarchical hex ID (e.g. `438314ea`, or `<parent>_<hex>` for grandchildren) per subagent; single mutex serializes all access; output truncated at 2000 chars |
 | `advisor` | Plan review by stronger model | One-shot call to the advisor model (plan + optional context); returns critique: risks, missing steps, alternatives. Disabled by default — registered only when `WithAdvisorModel` is set; not given to subagents |
 | `list_skills` | List skills | Returns name→description map from skill registry |
 | `load_skill` | Load skill | Lazy-loads full `SKILL.md` content by name |
@@ -408,17 +434,17 @@ Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn
 
 **fsutil** — per-path mutex locks (`sync.Map`) for concurrent file access. `writeFileAtomic` uses temp-file + rename for crash safety.
 
-**Todo reminders** — `TodoFile.FormatReminder()` formats the runner's own plan as a `<system-reminder>` block; returns `""` when the plan is empty. Wired per runner via `runner.WithTodoFile` and injected in `buildSystemReminders()`.
+**Todo reminders** — `TodoFile.FormatReminder()` formats the runner's own plan as a `<system-reminder>` block; returns `""` when the plan is empty. Wired via `reminders.New(todoFile.FormatReminder)` (`internal/features/reminders`), a `core.BeforeIterationHook` registered on `*core.Extensions` and run every iteration — reminders no longer flow through the runner directly.
 
 ### Blackboard (Shared REPL)
 
-Package `internal/harness/blackboard/`. A `Blackboard` is one persistent Python REPL per harness, shared by the main agent and every subagent. It wraps `NewREPL` (`repl.go`, `Querier`, and `bootstrap.py` in the same package host the sandboxed Python REPL subprocess machinery — there is no separate model-facing `rlm` tool). `bootstrap.py` carries no blackboard-specific logic — the shared namespace (`bb`, a guard dict that rejects writes to top-level keys other than the executing agent's slot) and helpers (`peek`, `bb_grep`) are injected via a one-time setup `Execute` call when the process lazily starts on first use. (`bootstrap.py`'s only blackboard-relevant feature is a transport-level stdout cap of 100k chars.) A single `sync.Mutex` serializes all access — the entire concurrency contract. If the REPL transport fails or a call is cancelled mid-execution, `Blackboard` closes and discards it so the next call restarts fresh (blackboard contents are lost); agents must tolerate a slot they expect being missing.
+Package `internal/features/blackboard/`. A `Blackboard` is one persistent Python REPL per harness, shared by the main agent and every subagent. It wraps `NewREPL` (`repl.go`, `Querier`, and `bootstrap.py` in the same package host the sandboxed Python REPL subprocess machinery — there is no separate model-facing `rlm` tool). `bootstrap.py` carries no blackboard-specific logic — the shared namespace (`bb`, a guard dict that rejects writes to top-level keys other than the executing agent's slot) and helpers (`peek`, `bb_grep`) are injected via a one-time setup `Execute` call when the process lazily starts on first use. (`bootstrap.py`'s only blackboard-relevant feature is a transport-level stdout cap of 100k chars.) A single `sync.Mutex` serializes all access — the entire concurrency contract. If the REPL transport fails or a call is cancelled mid-execution, `Blackboard` closes and discards it so the next call restarts fresh (blackboard contents are lost); agents must tolerate a slot they expect being missing.
 
-- **`repl` tool** (`blackboard.NewREPLTool`) — one instance per agent, bound to a slot ID: `main` for the main agent, `a1`, `a2`, … for subagents (assigned from a package-level `atomic.Int64` counter in `subagent.nextAgentID`). Convention (not enforced in code): an agent writes only inside `bb['<its slot>']`, reads anything, never busy-waits on another slot. REPL stdout returned to the calling agent is truncated to `DefaultHeadChars`+`DefaultTailChars` (1500+500 = 2000) chars.
+- **`repl` tool** (`blackboard.NewREPLTool`) — one instance per agent, bound to a slot ID: `main` for the main agent, a hierarchical hex ID for subagents (`SubAgentFactory.childID()`, `internal/harness/subagent/subagent_factory.go` — a fresh `runner.NewID()`, chained under the parent's ID as `<parent>_<hex>` for grandchildren; the same string is the child's runner ID, event label, and blackboard slot). Convention (not enforced in code): an agent writes only inside `bb['<its slot>']`, reads anything, never busy-waits on another slot. REPL stdout returned to the calling agent is truncated to `DefaultHeadChars`+`DefaultTailChars` (1500+500 = 2000) chars.
 - **Deposit/preview flow** (`SubAgentFactory.SpawnAgent`, `internal/harness/subagent/subagent_factory.go`) — a subagent's final answer up to `inlineResultMax` (2000) chars is returned inline, prefixed with `"Sub-agent <id> completed (blackboard slot bb['<id>'])."` so the orchestrator knows the slot even when nothing was deposited (the sub-agent may have written to its slot itself). Longer results are deposited via `Blackboard.Deposit` to `bb['<agent_id>']['result']` (agent ID validated against `[A-Za-z0-9_]+`, value passed through `SetVar`, never spliced into generated code) and the tool returns `"Sub-agent <id> completed."` plus a `Preview`: a 1500-char head / 500-char tail summary with a hint to inspect the full value via `peek()`/`bb_grep()`. If the deposit itself fails, `SpawnAgent` falls back to returning the full result inline.
 - **Logging** — every `exec`/`deposit` op is logged via `slog` at info level (so it lands in `.tenzing-agent.log`): agent, code (capped 500 chars), `stdout_len`, stdout head (capped 200 chars); transport failures log at error level. This is the only visibility into blackboard state since it never appears in transcripts.
 - **Options** — `WithBlackboardDisabled()` skips registering the blackboard and the `repl` tool entirely (subagent results are then always inline). On by default and re-exported from `pkg/tenzing`.
-- **Shutdown** — `Harness.Shutdown()` runs the extensions' session-end hooks (5s timeout) alongside stopping hook dispatch; the blackboard extension's `SessionEnd` closes the Python subprocess (`Blackboard.Close`). The `repl` tool mounts via `internal/extensions/blackboardext` (`core.ToolProvider`), not the tool registry.
+- **Shutdown** — `Harness.Shutdown()` runs the extensions' session-end hooks (5s timeout) alongside stopping hook dispatch; the blackboard extension's `SessionEnd` closes the Python subprocess (`Blackboard.Close`). The `repl` tool mounts via `internal/features/blackboard`'s `Ext` (`core.ToolProvider`, `blackboard.NewExt(bb, agentID)`), not the tool registry.
 
 Known limit: `llm_query`/`llm_batch` inside the blackboard hold the REPL mutex for all agents while they run — keep individual calls small and prefer `llm_batch` for fan-out work.
 
@@ -449,7 +475,7 @@ Skill metadata is passed as data into `AgentConfig` for system prompt injection.
 
 ## Unified Todo System
 
-In-memory planning system in `internal/harness/todo/`. Each `TodoFile` instance (constructed with `todo.NewTodoStore()`) holds its own plan — one per harness or subagent, never shared — so concurrent runners in one process cannot clobber or observe each other's plans. State survives context compression (it lives in-process, outside the message history) but not process restarts.
+In-memory planning system in `internal/features/todo/`. Each `TodoFile` instance (constructed with `todo.NewTodoStore()`) holds its own plan — one per harness or subagent, never shared — so concurrent runners in one process cannot clobber or observe each other's plans. State survives context compression (it lives in-process, outside the message history) but not process restarts.
 
 ```go
 type Task struct {
@@ -458,7 +484,7 @@ type Task struct {
     DependsOn   []string           // task IDs
 }
 
-type TodoFile struct { mu sync.Mutex; tasks []Task; emitter events.Emitter }
+type TodoFile struct { mu sync.Mutex; tasks []Task; emitter core.Emitter }
 ```
 
 - `WriteTasks(tasks)` — bulk write, replaces existing plan
@@ -466,7 +492,7 @@ type TodoFile struct { mu sync.Mutex; tasks []Task; emitter events.Emitter }
 - `UpdateTask(taskID, status, result)` — by ID or prefix match
 - `NextTask()` — highest-priority pending task with all deps done
 - `FormatReminder()` — topologically sorted `<system-reminder>` block injected per turn
-- `SetEmitter(events.Emitter)` — emits `TaskCreatedEvent`/`TaskCompletedEvent`
+- `SetEmitter(core.Emitter)` — emits `TaskCreatedEvent`/`TaskCompletedEvent`
 
 Five tools (`TodoWrite`, `TodoCreate`, `TodoUpdate`, `TodoNext`, `TodoRead`). `TodoWrite` accepts dependency-by-index for bulk planning; `TodoCreate` uses dependency-by-ID for mid-execution additions. Display always topologically sorted.
 
@@ -490,17 +516,17 @@ Compression is non-fatal: LLM errors are logged, original history preserved.
 
 ## Sandboxed Python REPL
 
-`internal/harness/blackboard/` hosts the sandboxed Python REPL subprocess machinery alongside the blackboard that builds on it (see "Blackboard (Shared REPL)" under Tool System): `repl.go` (subprocess + JSON-line IPC over stdin/stdout, callbacks for `llm_query`/`llm_batch`, `read_file`, `grep_file`, `list_files`), `bootstrap.py` (the embedded Python side of the protocol), and `querier.go` (the `Querier` interface + `llmQuerier`, a stateless one-shot LLM caller used for `llm_query`/`llm_batch`). There is no standalone model-facing tool here — REPL access reaches the model only through the blackboard's `repl` tool.
+`internal/features/blackboard/` hosts the sandboxed Python REPL subprocess machinery alongside the blackboard that builds on it (see "Blackboard (Shared REPL)" under Tool System): `repl.go` (subprocess + JSON-line IPC over stdin/stdout, callbacks for `llm_query`/`llm_batch`, `read_file`, `grep_file`, `list_files`), `bootstrap.py` (the embedded Python side of the protocol), and `querier.go` (the `Querier` interface + `llmQuerier`, a stateless one-shot LLM caller used for `llm_query`/`llm_batch`). There is no standalone model-facing tool here — REPL access reaches the model only through the blackboard's `repl` tool.
 
 ## Sub-Agent Architecture
 
 Recursive delegation via full autonomous sub-agents. The main agent delegates operational tasks (file editing, commands, investigations) to child agents that run their own AgentRunner loop. Children can themselves spawn sub-agents up to a configurable max depth.
 
-Architecture: `spawn_agent` tool, mounted via `subagent.SpawnExt` (`core.ToolProvider`; it lives in the subagent package rather than `internal/extensions/` because the factory's own child wiring builds it for grandchildren — a separate package would be an import cycle) → `AgentFactory` interface → `SubAgentFactory` builds child AgentRunner + Agent per spawn: fresh native registry, child extension set (`childExtensions`: own todo reminders, shared skills ext, shared blackboard ext under the child's slot ID, and — below max depth — a `SpawnExt` wrapping a nested factory), a child composite ToolPort over both, and the child system prompt assembled with the extension `PromptFragments`. Children share the blackboard REPL with their parent when one is configured, so analytical work over large inputs can run there via `llm_query`/`llm_batch`.
+Architecture: `spawn_agent` tool, mounted via `subagent.SpawnExt` (`core.ToolProvider`; it lives in `internal/harness/subagent` rather than a standalone `internal/features/<name>` package because the factory's own child wiring builds it for grandchildren — a separate package would be an import cycle) → `AgentFactory` interface → `SubAgentFactory` builds child AgentRunner + Agent per spawn: fresh native registry, child extension set (`childExtensions`: own todo reminders, shared skills ext, shared blackboard ext under the child's slot ID, and — below max depth — a `SpawnExt` wrapping a nested factory), a child composite ToolPort over both, and the child system prompt assembled with the extension `PromptFragments`. Children share the blackboard REPL with their parent when one is configured, so analytical work over large inputs can run there via `llm_query`/`llm_batch`.
 
 Depth control: factory tracks `currentDepth`. Depth exclusion is a wiring decision — `childExtensions` omits `SpawnExt` at `maxDepth`, so that child's tool surface has no `spawn_agent`. Default max depth is 1 (main → child; no grandchildren) using the main model.
 
-Tool isolation: each child gets fresh native tool instances via `tools.NewRegistry(cwd)`. No tool instance is shared between parent and child (the shared blackboard/skills extensions are deliberate wiring decisions). `pathLocks` (package-level `sync.Map`) is the one intentional exception — serializes file writes across all agents in-process.
+Tool isolation: each child gets fresh native tool instances via `toolport.NewRegistry(cwd)`, seeded from `builtins.Defaults()`. No tool instance is shared between parent and child (the shared blackboard/skills extensions are deliberate wiring decisions). `pathLocks` (package-level `sync.Map`) is the one intentional exception — serializes file writes across all agents in-process.
 
 Children get their own empty `TodoFile` (`todo.NewTodoStore()`) and the parent's shared skills extension (read-only registry). No event hooks.
 
@@ -508,7 +534,7 @@ Wired via `WithSubagentDepth` (default 1, 0 = disabled) and `WithSubagentMaxIter
 
 ## Event System
 
-Typed event bus providing full observability of the agent loop. Events fire at FSM state transitions and business-level boundaries. Package: `internal/harness/events/`.
+Typed event bus providing full observability of the agent loop. Events fire at FSM state transitions and business-level boundaries. Vocabulary (`Event`, `EventType`, `BaseEvent`, `Emitter`) lives in `internal/core/`; the implementation (`EventBus`, `Hooks`) lives in `internal/adapters/eventbus/`.
 
 ### Architecture
 
@@ -526,7 +552,7 @@ All events embed `BaseEvent` (type, timestamp, runner ID) and are JSON-serializa
 
 Programmatic: `bus.Subscribe(bufSize)` returns `<-chan Event`. Type-switch on concrete event structs.
 
-Hooks: `events.Hooks` struct has one typed `func(XxxEvent)` field per event type (all optional). `events.StartHooks(bus, hooks)` subscribes with a buffer of 64, dispatches in a goroutine, and returns a `stop func()` that unsubscribes to end dispatch; `Harness.Shutdown` calls it to stop hook dispatch.
+Hooks: `eventbus.Hooks` struct has one typed `func(XxxEvent)` field per event type (all optional). `eventbus.StartHooks(bus, hooks)` subscribes with a buffer of 64, dispatches in a goroutine, and returns a `stop func()` that unsubscribes to end dispatch; `Harness.Shutdown` calls it to stop hook dispatch.
 
 ### Emit Sites
 
@@ -538,7 +564,7 @@ Core loop (`core/loop.go`): emits turn, loop, reasoning, tool execution, LLM res
 
 ### Wiring
 
-`WithEventBus` (optional — `defaultHarnessOptions` creates one if not overridden), `WithHooks` (optional typed `events.Hooks`). `Harness.EventBus()` accessor for programmatic subscription.
+`WithEventBus` (optional — `defaultHarnessOptions` creates one if not overridden), `WithHooks` (optional typed `eventbus.Hooks`). `Harness.EventBus()` accessor for programmatic subscription.
 
 ## Nexus
 

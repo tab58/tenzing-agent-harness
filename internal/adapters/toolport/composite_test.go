@@ -10,6 +10,7 @@ import (
 	"github.com/tab58/llm-providers/common"
 
 	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/features/builtins"
 )
 
 // fakeStaticExt is an extension providing a static tool bundle.
@@ -52,11 +53,22 @@ func spec(name, origin, output string) core.ToolSpec {
 
 func newTestComposite(t *testing.T, exts ...core.Extension) *Composite {
 	t.Helper()
-	c, err := NewComposite(NewRegistry(t.TempDir()), core.NewExtensions(exts...))
+	c, err := NewComposite(newTestRegistry(t), core.NewExtensions(exts...))
 	if err != nil {
 		t.Fatalf("NewComposite: %v", err)
 	}
 	return c
+}
+
+// newTestRegistry returns a Registry seeded with the standard builtin tools,
+// for tests that assert on native-tool presence/ordering (e.g. "bash").
+func newTestRegistry(t *testing.T) *Registry {
+	t.Helper()
+	r := NewRegistry(t.TempDir())
+	for _, def := range builtins.Defaults() {
+		r.Register(def)
+	}
+	return r
 }
 
 func TestCompositeDefinitionsStableOrder(t *testing.T) {
@@ -109,7 +121,7 @@ func TestCompositeOrigin(t *testing.T) {
 
 func TestCompositeNameCollision(t *testing.T) {
 	ext := &fakeStaticExt{name: "clash", specs: []core.ToolSpec{spec("bash", "extension:clash", "boom")}}
-	_, err := NewComposite(NewRegistry(t.TempDir()), core.NewExtensions(ext))
+	_, err := NewComposite(newTestRegistry(t), core.NewExtensions(ext))
 	if err == nil {
 		t.Fatal("expected construction error on name collision with native tool")
 	}

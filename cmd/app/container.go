@@ -19,8 +19,8 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/app"
 	"github.com/tab58/tenzing-agent-harness/internal/app/nexus"
 	nexustools "github.com/tab58/tenzing-agent-harness/internal/app/nexus/tools"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 )
 
 type Config struct {
@@ -137,7 +137,7 @@ func setupLogging(cwd string, debug bool, tee io.Writer) (*os.File, error) {
 	level := slog.LevelInfo
 	if debug {
 		name = fmt.Sprintf(".tenzing-agent-%s.log", time.Now().UTC().Format("20060102T150405Z"))
-		level = runner.LevelTrace
+		level = core.LevelTrace
 	}
 
 	logFile, err := os.OpenFile(filepath.Join(cwd, name), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)

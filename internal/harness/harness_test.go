@@ -11,7 +11,6 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/features/prompts"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 
 	"github.com/tab58/llm-providers/common"
 )
@@ -22,8 +21,8 @@ func (s *stubAgent) GetCurrentModel() string               { return "stub-model"
 func (s *stubAgent) UpdateStreamCallback(_ func(string))   {}
 func (s *stubAgent) UpdateThinkingCallback(_ func(string)) {}
 
-func (s *stubAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string, _ []common.ToolDefinition) (runner.ReasoningResult, error) {
-	return runner.ReasoningResult{FinalAnswer: "done"}, nil
+func (s *stubAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string, _ []common.ToolDefinition) (core.ReasoningResult, error) {
+	return core.ReasoningResult{FinalAnswer: "done"}, nil
 }
 
 type stubLLM struct{}
@@ -49,7 +48,7 @@ func (s *stubLLM) ProviderName() common.Provider { return common.ProviderOllama 
 
 var testModel = common.ModelDefinition{Name: "stub-model", Provider: common.ProviderOllama}
 
-func stubBrain(_ common.LLM, _ string) (runner.Agent, error) { return &stubAgent{}, nil }
+func stubBrain(_ common.LLM, _ string) (core.Agent, error) { return &stubAgent{}, nil }
 
 func stubFactory(_ common.ModelDefinition) (common.LLM, error) { return &stubLLM{}, nil }
 
@@ -90,7 +89,7 @@ func TestMainAgentBuiltWithResolvedSystemPrompt(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			redirectHome(t)
 			var captured string
-			builder := func(_ common.LLM, sp string) (runner.Agent, error) {
+			builder := func(_ common.LLM, sp string) (core.Agent, error) {
 				captured = sp
 				return &stubAgent{}, nil
 			}
@@ -360,7 +359,7 @@ func TestHarnessDefaultPermissionsAskAndDeny(t *testing.T) {
 
 	var requested core.ApprovalRequestedEvent
 	h, err := New(testModel,
-		WithAgentBuilder(func(_ common.LLM, _ string) (runner.Agent, error) { return agent, nil }),
+		WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return agent, nil }),
 		WithLLMFactory(stubFactory),
 		WithSystemPrompt("test"),
 		WithBlackboardDisabled(),
@@ -415,7 +414,7 @@ func TestHarnessPermissionsDisabledRunsToolsDirectly(t *testing.T) {
 	)
 
 	h, err := New(testModel,
-		WithAgentBuilder(func(_ common.LLM, _ string) (runner.Agent, error) { return agent, nil }),
+		WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return agent, nil }),
 		WithLLMFactory(stubFactory),
 		WithSystemPrompt("test"),
 		WithBlackboardDisabled(),

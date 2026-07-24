@@ -10,6 +10,7 @@ import (
 
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/features/builtins"
 	"github.com/tab58/tenzing-agent-harness/internal/features/reminders"
 	"github.com/tab58/tenzing-agent-harness/internal/features/snapshot"
 	"github.com/tab58/tenzing-agent-harness/internal/features/todo"
@@ -31,6 +32,9 @@ func TestIntegration_ReadTool(t *testing.T) {
 	filePath := seedFile(t, workDir, "sample.txt", content)
 
 	registry := toolport.NewRegistry("")
+	for _, def := range builtins.Defaults() {
+		registry.Register(def)
+	}
 
 	result, err := registry.Execute(context.Background(), "Read", jsonInput(map[string]any{
 		"file_path": filePath,
@@ -50,6 +54,9 @@ func TestIntegration_ReadTool(t *testing.T) {
 func TestIntegration_ReadTool_MissingFile(t *testing.T) {
 	workDir := t.TempDir()
 	registry := toolport.NewRegistry("")
+	for _, def := range builtins.Defaults() {
+		registry.Register(def)
+	}
 
 	result, err := registry.Execute(context.Background(), "Read", jsonInput(map[string]any{
 		"file_path": filepath.Join(workDir, "nope.txt"),
@@ -126,6 +133,9 @@ func TestIntegration_EditTool(t *testing.T) {
 	filePath := seedFile(t, workDir, "editable.txt", "hello world")
 
 	registry := toolport.NewRegistry("")
+	for _, def := range builtins.Defaults() {
+		registry.Register(def)
+	}
 
 	result, err := registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
 		"file_path":  filePath,
@@ -146,6 +156,9 @@ func TestIntegration_EditTool_NotFound(t *testing.T) {
 	filePath := seedFile(t, workDir, "editable.txt", "hello world")
 
 	registry := toolport.NewRegistry("")
+	for _, def := range builtins.Defaults() {
+		registry.Register(def)
+	}
 
 	result, err := registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
 		"file_path":  filePath,
@@ -165,6 +178,9 @@ func TestIntegration_EditTool_NotUnique(t *testing.T) {
 	filePath := seedFile(t, workDir, "editable.txt", "aaa bbb aaa")
 
 	registry := toolport.NewRegistry("")
+	for _, def := range builtins.Defaults() {
+		registry.Register(def)
+	}
 
 	result, err := registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
 		"file_path":  filePath,
@@ -185,6 +201,9 @@ func TestIntegration_EditTool_ReplaceAll(t *testing.T) {
 	filePath := seedFile(t, workDir, "editable.txt", "aaa bbb aaa")
 
 	registry := toolport.NewRegistry("")
+	for _, def := range builtins.Defaults() {
+		registry.Register(def)
+	}
 
 	result, err := registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
 		"file_path":   filePath,
@@ -211,6 +230,9 @@ func TestIntegration_WriteEditRevert_FullCycle(t *testing.T) {
 	revertTool := snapshot.NewRevertTool(snapshots)
 
 	registry := toolport.NewRegistry("")
+	for _, def := range builtins.Defaults() {
+		registry.Register(def)
+	}
 	registry.Register(writeTool)
 	registry.Register(revertTool)
 
@@ -262,6 +284,9 @@ func TestIntegration_ReadEditRevert_ThroughLoop(t *testing.T) {
 	)
 
 	registry := toolport.NewRegistry("")
+	for _, def := range builtins.Defaults() {
+		registry.Register(def)
+	}
 	registry.Register(snapshot.NewWriteTool(snapshots))
 	registry.Register(snapshot.NewRevertTool(snapshots))
 
@@ -380,6 +405,9 @@ func TestIntegration_MultipleToolCalls(t *testing.T) {
 	)
 
 	registry := toolport.NewRegistry("")
+	for _, def := range builtins.Defaults() {
+		registry.Register(def)
+	}
 
 	r, err := runner.NewAgentRunner(
 		agent,
@@ -449,6 +477,9 @@ func TestIntegration_ToolHookCalled(t *testing.T) {
 
 	collector := &testEventCollector{}
 	registry := toolport.NewRegistry("")
+	for _, def := range builtins.Defaults() {
+		registry.Register(def)
+	}
 
 	r, err := runner.NewAgentRunner(
 		agent,
@@ -613,7 +644,7 @@ func TestIntegration_ResumeSeedsContextStoreFromPersistedMemory(t *testing.T) {
 	)
 
 	h1, err := New(testModel,
-		WithAgentBuilder(func(_ common.LLM, _ string) (runner.Agent, error) { return agent1, nil }),
+		WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return agent1, nil }),
 		WithLLMFactory(func(_ common.ModelDefinition) (common.LLM, error) { return compressionLLM, nil }),
 		WithSystemPrompt("test"),
 	)
@@ -660,7 +691,7 @@ func TestIntegration_ResumeSeedsContextStoreFromPersistedMemory(t *testing.T) {
 	// the agent must see on its very first DoReasoning call.
 	agent2 := newScriptedAgent(finalStep("session two done"))
 	h2, err := New(testModel,
-		WithAgentBuilder(func(_ common.LLM, _ string) (runner.Agent, error) { return agent2, nil }),
+		WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return agent2, nil }),
 		WithLLMFactory(stubFactory),
 		WithSystemPrompt("test"),
 		WithConversationID(convID),

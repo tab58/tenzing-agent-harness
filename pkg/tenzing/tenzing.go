@@ -105,9 +105,9 @@ const (
 // Agent is the "brain" contract consumed by the runner; implement it and
 // pass a builder via WithAgentBuilder to replace the default agent.
 type (
-	Agent           = runner.Agent
+	Agent           = core.Agent
 	AgentBuilder    = runner.AgentBuilder
-	ReasoningResult = runner.ReasoningResult
+	ReasoningResult = core.ReasoningResult
 )
 
 // Tool types, for implementing custom tools passed via WithTool.

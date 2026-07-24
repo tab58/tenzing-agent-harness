@@ -80,8 +80,8 @@ func TestMissingResultGetsPlaceholder(t *testing.T) {
 }
 
 // TestNoCompressionAfterToolResultsAppend guards against re-checking
-// compression on every append. The source (internal/agent/context/context.go
-// AppendMessages) only ran the check when the last appended message was
+// compression on every append. The source (internal/adapters/contextstore/store.go)
+// only ran the check when the last appended message was
 // RoleAssistant; a compaction firing mid-turn after a user/tool-result
 // append (with the store's mutex held across a synchronous LLM call) is a
 // regression this test catches.

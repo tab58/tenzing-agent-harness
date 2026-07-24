@@ -1,8 +1,3 @@
-// Ext surfaces the skills registry as a core.Extension: the
-// list_skills/load_skill tools via core.ToolProvider and the skills index
-// block via core.PromptContributor. The agent itself knows nothing about
-// skills — the composition root registers this extension and assembles the
-// system prompt from PromptFragments.
 package skills
 
 import (
@@ -22,6 +17,11 @@ var (
 	_ core.PromptContributor = (*Ext)(nil)
 )
 
+// Ext surfaces the skills registry as a core.Extension: the
+// list_skills/load_skill tools via core.ToolProvider and the skills index
+// block via core.PromptContributor. The agent itself knows nothing about
+// skills — the composition root registers this extension and assembles the
+// system prompt from PromptFragments.
 type Ext struct {
 	reg *Registry
 }

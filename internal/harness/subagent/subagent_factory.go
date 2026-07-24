@@ -12,6 +12,7 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/features/blackboard"
 	"github.com/tab58/tenzing-agent-harness/internal/features/budgets"
+	"github.com/tab58/tenzing-agent-harness/internal/features/builtins"
 	"github.com/tab58/tenzing-agent-harness/internal/features/reminders"
 	"github.com/tab58/tenzing-agent-harness/internal/features/todo"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
@@ -257,5 +258,9 @@ func (f *SubAgentFactory) childExtensions(agentID string, todoFile *todo.TodoFil
 }
 
 func (f *SubAgentFactory) buildChildToolRegistry(agentID string) *toolport.Registry {
-	return toolport.NewRegistry(f.cwd)
+	toolRegistry := toolport.NewRegistry(f.cwd)
+	for _, def := range builtins.Defaults() {
+		toolRegistry.Register(def)
+	}
+	return toolRegistry
 }

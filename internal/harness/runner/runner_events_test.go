@@ -39,7 +39,7 @@ func (c *eventCollector) byType(t core.EventType) []core.Event {
 
 type minimalAgent struct {
 	mu       sync.Mutex
-	steps    []ReasoningResult
+	steps    []core.ReasoningResult
 	idx      int
 	messages [][]common.Message
 }
@@ -48,7 +48,7 @@ func (a *minimalAgent) GetCurrentModel() string               { return "" }
 func (a *minimalAgent) UpdateStreamCallback(_ func(string))   {}
 func (a *minimalAgent) UpdateThinkingCallback(_ func(string)) {}
 
-func (a *minimalAgent) DoReasoning(_ context.Context, messages []common.Message, _ []string, _ []common.ToolDefinition) (ReasoningResult, error) {
+func (a *minimalAgent) DoReasoning(_ context.Context, messages []common.Message, _ []string, _ []common.ToolDefinition) (core.ReasoningResult, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.messages = append(a.messages, messages)
@@ -67,21 +67,21 @@ func newTestContextStore() core.ContextPort {
 // ToolCalls and Meta.AssistantMessage in sync — as the real agent does. The
 // context store pairs tool_results against the message's own tool_use
 // blocks, not the parallel ToolCalls list, so tests must supply both.
-func toolCallStep(calls ...core.ToolCall) ReasoningResult {
+func toolCallStep(calls ...core.ToolCall) core.ReasoningResult {
 	blocks := make([]common.ContentBlock, len(calls))
 	for i, c := range calls {
 		blocks[i] = common.NewToolUseContent(c.ID, c.Name, []byte(c.Input))
 	}
-	return ReasoningResult{
+	return core.ReasoningResult{
 		ToolCalls: calls,
-		Meta:      ResponseMeta{AssistantMessage: common.Message{Role: common.RoleAssistant, Content: blocks}},
+		Meta:      core.ResponseMeta{AssistantMessage: common.Message{Role: common.RoleAssistant, Content: blocks}},
 	}
 }
 
 func TestRunnerEmitsTurnAndLoopEvents(t *testing.T) {
 	collector := &eventCollector{}
 
-	agent := &minimalAgent{steps: []ReasoningResult{
+	agent := &minimalAgent{steps: []core.ReasoningResult{
 		{FinalAnswer: "done"},
 	}}
 
@@ -130,7 +130,7 @@ func TestRunnerEmitsToolEvents(t *testing.T) {
 	registry := toolport.NewRegistry("")
 	registry.Register(&echoTool{})
 
-	agent := &minimalAgent{steps: []ReasoningResult{
+	agent := &minimalAgent{steps: []core.ReasoningResult{
 		toolCallStep(core.ToolCall{ID: "1", Name: "echo", Input: `{"text":"hi"}`}),
 		{FinalAnswer: "done"},
 	}}
@@ -172,7 +172,7 @@ func TestRunnerExecutesAllToolCallsInBatch(t *testing.T) {
 	registry := toolport.NewRegistry("")
 	registry.Register(&echoTool{})
 
-	agent := &minimalAgent{steps: []ReasoningResult{
+	agent := &minimalAgent{steps: []core.ReasoningResult{
 		toolCallStep(
 			core.ToolCall{ID: "1", Name: "echo", Input: `{"text":"one"}`},
 			core.ToolCall{ID: "2", Name: "echo", Input: `{"text":"two"}`},
@@ -281,7 +281,7 @@ func TestToolCallDeniedByExtension(t *testing.T) {
 	tool := &countingEchoTool{}
 	registry.Register(tool)
 
-	agent := &minimalAgent{steps: []ReasoningResult{
+	agent := &minimalAgent{steps: []core.ReasoningResult{
 		toolCallStep(core.ToolCall{ID: "1", Name: "echo", Input: `{"text":"hi"}`}),
 		{FinalAnswer: "done"},
 	}}

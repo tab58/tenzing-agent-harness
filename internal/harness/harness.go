@@ -17,6 +17,7 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/features/advisor"
 	"github.com/tab58/tenzing-agent-harness/internal/features/blackboard"
 	"github.com/tab58/tenzing-agent-harness/internal/features/budgets"
+	"github.com/tab58/tenzing-agent-harness/internal/features/builtins"
 	"github.com/tab58/tenzing-agent-harness/internal/features/mcp"
 	"github.com/tab58/tenzing-agent-harness/internal/features/permissions"
 	"github.com/tab58/tenzing-agent-harness/internal/features/prompts"
@@ -46,7 +47,7 @@ func (h *Harness) EventBus() *eventbus.EventBus {
 
 // defaultAgentBuilder adapts the built-in agent implementation to the
 // runner.AgentBuilder contract.
-func defaultAgentBuilder(llm common.LLM, systemPrompt string) (runner.Agent, error) {
+func defaultAgentBuilder(llm common.LLM, systemPrompt string) (core.Agent, error) {
 	return agent.New(agent.AgentConfig{Model: llm, SystemPrompt: systemPrompt})
 }
 
@@ -179,6 +180,9 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 	allExts := core.NewExtensions(append(defaultExts, o.extensions...)...)
 
 	toolRegistry := toolport.NewRegistry(cwd)
+	for _, def := range builtins.Defaults() {
+		toolRegistry.Register(def)
+	}
 	toolRegistry.RegisterFromProvider(todoFile)
 
 	// Memory: the harness owns persistence. Summaries arrive on the event
@@ -234,7 +238,7 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 
 	// Build and wire the main agent. The default builder path is stateless;
 	// custom builders own their own memory story.
-	var mainAgent runner.Agent
+	var mainAgent core.Agent
 	if o.agentBuilder != nil {
 		mainAgent, err = o.agentBuilder(mainLLM, mainSystemPrompt)
 	} else {

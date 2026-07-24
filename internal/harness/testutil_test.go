@@ -12,7 +12,6 @@ import (
 
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/contextstore"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 
 	"github.com/tab58/llm-providers/common"
 )
@@ -46,7 +45,7 @@ func (c *testEventCollector) byType(t core.EventType) []core.Event {
 // Captures all inputs for assertion.
 type ScriptedAgent struct {
 	mu        sync.Mutex
-	steps     []runner.ReasoningResult
+	steps     []core.ReasoningResult
 	callIndex int
 	captured  []capturedCall
 }
@@ -56,7 +55,7 @@ type capturedCall struct {
 	Reminders []string
 }
 
-func newScriptedAgent(steps ...runner.ReasoningResult) *ScriptedAgent {
+func newScriptedAgent(steps ...core.ReasoningResult) *ScriptedAgent {
 	return &ScriptedAgent{steps: steps}
 }
 
@@ -64,7 +63,7 @@ func (s *ScriptedAgent) GetCurrentModel() string               { return "scripte
 func (s *ScriptedAgent) UpdateStreamCallback(_ func(string))   {}
 func (s *ScriptedAgent) UpdateThinkingCallback(_ func(string)) {}
 
-func (s *ScriptedAgent) DoReasoning(_ context.Context, messages []common.Message, reminders []string, _ []common.ToolDefinition) (runner.ReasoningResult, error) {
+func (s *ScriptedAgent) DoReasoning(_ context.Context, messages []common.Message, reminders []string, _ []common.ToolDefinition) (core.ReasoningResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -74,7 +73,7 @@ func (s *ScriptedAgent) DoReasoning(_ context.Context, messages []common.Message
 	})
 
 	if s.callIndex >= len(s.steps) {
-		return runner.ReasoningResult{}, fmt.Errorf("ScriptedAgent: no more steps (called %d times, only %d steps)", s.callIndex+1, len(s.steps))
+		return core.ReasoningResult{}, fmt.Errorf("ScriptedAgent: no more steps (called %d times, only %d steps)", s.callIndex+1, len(s.steps))
 	}
 
 	result := s.steps[s.callIndex]
@@ -112,17 +111,17 @@ var toolStepSeq int
 
 // toolStep builds a ReasoningResult for a single tool_use response, keeping
 // ToolCalls and Meta.AssistantMessage in sync — as the real agent does (see
-// internal/agent/agent.go). The context store pairs tool_results against the
+// internal/adapters/agent/agent.go). The context store pairs tool_results against the
 // assistant message's own tool_use content blocks, not the parallel
 // ToolCalls list, so a fixture that only set ToolCalls silently dropped
 // every tool result (empty pending) instead of exercising the real path.
-func toolStep(name, input string) runner.ReasoningResult {
+func toolStep(name, input string) core.ReasoningResult {
 	toolStepSeq++
 	id := fmt.Sprintf("tu-%d", toolStepSeq)
 	call := core.ToolCall{ID: id, Name: name, Input: input}
-	return runner.ReasoningResult{
+	return core.ReasoningResult{
 		ToolCalls: []core.ToolCall{call},
-		Meta: runner.ResponseMeta{
+		Meta: core.ResponseMeta{
 			AssistantMessage: common.Message{
 				Role:    common.RoleAssistant,
 				Content: []common.ContentBlock{common.NewToolUseContent(call.ID, call.Name, []byte(call.Input))},
@@ -133,11 +132,11 @@ func toolStep(name, input string) runner.ReasoningResult {
 
 // finalStep builds a ReasoningResult for a final-answer response, with
 // Meta.AssistantMessage carrying the same text as FinalAnswer — matching
-// what the real agent returns (see internal/agent/agent.go DoReasoning).
-func finalStep(answer string) runner.ReasoningResult {
-	return runner.ReasoningResult{
+// what the real agent returns (see internal/adapters/agent/agent.go DoReasoning).
+func finalStep(answer string) core.ReasoningResult {
+	return core.ReasoningResult{
 		FinalAnswer: answer,
-		Meta: runner.ResponseMeta{
+		Meta: core.ResponseMeta{
 			AssistantMessage: common.NewAssistantMessage(answer),
 		},
 	}

@@ -32,10 +32,9 @@ Provider-agnostic via canonical types (`Message`, `ContentBlock`, `CompletionReq
 - **Tool system** — bash, read, write, edit, grep, glob, revert (file snapshots)
 - **Skill system** — lazy-loaded domain knowledge via YAML-frontmatter Markdown files
 - **Subagents** — spawn isolated agent loops with fresh context; only the final summary returns to the parent
-- **Task graph** — persistent, dependency-aware task board (`.agent_todo.json`) with mutex-guarded atomic operations
 - **Context compression** — three-layer system: recent messages kept verbatim, older messages summarized via LLM, summaries persisted per conversation to `<UserConfigDir>/tenzing/.agent_memory-<date>-<agent-id>.md` (resume with `WithConversationID`)
 - **Shared blackboard REPL** — one persistent, sandboxed Python REPL shared by the main agent and subagents, for processing inputs beyond the context window (`llm_query`/`llm_batch` sub-LLM calls in loops over shared state)
-- **Todo planning** — model commits a plan before acting, progress re-injected as reminders after every tool call
+- **Todo planning** — model commits a plan before acting (dependency-aware, in-memory task board, one plan per harness or subagent), progress re-injected as reminders after every tool call
 
 ## Prerequisites
 
@@ -72,26 +71,27 @@ cmd/
   app/                  Entry point — HTTP/SSE server with embedded chat UI
 
 internal/
-  agent/                Agent implementation + context management
-    context/            Compression, overflow routing
-    context/compressor/ Three-layer compressor
-  harness/              Core harness wiring
-    runner/             AgentRunner, FSM loop
-    tools/              Tool registry
-    tools/tooldef/      Tool implementations (bash, read, write, edit, grep, glob)
-    skills/             Skill registry + tools (list_skills, load_skill)
-    subagent/           Subagent spawning
-    taskgraph/          Persistent task graph + tools
-    todo/               Todo planning + tools
-    snapshot/           File snapshot store + write/revert tools
-    blackboard/           Shared Python REPL (blackboard), REPL subprocess machinery, sub-LM querier
-    prompts/            System prompt templates
-  provider/             LLM provider implementations
-    utils/              Rate limiting (token bucket, semaphore)
-  errors/               Error wrapping
+  core/                 Invariant domain: types, FSM, events, loop, all ports, the Agent
+                        contract, tool authoring contract (core/tooldef); imports nothing
+                        from internal/
+  adapters/             Port implementations (import core only)
+    agent/              core.Agent: stateless ModelPort-side brain
+    contextstore/       ContextPort: history, pairing, compression (+ compressor/)
+    eventbus/           core.Emitter implementation + typed Hooks dispatcher
+    toolport/           ToolPort: Composite/Wrap + the native tool Registry
+  features/             core.Extension implementations (import core only), each with an
+                        ext.go registration: advisor, blackboard, budgets, builtins,
+                        mcp, permissions, prompts, reminders, skills, snapshot, todo
+  harness/              Composition root: wiring, config, memory persistence
+    runner/             AgentRunner facade over core.Loop
+    subagent/           Subagent spawning — a child composition root
+  app/
+    nexus/              Input channel monitoring (file-tail/command/webhook → agent wake-ups)
+      tools/            Channel tools (list_channels, read_channel, search_channel)
 
 skills/                 Skill definitions (SKILL.md files)
 docs/                   Forward-looking design docs and reference papers
+pkg/tenzing/            Public API facade (aliases over internal/harness)
 ```
 
 ## Docs

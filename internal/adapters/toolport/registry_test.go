@@ -6,6 +6,7 @@ import (
 
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/features/builtins"
 )
 
 // captureTool records the ExecutionContext it was executed with.
@@ -51,6 +52,9 @@ func TestExecutePassesWorkingDir(t *testing.T) {
 
 func TestCopyWithoutRemovesBuiltins(t *testing.T) {
 	r := NewRegistry("/ws")
+	for _, def := range builtins.Defaults() {
+		r.Register(def)
+	}
 	filtered := r.CopyWithout("bash", "Edit")
 
 	for _, name := range []string{"bash", "edit"} {
