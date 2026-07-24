@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
+
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 )
 
 var _ tooldef.Definition = (*SnapshotRevertTool)(nil)
@@ -33,7 +35,7 @@ func (t *SnapshotRevertTool) Schema() tooldef.Schema {
 	}
 }
 
-func (t *SnapshotRevertTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
+func (t *SnapshotRevertTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (core.ToolResult, error) {
 	if len(exctx.Arguments) == 0 || exctx.Arguments[0] == "" {
 		return tooldef.NewToolResult("file_path is required", tooldef.WithError()), nil
 	}

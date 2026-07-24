@@ -1,4 +1,4 @@
-package tooldef
+package builtins
 
 import (
 	"context"
@@ -7,13 +7,16 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 )
 
 const (
 	defaultReadLimit = 2000
 )
 
-var _ Definition = (*ReadTool)(nil)
+var _ tooldef.Definition = (*ReadTool)(nil)
 
 type ReadTool struct{}
 
@@ -23,20 +26,20 @@ func (t *ReadTool) Description() string {
 	return "Read a file and return its contents with line numbers."
 }
 
-func (t *ReadTool) Schema() Schema {
-	return Schema{
-		Properties: map[string]SchemaProperty{
-			"file_path": {Type: JsonTypeString},
-			"limit":     {Type: JsonTypeNumber},
-			"offset":    {Type: JsonTypeNumber},
+func (t *ReadTool) Schema() tooldef.Schema {
+	return tooldef.Schema{
+		Properties: map[string]tooldef.SchemaProperty{
+			"file_path": {Type: tooldef.JsonTypeString},
+			"limit":     {Type: tooldef.JsonTypeNumber},
+			"offset":    {Type: tooldef.JsonTypeNumber},
 		},
 		Required: []string{"file_path"},
 	}
 }
 
-func (t *ReadTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
+func (t *ReadTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (core.ToolResult, error) {
 	if len(exctx.Arguments) == 0 || exctx.Arguments[0] == "" {
-		return NewToolResult("file_path is required", WithError()), nil
+		return tooldef.NewToolResult("file_path is required", tooldef.WithError()), nil
 	}
 
 	var input struct {
@@ -45,10 +48,10 @@ func (t *ReadTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRes
 		Offset   *int   `json:"offset"`
 	}
 	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &input); err != nil {
-		return NewToolResult(fmt.Sprintf("invalid input JSON: %v", err), WithError()), nil
+		return tooldef.NewToolResult(fmt.Sprintf("invalid input JSON: %v", err), tooldef.WithError()), nil
 	}
 	if input.FilePath == "" {
-		return NewToolResult("file_path is required", WithError()), nil
+		return tooldef.NewToolResult("file_path is required", tooldef.WithError()), nil
 	}
 
 	filePath := input.FilePath
@@ -56,20 +59,20 @@ func (t *ReadTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRes
 	limit := defaultReadLimit
 	if input.Limit != nil {
 		if *input.Limit < 0 {
-			return NewToolResult("limit must be a non-negative integer", WithError()), nil
+			return tooldef.NewToolResult("limit must be a non-negative integer", tooldef.WithError()), nil
 		}
 		limit = *input.Limit
 	}
 	if input.Offset != nil {
 		if *input.Offset < 0 {
-			return NewToolResult("offset must be a non-negative integer", WithError()), nil
+			return tooldef.NewToolResult("offset must be a non-negative integer", tooldef.WithError()), nil
 		}
 		offset = *input.Offset
 	}
 
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		return NewToolResult(fmt.Sprintf("cannot read file: %v", err), WithError()), nil
+		return tooldef.NewToolResult(fmt.Sprintf("cannot read file: %v", err), tooldef.WithError()), nil
 	}
 
 	lines := strings.Split(string(data), "\n")
@@ -102,7 +105,7 @@ func (t *ReadTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRes
 		fmt.Fprintf(&sb, "\n[%d lines]", totalLines)
 	}
 
-	return NewToolResult(sb.String(), WithMetadata(map[string]string{
+	return tooldef.NewToolResult(sb.String(), tooldef.WithMetadata(map[string]string{
 		"limit":  strconv.Itoa(limit),
 		"offset": strconv.Itoa(offset),
 		"total":  strconv.Itoa(totalLines),

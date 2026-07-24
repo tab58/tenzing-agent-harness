@@ -4,7 +4,8 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 )
 
 var _ tooldef.Definition = (*TodoNextTool)(nil)
@@ -31,7 +32,7 @@ func (t *TodoNextTool) Schema() tooldef.Schema {
 	}
 }
 
-func (t *TodoNextTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
+func (t *TodoNextTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (core.ToolResult, error) {
 	task, ok, err := t.file.NextTask()
 	if err != nil {
 		return tooldef.NewToolResult("no plan found — call TodoWrite first", tooldef.WithError()), nil

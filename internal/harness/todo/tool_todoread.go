@@ -3,7 +3,8 @@ package todo
 import (
 	"context"
 
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 )
 
 var _ tooldef.Definition = (*TodoReadTool)(nil)
@@ -29,7 +30,7 @@ func (t *TodoReadTool) Schema() tooldef.Schema {
 	}
 }
 
-func (t *TodoReadTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
+func (t *TodoReadTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (core.ToolResult, error) {
 	reminder := t.file.FormatReminder()
 	if reminder == "" {
 		return tooldef.NewToolResult("(no plan — call TodoWrite first)"), nil

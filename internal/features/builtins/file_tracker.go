@@ -1,4 +1,4 @@
-package tooldef
+package builtins
 
 import (
 	"crypto/sha256"

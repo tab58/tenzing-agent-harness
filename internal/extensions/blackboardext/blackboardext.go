@@ -9,8 +9,8 @@ package blackboardext
 import (
 	"context"
 
-	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/blackboard"
 )
 
@@ -37,7 +37,7 @@ func (e *Ext) Name() string { return "blackboard" }
 // mount path through the composite ToolPort.
 func (e *Ext) Tools() []core.ToolSpec {
 	return []core.ToolSpec{
-		toolport.SpecFromDefinition(blackboard.NewREPLTool(e.bb, e.agentID), origin),
+		tooldef.SpecFromDefinition(blackboard.NewREPLTool(e.bb, e.agentID), origin),
 	}
 }
 

@@ -2,7 +2,6 @@ package toolport
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 )
 
 // Composite is the harness ToolPort: it mounts the native tool registry,
@@ -68,29 +66,6 @@ func NewComposite(native *tools.Registry, exts *core.Extensions) (*Composite, er
 		sources: exts.DynamicToolSources(),
 		byName:  byName,
 	}, nil
-}
-
-// SpecFromDefinition wraps a tooldef.Definition into an origin-tagged
-// core.ToolSpec so extensions can reuse existing tool implementations
-// without registry registration.
-func SpecFromDefinition(def tooldef.Definition, origin string) core.ToolSpec {
-	schema, _ := json.Marshal(def.Schema())
-	return core.ToolSpec{
-		Definition: common.ToolDefinition{
-			Name:        def.Name(),
-			Description: def.Description(),
-			InputSchema: schema,
-		},
-		Origin: origin,
-		Execute: func(ctx context.Context, call core.ToolCall) core.ToolResult {
-			res, err := def.Execute(ctx, tooldef.ExecutionContext{Arguments: []string{call.Input}})
-			if err != nil {
-				return core.ToolResult{ToolUseID: call.ID, Output: fmt.Sprintf("tool execution failed: %v", err), IsError: true}
-			}
-			res.ToolUseID = call.ID
-			return res
-		},
-	}
 }
 
 // nativeExecute returns the Execute closure for registry-backed tools,

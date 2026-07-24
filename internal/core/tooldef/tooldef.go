@@ -3,11 +3,12 @@ package tooldef
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+
+	"github.com/tab58/llm-providers/common"
 
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 )
-
-type ToolResult = core.ToolResult
 
 type toolResultOptions struct {
 	ToolUseID string
@@ -35,13 +36,13 @@ func WithError() ToolResultOption {
 	}
 }
 
-func NewToolResult(output string, options ...ToolResultOption) ToolResult {
+func NewToolResult(output string, options ...ToolResultOption) core.ToolResult {
 	o := &toolResultOptions{}
 	for _, option := range options {
 		option(o)
 	}
 
-	return ToolResult{
+	return core.ToolResult{
 		Output:    output,
 		ToolUseID: o.ToolUseID,
 		IsError:   o.IsError,
@@ -49,13 +50,11 @@ func NewToolResult(output string, options ...ToolResultOption) ToolResult {
 	}
 }
 
-type ToolCall = core.ToolCall
-
 type Definition interface {
 	Name() string
 	Description() string
 	Schema() Schema
-	Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error)
+	Execute(ctx context.Context, exctx ExecutionContext) (core.ToolResult, error)
 }
 
 type ExecutionContext struct {
@@ -96,4 +95,27 @@ const (
 type SchemaProperty struct {
 	Type  JsonType        `json:"type"`
 	Items *SchemaProperty `json:"items,omitempty"`
+}
+
+// SpecFromDefinition wraps a tooldef.Definition into an origin-tagged
+// core.ToolSpec so extensions can reuse existing tool implementations
+// without registry registration.
+func SpecFromDefinition(def Definition, origin string) core.ToolSpec {
+	schema, _ := json.Marshal(def.Schema())
+	return core.ToolSpec{
+		Definition: common.ToolDefinition{
+			Name:        def.Name(),
+			Description: def.Description(),
+			InputSchema: schema,
+		},
+		Origin: origin,
+		Execute: func(ctx context.Context, call core.ToolCall) core.ToolResult {
+			res, err := def.Execute(ctx, ExecutionContext{Arguments: []string{call.Input}})
+			if err != nil {
+				return core.ToolResult{ToolUseID: call.ID, Output: fmt.Sprintf("tool execution failed: %v", err), IsError: true}
+			}
+			res.ToolUseID = call.ID
+			return res
+		},
+	}
 }

@@ -1,4 +1,4 @@
-package tooldef
+package builtins
 
 import (
 	"context"
@@ -8,9 +8,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 )
 
-var _ Definition = (*GlobTool)(nil)
+var _ tooldef.Definition = (*GlobTool)(nil)
 
 type GlobTool struct{}
 
@@ -20,28 +23,28 @@ func (t *GlobTool) Description() string {
 	return "Find files matching a glob pattern relative to the working directory."
 }
 
-func (t *GlobTool) Schema() Schema {
-	return Schema{
-		Properties: map[string]SchemaProperty{
-			"pattern": {Type: JsonTypeString},
+func (t *GlobTool) Schema() tooldef.Schema {
+	return tooldef.Schema{
+		Properties: map[string]tooldef.SchemaProperty{
+			"pattern": {Type: tooldef.JsonTypeString},
 		},
 		Required: []string{"pattern"},
 	}
 }
 
-func (t *GlobTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
+func (t *GlobTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (core.ToolResult, error) {
 	if len(exctx.Arguments) == 0 || exctx.Arguments[0] == "" {
-		return NewToolResult("pattern is required", WithError()), nil
+		return tooldef.NewToolResult("pattern is required", tooldef.WithError()), nil
 	}
 
 	var input struct {
 		Pattern string `json:"pattern"`
 	}
 	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &input); err != nil {
-		return NewToolResult(fmt.Sprintf("invalid input JSON: %v", err), WithError()), nil
+		return tooldef.NewToolResult(fmt.Sprintf("invalid input JSON: %v", err), tooldef.WithError()), nil
 	}
 	if input.Pattern == "" {
-		return NewToolResult("pattern is required", WithError()), nil
+		return tooldef.NewToolResult("pattern is required", tooldef.WithError()), nil
 	}
 
 	pattern := input.Pattern
@@ -62,13 +65,13 @@ func (t *GlobTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRes
 		matches, err = filepath.Glob(pattern)
 	}
 	if err != nil {
-		return NewToolResult(fmt.Sprintf("invalid glob pattern: %v", err), WithError()), nil
+		return tooldef.NewToolResult(fmt.Sprintf("invalid glob pattern: %v", err), tooldef.WithError()), nil
 	}
 
 	if len(matches) == 0 {
-		return NewToolResult("No matches."), nil
+		return tooldef.NewToolResult("No matches."), nil
 	}
-	return NewToolResult(strings.Join(matches, "\n")), nil
+	return tooldef.NewToolResult(strings.Join(matches, "\n")), nil
 }
 
 func globRoot(pattern string) string {

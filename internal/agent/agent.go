@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"runtime/debug"
 
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 
 	"github.com/tab58/llm-providers/common"
 )
@@ -174,9 +174,9 @@ func (a *Agent) DoReasoning(ctx context.Context, messages []common.Message, syst
 	// executes each and feeds the results back in the same order.
 	toolCalls := resp.ToolCalls()
 	if len(toolCalls) > 0 {
-		calls := make([]tooldef.ToolCall, len(toolCalls))
+		calls := make([]core.ToolCall, len(toolCalls))
 		for i, tc := range toolCalls {
-			calls[i] = tooldef.ToolCall{
+			calls[i] = core.ToolCall{
 				ID:    tc.ToolUseID,
 				Name:  tc.ToolName,
 				Input: string(tc.ToolInput),

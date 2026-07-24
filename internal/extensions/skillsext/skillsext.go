@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
 )
 
@@ -37,8 +37,8 @@ func (e *Ext) Name() string { return "skills" }
 // mount path through the composite ToolPort.
 func (e *Ext) Tools() []core.ToolSpec {
 	return []core.ToolSpec{
-		toolport.SpecFromDefinition(skills.NewListSkillsTool(e.reg), origin),
-		toolport.SpecFromDefinition(skills.NewLoadSkillTool(e.reg), origin),
+		tooldef.SpecFromDefinition(skills.NewListSkillsTool(e.reg), origin),
+		tooldef.SpecFromDefinition(skills.NewLoadSkillTool(e.reg), origin),
 	}
 }
 

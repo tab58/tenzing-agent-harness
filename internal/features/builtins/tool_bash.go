@@ -1,4 +1,4 @@
-package tooldef
+package builtins
 
 import (
 	"context"
@@ -9,13 +9,16 @@ import (
 	"os/exec"
 	"syscall"
 	"time"
+
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 )
 
 const (
 	bashTimeout = 120 * time.Second
 )
 
-var _ Definition = (*BashTool)(nil)
+var _ tooldef.Definition = (*BashTool)(nil)
 
 type BashTool struct{}
 
@@ -25,11 +28,11 @@ func (t *BashTool) Description() string {
 	return "Execute a shell command in the project working directory."
 }
 
-func (t *BashTool) Schema() Schema {
-	return Schema{
-		Properties: map[string]SchemaProperty{
-			"command":     {Type: JsonTypeString},
-			"description": {Type: JsonTypeString},
+func (t *BashTool) Schema() tooldef.Schema {
+	return tooldef.Schema{
+		Properties: map[string]tooldef.SchemaProperty{
+			"command":     {Type: tooldef.JsonTypeString},
+			"description": {Type: tooldef.JsonTypeString},
 		},
 		Required: []string{"command"},
 	}
@@ -39,9 +42,9 @@ func isValidDirectory(cwd string) bool {
 	return true
 }
 
-func (t *BashTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
+func (t *BashTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (core.ToolResult, error) {
 	if len(exctx.Arguments) == 0 || exctx.Arguments[0] == "" {
-		return NewToolResult("command is required", WithError()), nil
+		return tooldef.NewToolResult("command is required", tooldef.WithError()), nil
 	}
 
 	var input struct {
@@ -49,10 +52,10 @@ func (t *BashTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRes
 		Description string `json:"description"`
 	}
 	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &input); err != nil {
-		return NewToolResult(fmt.Sprintf("invalid input JSON: %v", err), WithError()), nil
+		return tooldef.NewToolResult(fmt.Sprintf("invalid input JSON: %v", err), tooldef.WithError()), nil
 	}
 	if input.Command == "" {
-		return NewToolResult("command is required", WithError()), nil
+		return tooldef.NewToolResult("command is required", tooldef.WithError()), nil
 	}
 
 	command := input.Command
@@ -66,7 +69,7 @@ func (t *BashTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRes
 		// set as current working directory
 		currentDir, err := os.Getwd()
 		if err != nil {
-			return ToolResult{}, fmt.Errorf("unable to get cwd: %w", err)
+			return core.ToolResult{}, fmt.Errorf("unable to get cwd: %w", err)
 		}
 		cwd = currentDir
 	}
@@ -99,8 +102,8 @@ func (t *BashTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRes
 		} else {
 			output = fmt.Sprintf("%s\nexec error: %v", output, execErr)
 		}
-		return NewToolResult(output, WithError()), nil
+		return tooldef.NewToolResult(output, tooldef.WithError()), nil
 	}
 
-	return NewToolResult(output), nil
+	return tooldef.NewToolResult(output), nil
 }

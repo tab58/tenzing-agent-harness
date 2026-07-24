@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
+
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 )
 
 var _ tooldef.Definition = (*ListSkillsTool)(nil)
@@ -34,7 +36,7 @@ func (t *ListSkillsTool) Schema() tooldef.Schema {
 	}
 }
 
-func (t *ListSkillsTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
+func (t *ListSkillsTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (core.ToolResult, error) {
 	skills := t.lister.GetSkillMap()
 	if len(skills) == 0 {
 		return tooldef.NewToolResult("No skills available."), nil

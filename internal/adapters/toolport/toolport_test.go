@@ -7,14 +7,14 @@ import (
 	"testing"
 
 	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 )
 
 // fakeTool implements tooldef.Definition for testing.
 type fakeTool struct {
-	name    string
-	execFn  func(ctx context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error)
+	name   string
+	execFn func(ctx context.Context, exctx tooldef.ExecutionContext) (core.ToolResult, error)
 }
 
 func (f *fakeTool) Name() string        { return f.name }
@@ -22,7 +22,7 @@ func (f *fakeTool) Description() string { return "fake tool for testing" }
 func (f *fakeTool) Schema() tooldef.Schema {
 	return tooldef.Schema{Properties: map[string]tooldef.SchemaProperty{"input": {Type: tooldef.JsonTypeString}}}
 }
-func (f *fakeTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
+func (f *fakeTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (core.ToolResult, error) {
 	return f.execFn(ctx, exctx)
 }
 
@@ -37,7 +37,7 @@ func TestExecute(t *testing.T) {
 			name: "panicking tool returns error result",
 			tool: &fakeTool{
 				name: "panic_tool",
-				execFn: func(_ context.Context, _ tooldef.ExecutionContext) (tooldef.ToolResult, error) {
+				execFn: func(_ context.Context, _ tooldef.ExecutionContext) (core.ToolResult, error) {
 					panic("boom")
 				},
 			},
@@ -48,8 +48,8 @@ func TestExecute(t *testing.T) {
 			name: "error-returning tool returns error result",
 			tool: &fakeTool{
 				name: "error_tool",
-				execFn: func(_ context.Context, _ tooldef.ExecutionContext) (tooldef.ToolResult, error) {
-					return tooldef.ToolResult{}, fmt.Errorf("disk full")
+				execFn: func(_ context.Context, _ tooldef.ExecutionContext) (core.ToolResult, error) {
+					return core.ToolResult{}, fmt.Errorf("disk full")
 				},
 			},
 			wantIsError: true,
@@ -59,7 +59,7 @@ func TestExecute(t *testing.T) {
 			name: "successful tool returns output",
 			tool: &fakeTool{
 				name: "ok_tool",
-				execFn: func(_ context.Context, _ tooldef.ExecutionContext) (tooldef.ToolResult, error) {
+				execFn: func(_ context.Context, _ tooldef.ExecutionContext) (core.ToolResult, error) {
 					return tooldef.NewToolResult("hello"), nil
 				},
 			},

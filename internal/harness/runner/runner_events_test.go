@@ -8,8 +8,8 @@ import (
 
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/contextstore"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 
 	"github.com/tab58/llm-providers/common"
 )
@@ -67,7 +67,7 @@ func newTestContextStore() core.ContextPort {
 // ToolCalls and Meta.AssistantMessage in sync — as the real agent does. The
 // context store pairs tool_results against the message's own tool_use
 // blocks, not the parallel ToolCalls list, so tests must supply both.
-func toolCallStep(calls ...tooldef.ToolCall) ReasoningResult {
+func toolCallStep(calls ...core.ToolCall) ReasoningResult {
 	blocks := make([]common.ContentBlock, len(calls))
 	for i, c := range calls {
 		blocks[i] = common.NewToolUseContent(c.ID, c.Name, []byte(c.Input))
@@ -131,7 +131,7 @@ func TestRunnerEmitsToolEvents(t *testing.T) {
 	registry.Register(&echoTool{})
 
 	agent := &minimalAgent{steps: []ReasoningResult{
-		toolCallStep(tooldef.ToolCall{ID: "1", Name: "echo", Input: `{"text":"hi"}`}),
+		toolCallStep(core.ToolCall{ID: "1", Name: "echo", Input: `{"text":"hi"}`}),
 		{FinalAnswer: "done"},
 	}}
 
@@ -174,9 +174,9 @@ func TestRunnerExecutesAllToolCallsInBatch(t *testing.T) {
 
 	agent := &minimalAgent{steps: []ReasoningResult{
 		toolCallStep(
-			tooldef.ToolCall{ID: "1", Name: "echo", Input: `{"text":"one"}`},
-			tooldef.ToolCall{ID: "2", Name: "echo", Input: `{"text":"two"}`},
-			tooldef.ToolCall{ID: "3", Name: "echo", Input: `{"text":"three"}`},
+			core.ToolCall{ID: "1", Name: "echo", Input: `{"text":"one"}`},
+			core.ToolCall{ID: "2", Name: "echo", Input: `{"text":"two"}`},
+			core.ToolCall{ID: "3", Name: "echo", Input: `{"text":"three"}`},
 		),
 		{FinalAnswer: "done"},
 	}}
@@ -232,7 +232,7 @@ func (e *echoTool) Description() string { return "echoes input" }
 func (e *echoTool) Schema() tooldef.Schema {
 	return tooldef.Schema{Properties: map[string]tooldef.SchemaProperty{"text": {Type: tooldef.JsonTypeString}}}
 }
-func (e *echoTool) Execute(_ context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
+func (e *echoTool) Execute(_ context.Context, exctx tooldef.ExecutionContext) (core.ToolResult, error) {
 	return tooldef.NewToolResult("echo: " + exctx.Arguments[0]), nil
 }
 
@@ -248,7 +248,7 @@ func (c *countingEchoTool) Description() string { return "echoes input" }
 func (c *countingEchoTool) Schema() tooldef.Schema {
 	return tooldef.Schema{Properties: map[string]tooldef.SchemaProperty{"text": {Type: tooldef.JsonTypeString}}}
 }
-func (c *countingEchoTool) Execute(_ context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
+func (c *countingEchoTool) Execute(_ context.Context, exctx tooldef.ExecutionContext) (core.ToolResult, error) {
 	c.mu.Lock()
 	c.invoked++
 	c.mu.Unlock()
@@ -282,7 +282,7 @@ func TestToolCallDeniedByExtension(t *testing.T) {
 	registry.Register(tool)
 
 	agent := &minimalAgent{steps: []ReasoningResult{
-		toolCallStep(tooldef.ToolCall{ID: "1", Name: "echo", Input: `{"text":"hi"}`}),
+		toolCallStep(core.ToolCall{ID: "1", Name: "echo", Input: `{"text":"hi"}`}),
 		{FinalAnswer: "done"},
 	}}
 

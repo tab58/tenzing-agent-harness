@@ -58,7 +58,7 @@ All tools reach the model through the composite ToolPort (`internal/adapters/too
 
 Two ways to add a tool:
 
-1. **Native built-in** (file/shell-level tooling): create `internal/harness/tools/tooldef/tool_<name>.go`, implement `tooldef.Definition` (`Name()`, `Description()`, `Schema()`, `Execute()`), register it in the registry (built-ins in `NewRegistry`, or inject via `harness.WithTool`).
+1. **Native built-in** (file/shell-level tooling): create `internal/features/builtins/tool_<name>.go`, implement `tooldef.Definition` (`Name()`, `Description()`, `Schema()`, `Execute()`, from `internal/core/tooldef`), register it in the registry (built-ins in `NewRegistry`, or inject via `harness.WithTool`).
 2. **Extension tool**: implement `core.ToolProvider` on an extension — return `core.ToolSpec`s carrying their own `Execute` closure and an `Origin` like `"extension:<name>"`. No registry registration needed.
 
 Notes:
@@ -153,7 +153,8 @@ The FSM lives in `internal/core/fsm.go` and is per-Loop instance — subagents a
 | Core domain (types/FSM/events/loop/ports) | `internal/core/` |
 | Port adapters (contextstore, toolport) | `internal/adapters/` |
 | Extensions                | `internal/extensions/<name>/`                          |
-| Tool implementations     | `internal/harness/tools/tooldef/tool_*.go`            |
+| Tool authoring contract  | `internal/core/tooldef/tooldef.go`                    |
+| Built-in tool implementations | `internal/features/builtins/tool_*.go`          |
 | Provider implementations | external: `github.com/tab58/llm-providers`            |
 | Prompt templates         | `internal/harness/prompts/*.gotmpl`                   |
 | REPL subprocess machinery | `internal/harness/blackboard/` (Python REPL, Querier) |

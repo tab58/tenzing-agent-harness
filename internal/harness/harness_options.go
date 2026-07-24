@@ -5,11 +5,11 @@ import (
 
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/budgets"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/mcpext"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/permissions"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 
 	"github.com/tab58/llm-providers/common"
 )

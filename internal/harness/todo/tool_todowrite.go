@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/tab58/tenzing-agent-harness/internal/core"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 )
 
 var _ tooldef.Definition = (*TodoWriteTool)(nil)
@@ -48,7 +48,7 @@ type todoWriteInput struct {
 	} `json:"tasks"`
 }
 
-func (t *TodoWriteTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
+func (t *TodoWriteTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (core.ToolResult, error) {
 	if len(exctx.Arguments) == 0 || exctx.Arguments[0] == "" {
 		return tooldef.NewToolResult("tasks argument is required", tooldef.WithError()), nil
 	}

@@ -1,10 +1,12 @@
-package tooldef
+package builtins
 
 import (
 	"context"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 )
 
 // Regression: a timed-out command whose pipeline children outlive the shell
@@ -17,7 +19,7 @@ func TestBashToolTimeoutKillsPipelineChildren(t *testing.T) {
 
 	tool := &BashTool{}
 	start := time.Now()
-	res, err := tool.Execute(ctx, ExecutionContext{
+	res, err := tool.Execute(ctx, tooldef.ExecutionContext{
 		WorkingDir: t.TempDir(),
 		Arguments:  []string{`{"command":"sleep 15 | sleep 15"}`},
 	})

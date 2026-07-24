@@ -8,7 +8,9 @@ import (
 	"strings"
 
 	"github.com/tab58/llm-providers/common"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/features/builtins"
 )
 
 type ToolProvider interface {
@@ -31,15 +33,15 @@ func NewRegistry(workingDir string) *Registry {
 	}
 
 	// basic tools
-	builtins := []tooldef.Definition{
-		&tooldef.BashTool{},
-		&tooldef.ReadTool{},
-		&tooldef.EditTool{},
-		&tooldef.GrepTool{},
-		&tooldef.GlobTool{},
+	basicTools := []tooldef.Definition{
+		&builtins.BashTool{},
+		&builtins.ReadTool{},
+		&builtins.EditTool{},
+		&builtins.GrepTool{},
+		&builtins.GlobTool{},
 	}
 
-	for _, def := range builtins {
+	for _, def := range basicTools {
 		r.Register(def)
 	}
 
@@ -109,7 +111,7 @@ func (r *Registry) ProviderDefinitions() []common.ToolDefinition {
 // 	return r.workingDir
 // }
 
-func (r *Registry) Execute(ctx context.Context, name string, input string) (tooldef.ToolResult, error) {
+func (r *Registry) Execute(ctx context.Context, name string, input string) (core.ToolResult, error) {
 	toolDef, ok := r.tools[strings.ToLower(name)]
 	if !ok {
 		available := make([]string, 0, len(r.tools))
@@ -117,7 +119,7 @@ func (r *Registry) Execute(ctx context.Context, name string, input string) (tool
 			available = append(available, n)
 		}
 		slog.Warn("unknown tool called", "tool", name, "available", available)
-		return tooldef.ToolResult{
+		return core.ToolResult{
 			Output:  fmt.Sprintf("Tool %q not found. Available tools: %s", name, strings.Join(available, ", ")),
 			IsError: true,
 		}, nil
@@ -128,7 +130,7 @@ func (r *Registry) Execute(ctx context.Context, name string, input string) (tool
 	}
 	result, err := toolDef.Execute(ctx, exctx)
 	if err != nil {
-		return tooldef.ToolResult{}, fmt.Errorf("error executing tool %s: %w", name, err)
+		return core.ToolResult{}, fmt.Errorf("error executing tool %s: %w", name, err)
 	}
 	return result, nil
 }

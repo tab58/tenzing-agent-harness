@@ -4,7 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 )
 
 // captureTool records the ExecutionContext it was executed with.
@@ -16,9 +17,9 @@ type captureTool struct {
 func (c *captureTool) Name() string           { return c.name }
 func (c *captureTool) Description() string    { return "capture" }
 func (c *captureTool) Schema() tooldef.Schema { return tooldef.Schema{} }
-func (c *captureTool) Execute(_ context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
+func (c *captureTool) Execute(_ context.Context, exctx tooldef.ExecutionContext) (core.ToolResult, error) {
 	c.exctx = exctx
-	return tooldef.ToolResult{Output: "ok"}, nil
+	return core.ToolResult{Output: "ok"}, nil
 }
 
 func TestExecutePassesWorkingDir(t *testing.T) {

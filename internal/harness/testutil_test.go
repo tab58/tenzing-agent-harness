@@ -13,7 +13,6 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/contextstore"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 
 	"github.com/tab58/llm-providers/common"
 )
@@ -120,9 +119,9 @@ var toolStepSeq int
 func toolStep(name, input string) runner.ReasoningResult {
 	toolStepSeq++
 	id := fmt.Sprintf("tu-%d", toolStepSeq)
-	call := tooldef.ToolCall{ID: id, Name: name, Input: input}
+	call := core.ToolCall{ID: id, Name: name, Input: input}
 	return runner.ReasoningResult{
-		ToolCalls: []tooldef.ToolCall{call},
+		ToolCalls: []core.ToolCall{call},
 		Meta: runner.ResponseMeta{
 			AssistantMessage: common.Message{
 				Role:    common.RoleAssistant,

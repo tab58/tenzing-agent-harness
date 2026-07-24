@@ -1,4 +1,4 @@
-package tooldef
+package builtins
 
 import (
 	"bytes"
@@ -9,13 +9,16 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 )
 
 const (
 	maxGrepMatches = 500
 )
 
-var _ Definition = (*GrepTool)(nil)
+var _ tooldef.Definition = (*GrepTool)(nil)
 
 type GrepTool struct{}
 
@@ -25,20 +28,20 @@ func (t *GrepTool) Description() string {
 	return "Search files for a regexp pattern, returning file:line:content matches."
 }
 
-func (t *GrepTool) Schema() Schema {
-	return Schema{
-		Properties: map[string]SchemaProperty{
-			"pattern": {Type: JsonTypeString},
-			"path":    {Type: JsonTypeString},
-			"include": {Type: JsonTypeString},
+func (t *GrepTool) Schema() tooldef.Schema {
+	return tooldef.Schema{
+		Properties: map[string]tooldef.SchemaProperty{
+			"pattern": {Type: tooldef.JsonTypeString},
+			"path":    {Type: tooldef.JsonTypeString},
+			"include": {Type: tooldef.JsonTypeString},
 		},
 		Required: []string{"pattern"},
 	}
 }
 
-func (t *GrepTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolResult, error) {
+func (t *GrepTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (core.ToolResult, error) {
 	if len(exctx.Arguments) == 0 || exctx.Arguments[0] == "" {
-		return NewToolResult("pattern is required", WithError()), nil
+		return tooldef.NewToolResult("pattern is required", tooldef.WithError()), nil
 	}
 
 	var input struct {
@@ -47,15 +50,15 @@ func (t *GrepTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRes
 		Include string `json:"include"`
 	}
 	if err := json.Unmarshal([]byte(exctx.Arguments[0]), &input); err != nil {
-		return NewToolResult(fmt.Sprintf("invalid input JSON: %v", err), WithError()), nil
+		return tooldef.NewToolResult(fmt.Sprintf("invalid input JSON: %v", err), tooldef.WithError()), nil
 	}
 	if input.Pattern == "" {
-		return NewToolResult("pattern is required", WithError()), nil
+		return tooldef.NewToolResult("pattern is required", tooldef.WithError()), nil
 	}
 
 	re, err := regexp.Compile(input.Pattern)
 	if err != nil {
-		return NewToolResult(fmt.Sprintf("invalid regexp: %v", err), WithError()), nil
+		return tooldef.NewToolResult(fmt.Sprintf("invalid regexp: %v", err), tooldef.WithError()), nil
 	}
 
 	searchRoot := exctx.WorkingDir
@@ -65,7 +68,7 @@ func (t *GrepTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRes
 	if searchRoot == "" {
 		wd, wdErr := os.Getwd()
 		if wdErr != nil {
-			return ToolResult{}, fmt.Errorf("unable to get cwd: %w", wdErr)
+			return core.ToolResult{}, fmt.Errorf("unable to get cwd: %w", wdErr)
 		}
 		searchRoot = wd
 	}
@@ -113,17 +116,17 @@ func (t *GrepTool) Execute(ctx context.Context, exctx ExecutionContext) (ToolRes
 		return nil
 	})
 	if err != nil && err != filepath.SkipAll {
-		return NewToolResult(fmt.Sprintf("walk error: %v", err), WithError()), nil
+		return tooldef.NewToolResult(fmt.Sprintf("walk error: %v", err), tooldef.WithError()), nil
 	}
 
 	if len(matches) == 0 {
-		return NewToolResult("No matches."), nil
+		return tooldef.NewToolResult("No matches."), nil
 	}
 	output := strings.Join(matches, "\n")
 	if capped {
 		output += fmt.Sprintf("\n[truncated at %d matches]", maxGrepMatches)
 	}
-	return NewToolResult(output), nil
+	return tooldef.NewToolResult(output), nil
 }
 
 func isBinary(data []byte) bool {

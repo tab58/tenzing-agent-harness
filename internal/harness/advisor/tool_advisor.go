@@ -13,7 +13,8 @@ import (
 	"strings"
 
 	"github.com/tab58/llm-providers/common"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 )
 
 // maxTokensStdResponse caps output tokens per LLM request.
@@ -52,7 +53,7 @@ func (t *AdvisorTool) Schema() tooldef.Schema {
 	}
 }
 
-func (t *AdvisorTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
+func (t *AdvisorTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (core.ToolResult, error) {
 	if len(exctx.Arguments) < 1 || exctx.Arguments[0] == "" {
 		return tooldef.NewToolResult("plan is required", tooldef.WithError()), nil
 	}

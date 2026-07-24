@@ -12,12 +12,12 @@ package tenzing
 import (
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/budgets"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/mcpext"
 	"github.com/tab58/tenzing-agent-harness/internal/extensions/permissions"
 	"github.com/tab58/tenzing-agent-harness/internal/harness"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 )
 
 // Harness wires an agent, tool registry, and event bus into a runnable loop.
@@ -113,9 +113,9 @@ type (
 // Tool types, for implementing custom tools passed via WithTool.
 type (
 	ToolDefinition   = tooldef.Definition
-	ToolResult       = tooldef.ToolResult
+	ToolResult       = core.ToolResult
 	ToolResultOption = tooldef.ToolResultOption
-	ToolCall         = tooldef.ToolCall
+	ToolCall         = core.ToolCall
 	ExecutionContext = tooldef.ExecutionContext
 	Schema           = tooldef.Schema
 	SchemaProperty   = tooldef.SchemaProperty

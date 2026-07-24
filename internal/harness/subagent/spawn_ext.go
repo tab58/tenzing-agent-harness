@@ -1,8 +1,8 @@
 package subagent
 
 import (
-	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 )
 
 // spawnExtOrigin tags the spawn_agent tool's mount origin.
@@ -36,6 +36,6 @@ func (e *SpawnExt) Name() string { return "subagents" }
 // new mount path through the composite ToolPort.
 func (e *SpawnExt) Tools() []core.ToolSpec {
 	return []core.ToolSpec{
-		toolport.SpecFromDefinition(NewSpawnAgentTool(e.factory), spawnExtOrigin),
+		tooldef.SpecFromDefinition(NewSpawnAgentTool(e.factory), spawnExtOrigin),
 	}
 }
