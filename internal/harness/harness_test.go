@@ -8,24 +8,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/prompts"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/features/prompts"
 
 	"github.com/tab58/llm-providers/common"
 )
 
 type stubAgent struct{}
 
-func (s *stubAgent) GetCurrentModel() string                         { return "stub-model" }
-func (s *stubAgent) UpdateToolDefinitions(_ []common.ToolDefinition) {}
-func (s *stubAgent) UpdateSkillMap(_ map[string]string)              {}
-func (s *stubAgent) UpdateStreamCallback(_ func(string))             {}
-func (s *stubAgent) UpdateThinkingCallback(_ func(string))           {}
-func (s *stubAgent) SetTodoProvider(_ func() string)                 {}
+func (s *stubAgent) GetCurrentModel() string               { return "stub-model" }
+func (s *stubAgent) UpdateStreamCallback(_ func(string))   {}
+func (s *stubAgent) UpdateThinkingCallback(_ func(string)) {}
 
-func (s *stubAgent) DoReasoning(_ context.Context, _ []string, _ []string) (runner.ReasoningResult, error) {
-	return runner.ReasoningResult{FinalAnswer: "done"}, nil
+func (s *stubAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string, _ []common.ToolDefinition) (core.ReasoningResult, error) {
+	return core.ReasoningResult{FinalAnswer: "done"}, nil
 }
 
 type stubLLM struct{}
@@ -51,7 +48,7 @@ func (s *stubLLM) ProviderName() common.Provider { return common.ProviderOllama 
 
 var testModel = common.ModelDefinition{Name: "stub-model", Provider: common.ProviderOllama}
 
-func stubBrain(_ common.LLM, _ string) (runner.Agent, error) { return &stubAgent{}, nil }
+func stubBrain(_ common.LLM, _ string) (core.Agent, error) { return &stubAgent{}, nil }
 
 func stubFactory(_ common.ModelDefinition) (common.LLM, error) { return &stubLLM{}, nil }
 
@@ -92,7 +89,7 @@ func TestMainAgentBuiltWithResolvedSystemPrompt(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			redirectHome(t)
 			var captured string
-			builder := func(_ common.LLM, sp string) (runner.Agent, error) {
+			builder := func(_ common.LLM, sp string) (core.Agent, error) {
 				captured = sp
 				return &stubAgent{}, nil
 			}
@@ -121,7 +118,7 @@ func TestHarnessRegistersSpawnAgentByDefault(t *testing.T) {
 	h := newTestHarness(t)
 	found := false
 	for _, def := range h.ToolDefinitions() {
-		if def.Name() == "spawn_agent" {
+		if def.Name == "spawn_agent" {
 			found = true
 			break
 		}
@@ -134,7 +131,7 @@ func TestHarnessRegistersSpawnAgentByDefault(t *testing.T) {
 func TestHarnessNoSpawnAgentWhenDepthZero(t *testing.T) {
 	h := newTestHarness(t, WithSubagentDepth(0))
 	for _, def := range h.ToolDefinitions() {
-		if def.Name() == "spawn_agent" {
+		if def.Name == "spawn_agent" {
 			t.Fatal("spawn_agent tool should not be registered when depth is 0")
 		}
 	}
@@ -155,7 +152,7 @@ func TestHarnessAdvisorRegistration(t *testing.T) {
 			h := newTestHarness(t, tt.opts...)
 			found := false
 			for _, def := range h.ToolDefinitions() {
-				if def.Name() == "advisor" {
+				if def.Name == "advisor" {
 					found = true
 					break
 				}
@@ -171,7 +168,7 @@ func TestHarnessDisabledToolsRemovesBuiltins(t *testing.T) {
 	h := newTestHarness(t, WithDisabledTool("bash"), WithDisabledTool("edit"))
 	names := make(map[string]bool)
 	for _, def := range h.ToolDefinitions() {
-		names[strings.ToLower(def.Name())] = true
+		names[strings.ToLower(def.Name)] = true
 	}
 	for _, banned := range []string{"bash", "edit"} {
 		if names[banned] {
@@ -201,7 +198,7 @@ func TestHarnessEmitsTurnEventsOnRunTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var types []events.EventType
+	var types []core.EventType
 	for {
 		select {
 		case ev := <-ch:
@@ -211,7 +208,7 @@ func TestHarnessEmitsTurnEventsOnRunTurn(t *testing.T) {
 		}
 	}
 check:
-	hasType := func(et events.EventType) bool {
+	hasType := func(et core.EventType) bool {
 		for _, t := range types {
 			if t == et {
 				return true
@@ -219,10 +216,10 @@ check:
 		}
 		return false
 	}
-	if !hasType(events.EventTurnStarted) {
+	if !hasType(core.EventTurnStarted) {
 		t.Error("missing TurnStarted event")
 	}
-	if !hasType(events.EventTurnCompleted) {
+	if !hasType(core.EventTurnCompleted) {
 		t.Error("missing TurnCompleted event")
 	}
 }
@@ -258,7 +255,7 @@ func TestHarnessDefaultAgentBuilder(t *testing.T) {
 
 func hasTool(h *Harness, name string) bool {
 	for _, def := range h.ToolDefinitions() {
-		if def.Name() == name {
+		if def.Name == name {
 			return true
 		}
 	}
@@ -306,8 +303,8 @@ func TestCompressionEventPersistsMemory(t *testing.T) {
 	h := newTestHarness(t)
 	defer h.Shutdown()
 
-	h.EventBus().Emit(events.ContextCompressedEvent{
-		BaseEvent: events.NewBaseEvent(events.EventContextCompressed, h.ConversationID()),
+	h.EventBus().Emit(core.ContextCompressedEvent{
+		BaseEvent: core.NewBaseEvent(core.EventContextCompressed, h.ConversationID()),
 		Summary:   "persisted by subscriber",
 	})
 	configDir, _ := memoryDirs()
@@ -333,8 +330,8 @@ func TestChildCompressionGoesToCache(t *testing.T) {
 	defer h.Shutdown()
 
 	childID := h.ConversationID() + "_deadbeef"
-	h.EventBus().Emit(events.ContextCompressedEvent{
-		BaseEvent: events.NewBaseEvent(events.EventContextCompressed, childID),
+	h.EventBus().Emit(core.ContextCompressedEvent{
+		BaseEvent: core.NewBaseEvent(core.EventContextCompressed, childID),
 		Summary:   "child summary",
 	})
 	_, cacheDir := memoryDirs()
@@ -349,4 +346,87 @@ func TestChildCompressionGoesToCache(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// Default-on permissions: bash escalates to AskUser, the approval event
+// reaches hooks, and a denial comes back to the model as an error result.
+func TestHarnessDefaultPermissionsAskAndDeny(t *testing.T) {
+	redirectHome(t)
+	agent := newScriptedAgent(
+		toolStep("bash", jsonInput(map[string]any{"command": "ls"})),
+		finalStep("done"),
+	)
+
+	var requested core.ApprovalRequestedEvent
+	h, err := New(testModel,
+		WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return agent, nil }),
+		WithLLMFactory(stubFactory),
+		WithSystemPrompt("test"),
+		WithBlackboardDisabled(),
+		WithHooks(eventbus.Hooks{
+			OnApprovalRequested: func(e core.ApprovalRequestedEvent) {
+				requested = e
+				e.Respond(false)
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer h.Shutdown()
+
+	answer, err := h.RunTurn(context.Background(), "list files")
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if answer != "done" {
+		t.Errorf("answer = %q", answer)
+	}
+	if requested.ToolName != "bash" {
+		t.Fatalf("approval requested for %q, want bash", requested.ToolName)
+	}
+
+	// The denial must reach the model as an error tool result.
+	calls := agent.capturedCalls()
+	if len(calls) != 2 {
+		t.Fatalf("agent calls = %d, want 2", len(calls))
+	}
+	second := calls[1].Messages
+	last := second[len(second)-1]
+	found := false
+	for _, block := range last.Content {
+		if strings.Contains(block.ToolOutput, "denied") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("tool result does not mention denial: %+v", last.Content)
+	}
+}
+
+// WithPermissionsDisabled: bash runs unquestioned.
+func TestHarnessPermissionsDisabledRunsToolsDirectly(t *testing.T) {
+	redirectHome(t)
+	dir := t.TempDir()
+	agent := newScriptedAgent(
+		toolStep("bash", jsonInput(map[string]any{"command": "echo hi > " + dir + "/out.txt"})),
+		finalStep("done"),
+	)
+
+	h, err := New(testModel,
+		WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return agent, nil }),
+		WithLLMFactory(stubFactory),
+		WithSystemPrompt("test"),
+		WithBlackboardDisabled(),
+		WithPermissionsDisabled(),
+	)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer h.Shutdown()
+
+	if _, err := h.RunTurn(context.Background(), "write it"); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	assertFileContains(t, dir+"/out.txt", "hi")
 }

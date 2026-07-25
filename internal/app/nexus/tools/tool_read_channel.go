@@ -7,7 +7,8 @@ import (
 	"strings"
 
 	"github.com/tab58/tenzing-agent-harness/internal/app/nexus"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 )
 
 const defaultLastN = 100
@@ -39,7 +40,7 @@ func (t *ReadChannelTool) Schema() tooldef.Schema {
 	}
 }
 
-func (t *ReadChannelTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
+func (t *ReadChannelTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (core.ToolResult, error) {
 	if len(exctx.Arguments) == 0 || exctx.Arguments[0] == "" {
 		return tooldef.NewToolResult("name is required", tooldef.WithError()), nil
 	}

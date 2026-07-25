@@ -6,7 +6,8 @@ import (
 	"testing"
 
 	"github.com/tab58/tenzing-agent-harness/internal/app/nexus"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 )
 
 func seededNexus(t *testing.T) *nexus.Nexus {
@@ -23,7 +24,7 @@ func seededNexus(t *testing.T) *nexus.Nexus {
 	return n
 }
 
-func exec(t *testing.T, d tooldef.Definition, input string) tooldef.ToolResult {
+func exec(t *testing.T, d tooldef.Definition, input string) core.ToolResult {
 	t.Helper()
 	res, err := d.Execute(context.Background(), tooldef.ExecutionContext{Arguments: []string{input}})
 	if err != nil {

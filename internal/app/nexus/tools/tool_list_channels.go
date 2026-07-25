@@ -9,7 +9,8 @@ import (
 	"fmt"
 
 	"github.com/tab58/tenzing-agent-harness/internal/app/nexus"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 )
 
 var _ tooldef.Definition = (*ListChannelsTool)(nil)
@@ -35,7 +36,7 @@ func (t *ListChannelsTool) Schema() tooldef.Schema {
 	}
 }
 
-func (t *ListChannelsTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
+func (t *ListChannelsTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) (core.ToolResult, error) {
 	infos := t.nexus.ChannelInfos()
 	b, err := json.Marshal(infos)
 	if err != nil {

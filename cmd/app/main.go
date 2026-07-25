@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -13,13 +14,6 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	app, err := NewAppContainer()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "startup failed: %v\n", err)
-		os.Exit(1)
-	}
-	defer app.Shutdown()
-
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("panic", "error", r, "stack", string(debug.Stack()))
@@ -28,22 +22,15 @@ func main() {
 		}
 	}()
 
-	fmt.Println("tenzing agent harness")
-	fmt.Printf("  model   %s\n", app.Harness().GetCurrentModel())
-	fmt.Printf("  cwd     %s\n", app.Cwd())
-	fmt.Printf("  tools   %d registered\n", len(app.Harness().ToolDefinitions()))
-	fmt.Printf("  listen  http://localhost%s\n", app.Addr())
-	fmt.Println()
-
-	err = app.Start(ctx)
-	// Restore default signal handling before cleanup: a second Ctrl+C now
-	// kills the process instead of being swallowed by NotifyContext.
-	stop()
-	fmt.Println("shutting down (Ctrl+C again to force)")
-	if err != nil {
-		slog.Error("server ended with error", "error", err)
-		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+	cmd := newRootCmd()
+	cmd.SetContext(ctx)
+	if err := cmd.Execute(); err != nil {
+		stop() // restore default signal handling before exiting
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		var ec *exitCodeError
+		if errors.As(err, &ec) {
+			os.Exit(ec.code)
+		}
 		os.Exit(1)
 	}
-	slog.Info("server stopped")
 }

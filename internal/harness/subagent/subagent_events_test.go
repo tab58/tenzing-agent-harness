@@ -7,25 +7,24 @@ import (
 	"testing"
 
 	"github.com/tab58/llm-providers/common"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 )
 
 type eventCollector struct {
 	mu     sync.Mutex
-	events []events.Event
+	events []core.Event
 }
 
-func (c *eventCollector) Emit(ev events.Event) {
+func (c *eventCollector) Emit(ev core.Event) {
 	c.mu.Lock()
 	c.events = append(c.events, ev)
 	c.mu.Unlock()
 }
 
-func (c *eventCollector) byType(t events.EventType) []events.Event {
+func (c *eventCollector) byType(t core.EventType) []core.Event {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var out []events.Event
+	var out []core.Event
 	for _, ev := range c.events {
 		if ev.Type() == t {
 			out = append(out, ev)
@@ -40,7 +39,7 @@ func TestSubAgentFactoryEmitsLifecycleEvents(t *testing.T) {
 
 	factory := NewSubAgentFactory(SubAgentFactoryConfig{
 		AgentLLM: &stubLLM{},
-		AgentBuilder: func(_ common.LLM, _ string) (runner.Agent, error) {
+		AgentBuilder: func(_ common.LLM, _ string) (core.Agent, error) {
 			return &stubAgent{}, nil
 		},
 		MaxDepth: 1,
@@ -57,18 +56,18 @@ func TestSubAgentFactoryEmitsLifecycleEvents(t *testing.T) {
 		t.Errorf("result = %q, want %q", result, "done")
 	}
 
-	started := collector.byType(events.EventSubagentStarted)
+	started := collector.byType(core.EventSubagentStarted)
 	if len(started) != 1 {
 		t.Fatalf("expected 1 SubagentStarted, got %d", len(started))
 	}
-	ev := started[0].(events.SubagentStartedEvent)
+	ev := started[0].(core.SubagentStartedEvent)
 	if !strings.HasPrefix(ev.AgentID, "deadbeef_") {
 		t.Errorf("agent ID %q not derived from parent ID", ev.AgentID)
 	}
 	if ev.RunnerID != ev.AgentID {
 		t.Errorf("runner ID %q != agent ID %q; they must be unified", ev.RunnerID, ev.AgentID)
 	}
-	stopped := collector.byType(events.EventSubagentStopped)
+	stopped := collector.byType(core.EventSubagentStopped)
 	if len(stopped) != 1 {
 		t.Fatalf("expected 1 SubagentStopped, got %d", len(stopped))
 	}
@@ -76,10 +75,10 @@ func TestSubAgentFactoryEmitsLifecycleEvents(t *testing.T) {
 	// The child runner shares the factory's emitter, so its own loop events
 	// must land on the same collector (this is what surfaces sub-agent
 	// activity in the UI).
-	if got := collector.byType(events.EventLoopStarted); len(got) != 1 {
+	if got := collector.byType(core.EventLoopStarted); len(got) != 1 {
 		t.Fatalf("expected 1 child LoopStarted, got %d", len(got))
 	}
-	if got := collector.byType(events.EventLoopStopped); len(got) != 1 {
+	if got := collector.byType(core.EventLoopStopped); len(got) != 1 {
 		t.Fatalf("expected 1 child LoopStopped, got %d", len(got))
 	}
 }

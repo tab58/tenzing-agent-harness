@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 )
 
-func newTestNexus(t *testing.T, cfgs []ChannelConfig, emit func(events.Event), notify func(string)) *Nexus {
+func newTestNexus(t *testing.T, cfgs []ChannelConfig, emit func(core.Event), notify func(string)) *Nexus {
 	t.Helper()
 	// apply defaults the way LoadConfig does
 	for i := range cfgs {
@@ -63,11 +63,11 @@ func TestNexusIngestReadSearch(t *testing.T) {
 
 func TestNexusErrorEmitsEventAndNotifies(t *testing.T) {
 	var mu sync.Mutex
-	var emitted []events.Event
+	var emitted []core.Event
 	var notified []string
 
 	n := newTestNexus(t, []ChannelConfig{{Name: "a", Type: TypeWebhook}},
-		func(e events.Event) { mu.Lock(); emitted = append(emitted, e); mu.Unlock() },
+		func(e core.Event) { mu.Lock(); emitted = append(emitted, e); mu.Unlock() },
 		func(ch string) { mu.Lock(); notified = append(notified, ch); mu.Unlock() },
 	)
 

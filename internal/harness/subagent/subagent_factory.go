@@ -4,14 +4,18 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/internal/harness/blackboard"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/contextstore"
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/features/blackboard"
+	"github.com/tab58/tenzing-agent-harness/internal/features/budgets"
+	"github.com/tab58/tenzing-agent-harness/internal/features/builtins"
+	"github.com/tab58/tenzing-agent-harness/internal/features/reminders"
+	"github.com/tab58/tenzing-agent-harness/internal/features/todo"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/todo"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
 
 	"github.com/tab58/llm-providers/common"
 )
@@ -33,11 +37,14 @@ type SubAgentFactoryConfig struct {
 	MaxDepth      int
 	MaxIterations int
 	Cwd           string
-	Emitter       events.Emitter
+	Emitter       core.Emitter
 	Blackboard    *blackboard.Blackboard
 	// ParentID is the spawning runner's ID; child IDs chain from it
 	// ("438314ea" -> "438314ea_085c6444"). Empty means no prefix.
 	ParentID string
+	// SkillsExt is the shared skills extension instance (read-only registry;
+	// sharing across parent and children is safe). Nil means no skills.
+	SkillsExt core.Extension
 }
 
 type SubAgentFactory struct {
@@ -47,9 +54,10 @@ type SubAgentFactory struct {
 	currentDepth  int
 	maxIterations int
 	cwd           string
-	emitter       events.Emitter
+	emitter       core.Emitter
 	blackboard    *blackboard.Blackboard
 	parentID      string
+	skillsExt     core.Extension
 }
 
 // childID derives a hierarchical agent ID from the parent's:
@@ -83,6 +91,7 @@ func NewSubAgentFactory(cfg SubAgentFactoryConfig) *SubAgentFactory {
 		emitter:       cfg.Emitter,
 		blackboard:    cfg.Blackboard,
 		parentID:      cfg.ParentID,
+		skillsExt:     cfg.SkillsExt,
 	}
 }
 
@@ -94,6 +103,9 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 
 	registry := f.buildChildToolRegistry(agentID)
 
+	todoFile := todo.NewTodoStore()
+	childExts := f.childExtensions(agentID, todoFile)
+
 	systemPrompt := "You are a sub-agent. Complete the assigned task using your tools. " +
 		"Be thorough but concise in your final answer — it will be returned to the orchestrating agent."
 	if f.cwd != "" {
@@ -104,21 +116,39 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 			"Your blackboard slot is bb['" + agentID + "'] — writes to any other top-level slot " +
 			"raise PermissionError; read anything; never busy-wait on another agent's slot."
 	}
+	// Extension prompt fragments (skills index, …) are appended here, same as
+	// the composition root does for the main agent.
+	if frags := childExts.PromptFragments(); len(frags) > 0 {
+		systemPrompt += "\n\n" + strings.Join(frags, "\n\n")
+	}
 
 	childAgent, err := f.agentBuilder(f.agentLLM, systemPrompt)
 	if err != nil {
 		return "", fmt.Errorf("create child agent: %w", err)
 	}
 
-	todoFile := todo.NewTodoStore()
-	skillsReg := skills.NewRegistry()
+	// The child's composite mounts its registry plus extension tools
+	// (list_skills/load_skill from the shared skills extension).
+	childPort, err := toolport.NewComposite(registry, childExts)
+	if err != nil {
+		return "", fmt.Errorf("build child tool port: %w", err)
+	}
+
+	// Each child owns a fresh, isolated context store — no InitialMemory
+	// (children don't resume prior sessions), scoped to its own runner ID.
+	childStore := contextstore.New(contextstore.Config{
+		LLM:      f.agentLLM,
+		Emitter:  f.emitter,
+		RunnerID: agentID,
+	})
 
 	childRunner, err := runner.NewAgentRunner(
 		childAgent,
 		runner.WithToolRegistry(registry),
-		runner.WithSkillsRegistry(skillsReg),
-		runner.WithTodoFile(todoFile),
+		runner.WithToolPort(childPort),
+		runner.WithContextStore(childStore),
 		runner.WithSystemPrompt(systemPrompt),
+		runner.WithExtensions(childExts),
 		// Share the parent's emitter so the sub-agent's tool/LLM events reach
 		// the same bus (and UI). Its events carry the child's RunnerID.
 		runner.WithEmitter(f.emitter),
@@ -131,8 +161,8 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 	}
 
 	if f.emitter != nil {
-		f.emitter.Emit(events.SubagentStartedEvent{
-			BaseEvent: events.NewBaseEvent(events.EventSubagentStarted, childRunner.ID()),
+		f.emitter.Emit(core.SubagentStartedEvent{
+			BaseEvent: core.NewBaseEvent(core.EventSubagentStarted, childRunner.ID()),
 			AgentID:   agentID,
 			Prompt:    task,
 		})
@@ -155,8 +185,8 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 	if err != nil {
 		slog.Error("[subagent] failed", "depth", childDepth, "duration", duration.Round(time.Millisecond), "error", err)
 		if f.emitter != nil {
-			f.emitter.Emit(events.SubagentStoppedEvent{
-				BaseEvent: events.NewBaseEvent(events.EventSubagentStopped, childRunner.ID()),
+			f.emitter.Emit(core.SubagentStoppedEvent{
+				BaseEvent: core.NewBaseEvent(core.EventSubagentStopped, childRunner.ID()),
 				AgentID:   agentID,
 				Duration:  duration.Round(time.Millisecond),
 			})
@@ -166,8 +196,8 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 
 	slog.Info("[subagent] completed", "depth", childDepth, "duration", duration.Round(time.Millisecond), "answer_len", len(result))
 	if f.emitter != nil {
-		f.emitter.Emit(events.SubagentStoppedEvent{
-			BaseEvent: events.NewBaseEvent(events.EventSubagentStopped, childRunner.ID()),
+		f.emitter.Emit(core.SubagentStoppedEvent{
+			BaseEvent: core.NewBaseEvent(core.EventSubagentStopped, childRunner.ID()),
 			AgentID:   agentID,
 			Duration:  duration.Round(time.Millisecond),
 		})
@@ -189,14 +219,26 @@ func (f *SubAgentFactory) SpawnAgent(ctx context.Context, task string, taskConte
 	return "Sub-agent " + agentID + " completed. " + pv.String(), nil
 }
 
-func (f *SubAgentFactory) buildChildToolRegistry(agentID string) *tools.Registry {
+// childExtensions assembles a child's extension set: its own todo reminders,
+// the shared skills extension, the shared blackboard under the child's slot
+// ID, and — below max depth — its own subagent spawner. Depth exclusion
+// lives here: a child at max depth simply gets no spawn extension. The child
+// runner never runs session hooks, so the blackboard ext's SessionEnd cannot
+// close the shared REPL.
+func (f *SubAgentFactory) childExtensions(agentID string, todoFile *todo.TodoFile) *core.Extensions {
 	childDepth := f.currentDepth + 1
-	registry := tools.NewRegistry(f.cwd)
-
-	if f.blackboard != nil {
-		registry.Register(blackboard.NewREPLTool(f.blackboard, agentID))
+	exts := []core.Extension{reminders.New(todoFile.FormatReminder)}
+	if f.maxIterations > 0 {
+		// The child's iteration cap is a budget: graceful termination via
+		// TurnResult.Terminated rather than an ad-hoc loop counter.
+		exts = append(exts, budgets.New(budgets.Limits{MaxIterations: f.maxIterations}))
 	}
-
+	if f.skillsExt != nil {
+		exts = append(exts, f.skillsExt)
+	}
+	if f.blackboard != nil {
+		exts = append(exts, blackboard.NewExt(f.blackboard, agentID))
+	}
 	if childDepth < f.maxDepth {
 		childFactory := &SubAgentFactory{
 			agentLLM:      f.agentLLM,
@@ -208,9 +250,17 @@ func (f *SubAgentFactory) buildChildToolRegistry(agentID string) *tools.Registry
 			emitter:       f.emitter,
 			blackboard:    f.blackboard,
 			parentID:      agentID,
+			skillsExt:     f.skillsExt,
 		}
-		registry.Register(NewSpawnAgentTool(childFactory))
+		exts = append(exts, NewSpawnExt(childFactory))
 	}
+	return core.NewExtensions(exts...)
+}
 
-	return registry
+func (f *SubAgentFactory) buildChildToolRegistry(agentID string) *toolport.Registry {
+	toolRegistry := toolport.NewRegistry(f.cwd)
+	for _, def := range builtins.Defaults() {
+		toolRegistry.Register(def)
+	}
+	return toolRegistry
 }

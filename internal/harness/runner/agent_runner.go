@@ -5,75 +5,39 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"log/slog"
-	"regexp"
-	"strings"
 	"time"
 
-	"github.com/tab58/llm-providers/common"
-
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/prompts"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/todo"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/features/prompts"
 )
 
-const logOutputMaxLen = 2000
-
-// maxInvalidFinalRetries bounds how many times an invalid final answer (empty,
-// a tool call written as plain text, or a response truncated at the output
-// token limit) is bounced back to the model before the loop gives up and
-// returns it as-is.
-const maxInvalidFinalRetries = 2
-
-// toolCallTextRe matches text that is a malformed tool-call attempt emitted as
-// prose — e.g. "<|tool_call>...", "call:graph_cypher{...}" — which smaller
-// models produce under context pressure instead of a real tool invocation.
-var toolCallTextRe = regexp.MustCompile(`(?s)^\s*(<\|+/?tool_call|call:[A-Za-z_]+\s*[{(])`)
-
-// invalidFinalAnswerReason returns a non-empty reason when the answer should
-// not be handed to the caller.
-func invalidFinalAnswerReason(answer string) string {
-	trimmed := strings.TrimSpace(answer)
-	if trimmed == "" {
-		return "the response was empty"
-	}
-	if toolCallTextRe.MatchString(trimmed) {
-		return "the response looks like a tool call written as plain text"
-	}
-	return ""
-}
-
-// AgentRunner executes a single agent's reasoning and tool execution loop.
-// It receives the environment configured in the harness.
+// AgentRunner is a thin facade over core.Loop. It owns construction-time
+// wiring (tool definitions, skill map, stream callbacks) and translates
+// TurnResult into the (string, error) contract the harness expects.
 type AgentRunner struct {
-	id              string
-	fsm             *LoopFSM
-	toolRegistry    *tools.Registry
-	skillsRegistry  *skills.Registry
-	todoFile        *todo.TodoFile
-	agent           Agent
-	emitter         events.Emitter
-	onTextDelta     func(string)
-	onThinkingDelta func(string)
-	systemPrompt    string
+	id           string
+	agent        core.Agent
+	loop         *core.Loop
+	systemPrompt string
 }
 
 type agentRunnerOptions struct {
 	id              string
-	toolRegistry    *tools.Registry
-	skillsRegistry  *skills.Registry
-	todoFile        *todo.TodoFile
-	onTextDelta     func(string)
-	onThinkingDelta func(string)
+	toolRegistry    *toolport.Registry
+	toolPort        core.ToolPort
+	contextStore    core.ContextPort
+	onTextDelta     func(runnerID, text string)
+	onThinkingDelta func(runnerID, text string)
 	systemPrompt    string
-	emitter         events.Emitter
+	emitter         core.Emitter
+	extensions      *core.Extensions
+	approvalTimeout time.Duration
 }
 
 type AgentRunnerOption func(*agentRunnerOptions)
 
-func WithEmitter(emitter events.Emitter) AgentRunnerOption {
+func WithEmitter(emitter core.Emitter) AgentRunnerOption {
 	return func(o *agentRunnerOptions) {
 		o.emitter = emitter
 	}
@@ -90,13 +54,18 @@ func WithID(id string) AgentRunnerOption {
 	}
 }
 
-func WithTextDeltaHandler(f func(string)) AgentRunnerOption {
+// WithTextDeltaHandler registers a streaming-text callback. The runner
+// tags each delta with its own id before invoking f, so consumers can
+// correlate deltas across concurrent runners.
+func WithTextDeltaHandler(f func(runnerID, text string)) AgentRunnerOption {
 	return func(o *agentRunnerOptions) {
 		o.onTextDelta = f
 	}
 }
 
-func WithThinkingDeltaHandler(f func(string)) AgentRunnerOption {
+// WithThinkingDeltaHandler registers a streaming-thinking callback, tagged
+// with the runner id like WithTextDeltaHandler.
+func WithThinkingDeltaHandler(f func(runnerID, text string)) AgentRunnerOption {
 	return func(o *agentRunnerOptions) {
 		o.onThinkingDelta = f
 	}
@@ -110,33 +79,47 @@ func WithSystemPrompt(prompt string) AgentRunnerOption {
 	}
 }
 
-func WithToolRegistry(registry *tools.Registry) AgentRunnerOption {
+func WithToolRegistry(registry *toolport.Registry) AgentRunnerOption {
 	return func(o *agentRunnerOptions) {
 		o.toolRegistry = registry
 	}
 }
 
-func WithSkillsRegistry(registry *skills.Registry) AgentRunnerOption {
+// WithToolPort supplies the ToolPort the loop drives (e.g. the composite).
+// When unset, the runner wraps the tool registry into a plain port.
+func WithToolPort(port core.ToolPort) AgentRunnerOption {
 	return func(o *agentRunnerOptions) {
-		o.skillsRegistry = registry
+		o.toolPort = port
 	}
 }
 
-func WithTodoFile(file *todo.TodoFile) AgentRunnerOption {
+// WithContextStore configures the ContextPort that owns this runner's
+// conversation history. Required — the runner rebuilds messages from it
+// every iteration and appends the assistant/tool_result turns back to it.
+func WithContextStore(cs core.ContextPort) AgentRunnerOption {
 	return func(o *agentRunnerOptions) {
-		o.todoFile = file
+		o.contextStore = cs
 	}
 }
 
-// NewAgentRunner creates a new AgentRunner, the actual executor of a single agent's
-// reasoning and tool execution loop. The agent, tool registry, skills registry, and todo file
-// must be defined.
-func NewAgentRunner(agent Agent, opts ...AgentRunnerOption) (*AgentRunner, error) {
+func WithExtensions(exts *core.Extensions) AgentRunnerOption {
+	return func(o *agentRunnerOptions) { o.extensions = exts }
+}
+
+// WithApprovalTimeout bounds how long an AskUser tool call blocks awaiting
+// an ApprovalRequestedEvent response. 0 (the default) denies immediately.
+func WithApprovalTimeout(d time.Duration) AgentRunnerOption {
+	return func(o *agentRunnerOptions) { o.approvalTimeout = d }
+}
+
+// NewAgentRunner creates a new AgentRunner. It performs one-time wiring
+// (tool definitions, skill map, stream callbacks on the Agent) and builds
+// a core.Loop for RunLoop to delegate to.
+func NewAgentRunner(agent core.Agent, opts ...AgentRunnerOption) (*AgentRunner, error) {
 	if agent == nil {
 		return nil, fmt.Errorf("no agent defined")
 	}
 
-	// apply options
 	o := &agentRunnerOptions{
 		systemPrompt: prompts.DefaultSystemPrompt(),
 	}
@@ -144,40 +127,57 @@ func NewAgentRunner(agent Agent, opts ...AgentRunnerOption) (*AgentRunner, error
 		opt(o)
 	}
 
-	if o.toolRegistry == nil {
+	if o.toolPort == nil && o.toolRegistry == nil {
 		return nil, fmt.Errorf("no tool registry defined")
 	}
-
-	if o.skillsRegistry == nil {
-		return nil, fmt.Errorf("no skills registry defined")
+	if o.contextStore == nil {
+		return nil, fmt.Errorf("no context store defined")
 	}
-
-	if o.todoFile == nil {
-		return nil, fmt.Errorf("no todo file defined")
-	}
-
 	if o.id == "" {
 		o.id = NewID()
 	}
+	if o.extensions == nil {
+		o.extensions = core.NewExtensions()
+	}
+
+	// One-time agent wiring — these are construction-time setups, not
+	// per-iteration calls. The core.Loop never touches them. The agent's
+	// callback contract is func(text); the runner closes over its own id
+	// so deltas stay correlatable across concurrent runners.
+	if o.onTextDelta != nil {
+		f, id := o.onTextDelta, o.id
+		agent.UpdateStreamCallback(func(text string) { f(id, text) })
+	}
+	if o.onThinkingDelta != nil {
+		f, id := o.onThinkingDelta, o.id
+		agent.UpdateThinkingCallback(func(text string) { f(id, text) })
+	}
+
+	tp := o.toolPort
+	if tp == nil {
+		tp = toolport.Wrap(o.toolRegistry)
+	}
+
+	loop, err := core.NewLoop(core.LoopConfig{
+		ID:              o.id,
+		Model:           agent,
+		Tools:           tp,
+		Context:         o.contextStore,
+		Emitter:         o.emitter,
+		Extensions:      o.extensions,
+		SystemPrompt:    o.systemPrompt,
+		ApprovalTimeout: o.approvalTimeout,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create loop: %w", err)
+	}
 
 	return &AgentRunner{
-		agent:           agent,
-		id:              o.id,
-		fsm:             createNewLoopFSM(),
-		toolRegistry:    o.toolRegistry,
-		skillsRegistry:  o.skillsRegistry,
-		todoFile:        o.todoFile,
-		emitter:         o.emitter,
-		systemPrompt:    o.systemPrompt,
-		onTextDelta:     o.onTextDelta,
-		onThinkingDelta: o.onThinkingDelta,
+		id:           o.id,
+		agent:        agent,
+		loop:         loop,
+		systemPrompt: o.systemPrompt,
 	}, nil
-}
-
-func (h *AgentRunner) emit(e events.Event) {
-	if h.emitter != nil {
-		h.emitter.Emit(e)
-	}
 }
 
 // NewID returns a fresh 8-hex-char runner ID (e.g. "438314ea"). Exported so
@@ -192,232 +192,18 @@ func (h *AgentRunner) GetCurrentModel() string {
 	return h.agent.GetCurrentModel()
 }
 
-// RunLoop executes a single turn: user input -> agent plan/execute loop -> agent result
+// RunLoop executes a single turn: user input -> agent plan/execute loop -> agent result.
+// It delegates to core.Loop.RunTurn and translates TurnResult into the
+// (string, error) contract the harness expects.
 func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error) {
-	inputs := []string{input}
-	var loopErr error
-	iteration := 0
-	invalidFinalRetries := 0
-	loopStart := time.Now()
-
-	// prepare loop
-	h.agent.UpdateSkillMap(h.skillsRegistry.GetSkillMap())
-	h.agent.UpdateToolDefinitions(h.toolRegistry.ProviderDefinitions())
-
-	// execute loop
-	slog.Info("loop started", "runner", h.id, "input", input)
-	slog.Debug("system prompt", "runner", h.id, "prompt_len", len(h.systemPrompt), "prompt", h.systemPrompt)
-	h.emit(events.TurnStartedEvent{
-		BaseEvent: events.NewBaseEvent(events.EventTurnStarted, h.id),
-		Query:     input,
-	})
-	h.emit(events.LoopStartedEvent{
-		BaseEvent: events.NewBaseEvent(events.EventLoopStarted, h.id),
-		Input:     input,
-	})
-	if err := h.fsm.TransitionStates(ctx, LoopTransitionReset); err != nil {
-		return "", fmt.Errorf("fsm reset: %w", err)
+	tr, err := h.loop.RunTurn(ctx, input)
+	if err != nil {
+		return "", err
 	}
-	for {
-		iteration++
-		if err := ctx.Err(); err != nil {
-			loopErr = fmt.Errorf("loop canceled: %w", err)
-			break
-		}
-
-		if err := h.fsm.TransitionStates(ctx, LoopTransitionStartReasoning); err != nil {
-			loopErr = fmt.Errorf("fsm start reasoning: %w", err)
-			break
-		}
-		reminders := h.buildSystemReminders()
-		if len(reminders) > 0 {
-			slog.Debug("system reminders", "runner", h.id, "iter", iteration, "count", len(reminders), "reminders", reminders)
-		}
-		if h.onTextDelta != nil {
-			h.agent.UpdateStreamCallback(h.onTextDelta)
-		} else {
-			h.agent.UpdateStreamCallback(nil)
-		}
-		if h.onThinkingDelta != nil {
-			h.agent.UpdateThinkingCallback(h.onThinkingDelta)
-		} else {
-			h.agent.UpdateThinkingCallback(nil)
-		}
-		h.emit(events.ReasoningStartedEvent{
-			BaseEvent: events.NewBaseEvent(events.EventReasoningStarted, h.id),
-			Iteration: iteration,
-		})
-		reasoningResult, err := h.agent.DoReasoning(ctx, inputs, reminders)
-		if err != nil {
-			loopErr = fmt.Errorf("reasoning error: %w", err)
-			break
-		}
-		h.emit(events.ReasoningFinishedEvent{
-			BaseEvent:    events.NewBaseEvent(events.EventReasoningFinished, h.id),
-			Model:        reasoningResult.Meta.Model,
-			InputTokens:  reasoningResult.Meta.InputTokens,
-			OutputTokens: reasoningResult.Meta.OutputTokens,
-			StopReason:   reasoningResult.Meta.StopReason,
-			HasToolCall:  len(reasoningResult.ToolCalls) > 0,
-		})
-		h.emit(events.LLMResponseEvent{
-			BaseEvent:    events.NewBaseEvent(events.EventLLMResponse, h.id),
-			Model:        reasoningResult.Meta.Model,
-			ResponseID:   reasoningResult.Meta.ResponseID,
-			InputTokens:  reasoningResult.Meta.InputTokens,
-			OutputTokens: reasoningResult.Meta.OutputTokens,
-			StopReason:   reasoningResult.Meta.StopReason,
-			Text:         reasoningResult.Meta.AssistantText,
-		})
-		if reasoningResult.Compression != nil {
-			h.emit(events.ContextCompressedEvent{
-				BaseEvent:      events.NewBaseEvent(events.EventContextCompressed, h.id),
-				MessagesBefore: reasoningResult.Compression.MessagesBefore,
-				MessagesAfter:  reasoningResult.Compression.MessagesAfter,
-				Summary:        reasoningResult.Compression.Summary,
-			})
-		}
-
-		if len(reasoningResult.ToolCalls) > 0 {
-			for _, tc := range reasoningResult.ToolCalls {
-				slog.Debug("reasoning result", "runner", h.id, "iter", iteration, "tool", tc.Name, "tool_use_id", tc.ID, "input", tc.Input)
-			}
-		} else {
-			slog.Debug("reasoning result", "runner", h.id, "iter", iteration, "final_answer_len", len(reasoningResult.FinalAnswer))
-		}
-		if err := h.fsm.TransitionStates(ctx, LoopTransitionFinishReasoning); err != nil {
-			loopErr = fmt.Errorf("fsm finish reasoning: %w", err)
-			break
-		}
-
-		if len(reasoningResult.ToolCalls) == 0 {
-			finalAnswer := reasoningResult.FinalAnswer
-			reason := invalidFinalAnswerReason(finalAnswer)
-			truncated := reason == "" && reasoningResult.Meta.StopReason == string(common.StopReasonMaxTokens)
-			if truncated {
-				reason = "the response was cut off by the output token limit before it finished"
-			}
-			if reason != "" && invalidFinalRetries < maxInvalidFinalRetries {
-				invalidFinalRetries++
-				slog.Warn("invalid final answer, retrying", "runner", h.id, "iter", iteration, "reason", reason, "answer_len", len(finalAnswer), "retry", invalidFinalRetries)
-				if err := h.fsm.TransitionStates(ctx, LoopTransitionStartToolExecution); err != nil {
-					loopErr = fmt.Errorf("fsm start retry after invalid final answer: %w", err)
-					break
-				}
-				if err := h.fsm.TransitionStates(ctx, LoopTransitionFinishToolExecution); err != nil {
-					loopErr = fmt.Errorf("fsm finish retry after invalid final answer: %w", err)
-					break
-				}
-				retryMsg := fmt.Sprintf(
-					"Your previous response was rejected: %s. If you intended to call a tool, use the tool-calling mechanism — never write a tool call as text. Otherwise, reply with your final answer as plain prose.",
-					reason)
-				if truncated {
-					retryMsg = "Your previous response was cut off by the output token limit before it finished. Write the complete final answer again from the start, more concisely, so it fits within the limit."
-				}
-				inputs = []string{retryMsg}
-				continue
-			}
-			if err := h.fsm.TransitionStates(ctx, LoopTransitionStop); err != nil {
-				return "", fmt.Errorf("fsm stop: %w", err)
-			}
-			slog.Info("loop completed", "runner", h.id, "iterations", iteration, "duration", time.Since(loopStart).Round(time.Millisecond), "answer_len", len(finalAnswer))
-			slog.Debug("final answer", "runner", h.id, "answer", finalAnswer)
-			h.emit(events.LoopStoppedEvent{
-				BaseEvent:  events.NewBaseEvent(events.EventLoopStopped, h.id),
-				Iterations: iteration,
-				Duration:   time.Since(loopStart).Round(time.Millisecond),
-			})
-			h.emit(events.TurnCompletedEvent{
-				BaseEvent:   events.NewBaseEvent(events.EventTurnCompleted, h.id),
-				FinalAnswer: finalAnswer,
-				Iterations:  iteration,
-				Duration:    time.Since(loopStart).Round(time.Millisecond),
-			})
-			return finalAnswer, nil
-		}
-
-		if err := ctx.Err(); err != nil {
-			loopErr = fmt.Errorf("loop canceled: %w", err)
-			break
-		}
-
-		if err := h.fsm.TransitionStates(ctx, LoopTransitionStartToolExecution); err != nil {
-			loopErr = fmt.Errorf("fsm start tool execution: %w", err)
-			break
-		}
-		// Execute every tool call from the response, in order. Results are
-		// fed back in the same order so each pairs with its tool_use id —
-		// skipping any would poison the history with "not executed" results.
-		// ponytail: sequential execution; parallelize per-call when tools are
-		// proven safe to run concurrently.
-		outputs := make([]string, 0, len(reasoningResult.ToolCalls))
-		for _, toolCall := range reasoningResult.ToolCalls {
-			h.emit(events.ToolExecutionStartedEvent{
-				BaseEvent: events.NewBaseEvent(events.EventToolExecutionStarted, h.id),
-				ToolName:  toolCall.Name,
-				Input:     toolCall.Input,
-			})
-			toolStart := time.Now()
-			toolResult, err := h.toolRegistry.Execute(ctx, toolCall.Name, toolCall.Input)
-			toolDuration := time.Since(toolStart)
-			if err != nil {
-				loopErr = fmt.Errorf("tool execution error: %w", err)
-				break
-			}
-			if toolResult.IsError {
-				slog.Warn("tool error", "runner", h.id, "iter", iteration, "tool", toolCall.Name, "output", truncateLog(toolResult.Output, logOutputMaxLen))
-			}
-			slog.Debug("tool result", "runner", h.id, "iter", iteration, "tool", toolCall.Name, "is_error", toolResult.IsError, "duration", toolDuration.Round(time.Millisecond), "output_len", len(toolResult.Output), "output", truncateLog(toolResult.Output, logOutputMaxLen))
-			slog.Log(ctx, LevelTrace, "tool result full", "runner", h.id, "iter", iteration, "tool", toolCall.Name, "output", toolResult.Output)
-
-			h.emit(events.ToolExecutionFinishedEvent{
-				BaseEvent: events.NewBaseEvent(events.EventToolExecutionFinished, h.id),
-				ToolName:  toolCall.Name,
-				Duration:  toolDuration.Round(time.Millisecond),
-			})
-			if toolResult.IsError {
-				h.emit(events.ToolFailedEvent{
-					BaseEvent: events.NewBaseEvent(events.EventToolFailed, h.id),
-					ToolName:  toolCall.Name,
-					Input:     toolCall.Input,
-					Error:     toolResult.Output,
-					Duration:  toolDuration.Round(time.Millisecond),
-				})
-			} else {
-				h.emit(events.ToolSucceededEvent{
-					BaseEvent: events.NewBaseEvent(events.EventToolSucceeded, h.id),
-					ToolName:  toolCall.Name,
-					Input:     toolCall.Input,
-					Output:    toolResult.Output,
-					Duration:  toolDuration.Round(time.Millisecond),
-				})
-			}
-			outputs = append(outputs, toolResult.Output)
-		}
-		if loopErr != nil {
-			break
-		}
-		if err := h.fsm.TransitionStates(ctx, LoopTransitionFinishToolExecution); err != nil {
-			loopErr = fmt.Errorf("fsm finish tool execution: %w", err)
-			break
-		}
-
-		// Loop: feed only the new tool results to the next reasoning cycle.
-		// The agent keeps its own history; re-sending earlier inputs would
-		// duplicate them in the context every iteration.
-		inputs = outputs
+	if tr.Terminated != "" {
+		return tr.FinalAnswer, fmt.Errorf("terminated: %s", tr.Terminated)
 	}
-
-	if err := h.fsm.TransitionStates(ctx, LoopTransitionReset); err != nil {
-		slog.Error("fsm reset after error", "runner", h.id, "error", err)
-	}
-	slog.Error("loop failed", "runner", h.id, "error", loopErr, "iterations", iteration, "duration", time.Since(loopStart).Round(time.Millisecond))
-	h.emit(events.ErrorEvent{
-		BaseEvent: events.NewBaseEvent(events.EventError, h.id),
-		Error:     loopErr.Error(),
-		Context:   "loop",
-	})
-	return "", loopErr
+	return tr.FinalAnswer, nil
 }
 
 func (h *AgentRunner) ID() string {
@@ -426,19 +212,4 @@ func (h *AgentRunner) ID() string {
 
 func (h *AgentRunner) SystemPrompt() string {
 	return h.systemPrompt
-}
-
-func (h *AgentRunner) buildSystemReminders() []string {
-	var reminders []string
-	if r := h.todoFile.FormatReminder(); r != "" {
-		reminders = append(reminders, r)
-	}
-	return reminders
-}
-
-func truncateLog(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "...[truncated]"
 }

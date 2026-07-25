@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 )
 
 const (
@@ -20,7 +20,7 @@ const (
 type Nexus struct {
 	channels map[string]*Channel
 	order    []string
-	emit     func(events.Event)
+	emit     func(core.Event)
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -38,9 +38,9 @@ type ChannelInfo struct {
 // New builds a Nexus from a validated config. emit publishes nexus events
 // (nil = no events); notify is called with the channel name for each error
 // entry on trigger-enabled channels (nil = no trigger).
-func New(cfg Config, emit func(events.Event), notify func(channel string)) (*Nexus, error) {
+func New(cfg Config, emit func(core.Event), notify func(channel string)) (*Nexus, error) {
 	if emit == nil {
-		emit = func(events.Event) {}
+		emit = func(core.Event) {}
 	}
 	n := &Nexus{
 		channels: make(map[string]*Channel, len(cfg.Channels)),
@@ -51,7 +51,7 @@ func New(cfg Config, emit func(events.Event), notify func(channel string)) (*Nex
 		cc := cc
 		onError := func(e Entry) {
 			n.emit(ChannelErrorEvent{
-				BaseEvent: events.NewBaseEvent(EventChannelError, runnerID),
+				BaseEvent: core.NewBaseEvent(EventChannelError, runnerID),
 				Channel:   cc.Name,
 				Text:      e.Text,
 				Seq:       e.Seq,
@@ -80,7 +80,7 @@ func (n *Nexus) Start(ctx context.Context) {
 		statusFunc := func(s string) {
 			chRef.setStatus(s)
 			n.emit(ChannelStatusEvent{
-				BaseEvent: events.NewBaseEvent(EventChannelStatus, runnerID),
+				BaseEvent: core.NewBaseEvent(EventChannelStatus, runnerID),
 				Channel:   chRef.cfg.Name,
 				State:     s,
 			})

@@ -3,8 +3,9 @@ package subagent
 import (
 	"context"
 	"errors"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 	"testing"
+
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 )
 
 type stubFactory struct {

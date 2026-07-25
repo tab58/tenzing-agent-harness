@@ -51,3 +51,25 @@ var (
 	Ollama_Qwen3_5_122B = ollama.Model_Qwen3_5_122B.(ModelDefinition)
 	Ollama_Gemma4_31B   = ollama.Model_Gemma4_31B.(ModelDefinition)
 )
+
+// StandardModels returns every standard model re-exported above — the
+// canonical list consumers (and cmd/app's model registry) derive from.
+// Add new re-exported models here in the same change.
+func StandardModels() []ModelDefinition {
+	return []ModelDefinition{
+		Anthropic_ClaudeOpus4_6,
+		Anthropic_ClaudeSonnet4_6,
+		Anthropic_ClaudeHaiku4_5,
+		OpenAI_GPT5_4,
+		OpenAI_GPT5_4Mini,
+		Cerebras_GPTOSS_120B,
+		Lightning_Gemma4_31B,
+		Lightning_GPTOSS_120B,
+		OpenRouter_Gemma4_31B,
+		Ollama_GLM5_2_Cloud,
+		Ollama_Qwen3_5_9B,
+		Ollama_Qwen3_5_35B,
+		Ollama_Qwen3_5_122B,
+		Ollama_Gemma4_31B,
+	}
+}

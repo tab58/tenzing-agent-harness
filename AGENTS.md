@@ -28,33 +28,46 @@ No CI pipeline yet. Run `go build ./...` and `go test ./...` before declaring wo
 
 ## Layer Boundaries
 
-Three layers, strict dependency direction: **Harness → AgentRunner → Agent**.
+Five layers, hexagonal dependency direction: **Core → Adapters → Features → Composition Root → App**.
 
-| Layer                                                          | Knows about                              | Does NOT know about                   |
-| -------------------------------------------------------------- | ---------------------------------------- | ------------------------------------- |
-| Harness (`harness.go`, `harness_options.go`, `llm.go`)         | AgentRunner, EventBus, LLM construction/caching, config wiring | Tool implementations                  |
-| AgentRunner (`agent_runner.go`, `loop_fsm.go`)                 | Agent interface, tool registry, FSM, Emitter interface | CLI, sessions, users                  |
-| Agent (`internal/agent/agent.go`, `internal/llmctx/`)          | LLM provider, message types, compression | Filesystem, processes, tools directly |
+| Layer             | Folder                                                              | Knows about                              | Does NOT know about                   |
+| ------------------ | -------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------- |
+| Core               | `internal/core/` (+ `core/tooldef`)                                   | Domain types, all ports (`ModelPort`, `ToolPort`, `ContextPort`), extension/hook contracts (`Extensions`, hooks, `Decision`), the loop/FSM/turn/events, the `core.Agent` contract, the tool authoring contract (`tooldef.Definition`, `ExecutionContext`, `Schema`) | Everything else — adapters, features, harness, app |
+| Adapters           | `internal/adapters/` (`agent`, `contextstore`, `eventbus`, `toolport`) | Core only; concrete implementations of core ports — `agent` implements `core.Agent`, `contextstore` implements `ContextPort`, `eventbus` implements `Emitter` (+ `Hooks` dispatch), `toolport` implements `ToolPort` (`Composite`/`Wrap`) plus the native `Registry` | Features, harness, app |
+| Features           | `internal/features/<name>/` (plus `subagent.SpawnExt`, which lives in `harness/subagent` — see exception below) | Core only (+ `core/tooldef`); each package colocates its implementation with its `core.Extension` registration in `ext.go` | Other features, adapters, harness internals |
+| Composition root   | `internal/harness/` (`harness.go`, `harness_options.go`, `llm.go`, `memory.go`; `runner/` facade; `subagent/` as a child composition root) | Everything below: builds adapters, the default + caller extension set, the composite ToolPort, assembles the system prompt, wires one runner per loop | Tool implementations' internals       |
+| App                | `internal/app/nexus/` (+ `internal/app/` wiring, `cmd/app/`)          | Harness's public surface (`RunTurn`, `WithTool` registration) | —                                      |
 
-**Never import upward.** Tools don't import harness. Agent doesn't import runner. If you need cross-layer communication, use an interface injected via config.
+**Never import upward.** Core imports nothing from `internal/` — it does import the external module `github.com/tab58/llm-providers/common` for canonical message/tool types (`ProviderToolDefinition = common.ToolDefinition`), which is a boundary crossing to an external dependency, not an internal layering violation. Adapters import core, never features or harness. Features import core only. Agent (`internal/adapters/agent`) doesn't import runner. If you need cross-layer communication, use an interface injected via config.
 
-One deliberate exception to "never import upward": `harness.New` imports `internal/agent` in exactly one place — the unexported `defaultAgentBuilder` fallback — so a harness works out of the box with no brain injection. All other harness code talks only to the `runner.Agent` interface. Callers with a custom brain override it via `harness.WithAgentBuilder(builder)`.
+Two deliberate exceptions to "never import upward":
+
+1. `harness.New` imports `internal/adapters/agent` in exactly one place — the unexported `defaultAgentBuilder` fallback — so a harness works out of the box with no brain injection. All other harness code talks only to the `core.Agent` interface. Callers with a custom brain override it via `harness.WithAgentBuilder(builder)`.
+2. `internal/harness/subagent` is a **child composition root**: it deliberately imports both `internal/features/*` (to share the skills/blackboard extensions and assemble a child's extension set) and `internal/harness/runner` (to build the child's `AgentRunner`) — the same wiring job `harness.go` does for the main agent, done again per spawn.
 
 ### Blackboard REPL
 
-`internal/harness/blackboard/` hosts the sandboxed Python REPL subprocess machinery (`repl.go`, `bootstrap.py`) plus the `Querier` interface and its LLM-backed implementation (`querier.go`) — the model-facing `rlm` tool and its offload path have been removed — alongside the `Blackboard` that builds on it: one persistent REPL per harness, shared by the main agent and all subagents through the `repl` tool. A single mutex serializes all access; write-own-slot is enforced in code — `bb` is a guard dict and creating/replacing a top-level key other than the executing agent's slot raises `PermissionError` (reads are unrestricted; the trusted Go `Deposit` path bypasses the guard). The blackboard's namespace (`bb` guard dict, `peek`, `bb_grep`) is injected via a setup exec (no blackboard-specific logic in `bootstrap.py`); `bootstrap.py`'s only related feature is a transport-level stdout cap (100k chars).
+`internal/features/blackboard/` hosts the sandboxed Python REPL subprocess machinery (`repl.go`, `bootstrap.py`) plus the `Querier` interface and its LLM-backed implementation (`querier.go`) — the model-facing `rlm` tool and its offload path have been removed — alongside the `Blackboard` that builds on it: one persistent REPL per harness, shared by the main agent and all subagents through the `repl` tool. A single mutex serializes all access; write-own-slot is enforced in code — `bb` is a guard dict and creating/replacing a top-level key other than the executing agent's slot raises `PermissionError` (reads are unrestricted; the trusted Go `Deposit` path bypasses the guard). The blackboard's namespace (`bb` guard dict, `peek`, `bb_grep`) is injected via a setup exec (no blackboard-specific logic in `bootstrap.py`); `bootstrap.py`'s only related feature is a transport-level stdout cap (100k chars).
 
 Known limit: `llm_query` inside the blackboard holds the REPL lock for all agents while it runs; keep individual calls small and prefer `llm_batch` for fan-out work. If this hurts, the upgrade path is an async callback queue — don't reach for it speculatively.
 
 Cancellation or transport failure mid-call resets the blackboard (contents lost, lazily restarted empty); agents must tolerate missing slots.
 
+Registration is via `internal/features/blackboard/ext.go` (package `blackboard`): a `core.Extension` providing the `repl` tool (`core.ToolProvider`, wrapping the same REPL tool implementation) and closing the blackboard on `core.SessionEndHook` (run by `Harness.Shutdown` with a 5s timeout). The `*blackboard.Blackboard` is built at the composition root and shared — main gets `blackboard.NewExt(bb, "main")`, each subagent gets `NewExt(bb, childID)`. Behavior unchanged.
+
 ## Adding Tools
 
-1. Create `internal/harness/tools/tooldef/tool_<name>.go`
-2. Implement `tooldef.Definition` interface: `Name()`, `Description()`, `Schema()`, `Execute()`
-3. Register: most tools go in `GetDefaultToolDefs()` in `internal/harness/tools/registry.go`. The `repl` tool (shared blackboard) is registered by `harness.New()` unless `WithBlackboardDisabled` is set; its sub-LM queries fall back to the main model unless `WithBlackboardModel` is set
-4. Tool descriptions are **instructions to the model**, not documentation — precise wording controls tool selection
-5. Tools never throw. Errors return `ToolResult{IsError: true}`. Loop doesn't break on tool errors
+All tools reach the model through the composite ToolPort (`internal/adapters/toolport/composite.go`), which mounts three source kinds in stable definition order: native registry tools (sorted by name), extension `core.ToolProvider` bundles (registration order), then `core.DynamicToolSource` snapshots (re-read at each turn's `BeginTurn`). Name collisions with an already-mounted tool are a construction error (dynamic collisions are skipped with a warning). The loop snapshots the port once per turn and passes the definitions into every `DoReasoning` call — the agent holds no tool state.
+
+Two ways to add a tool:
+
+1. **Native built-in** (file/shell-level tooling): create `internal/features/builtins/tool_<name>.go`, implement `tooldef.Definition` (`Name()`, `Description()`, `Schema()`, `Execute()`, from `internal/core/tooldef`), and add it to `builtins.Defaults()` — the composition root seeds every `toolport.NewRegistry` with that set — or inject via `harness.WithTool`.
+2. **Extension tool**: implement `core.ToolProvider` on an extension — return `core.ToolSpec`s carrying their own `Execute` closure and an `Origin` like `"extension:<name>"`. No registry registration needed.
+
+Notes:
+
+- Tool descriptions are **instructions to the model**, not documentation — precise wording controls tool selection
+- Tools never throw. Errors return `ToolResult{IsError: true}`; panics are recovered into error results by `Composite.Execute`. Loop doesn't break on tool errors
 
 If the tool needs external state (skill registry, task graph), define a narrow interface in tooldef and accept it in the constructor. Don't import the concrete type.
 
@@ -70,6 +83,12 @@ If the tool needs external state (skill registry, task graph), define a narrow i
 2. Body is loaded lazily via `load_skill` tool — no registration code needed
 3. Skill metadata is discovered at startup from frontmatter only
 
+UX unchanged; new plumbing: skills surface through `internal/features/skills/ext.go` (package `skills`) — a `core.Extension` providing the `list_skills`/`load_skill` tools (`core.ToolProvider`) and the "Available skills…" system-prompt index (`core.PromptContributor`, appended by the composition root). The agent knows nothing about skills. The same extension instance is shared with subagents via the factory config (read-only registry).
+
+## MCP Servers
+
+`harness.WithMCPServer(mcp.ServerConfig{Name, Command, Args, Env})` (repeat per server; re-exported as `tenzing.WithMCPServer`/`tenzing.MCPServerConfig`) mounts an external MCP server over stdio. The `mcp` extension (`internal/features/mcp`) connects on session start (a dead server logs a warning and serves zero tools — deliberately NOT load-bearing), closes on session end, and implements `core.DynamicToolSource`: tools are re-listed at each turn's `BeginTurn` with a 30s cache and surface as `mcp__<server>__<tool>` with `Origin: "mcp:<server>"`. Trust: the default permission policy's `AskOrigins: ["mcp:"]` escalates every MCP-origin tool to approval unless its full name is explicitly allow-listed. SSE/HTTP transports and `listChanged` subscriptions are follow-ons.
+
 ## Providers
 
 LLM providers live in the external module `github.com/tab58/llm-providers` (Anthropic, OpenAI, Cerebras, Lightning, OpenRouter, Ollama). This repo imports:
@@ -81,7 +100,7 @@ Models are `common.Model` values (`common.ModelDefinition{Name, MaxTokens, Conte
 
 ## Constructing a Harness
 
-`harness.New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, error)` is the harness constructor. External consumers use the public facade `pkg/tenzing` — pure type/func aliases over `internal/harness` (plus the `runner`, `tooldef`, and `events` types its options reference) exposing `tenzing.New` + `Harness.RunTurn` for a single programmatic loop. `pkg/tenzing/models.go` re-exports `common.Model`/`ModelDefinition`/`Provider` and the standard llm-providers models (provider-prefixed, asserted to `ModelDefinition`). `pkg/tenzing/llm.go` re-exports the LLM client layer so consumers never import llm-providers directly: `LLM` (= `common.LLM`) and every type its methods touch (`CompletionRequest`/`CompletionResponse`, `ContentBlock`, `Message`, role/content-type/streaming/stop-reason types with their consts, `Usage`/`TokenCount`/`ModelInfo`), message/content constructors, `CombinedText`, the sentinel errors, and the client constructors `LLMFromModel` (explicit API key) / `LLMFromEnv` with `ClientOption`/`WithBaseURL`. Naming: `common.ToolDefinition` is aliased as `LLMToolDefinition` because `tenzing.ToolDefinition` is the harness-side `tooldef.Definition`. New harness options, Hooks event types, llm-providers standard models, or additions to the `common.LLM` surface must be re-exported there in the same change. The brain defaults to the built-in agent implementation (`internal/agent`); override with `WithAgentBuilder`.
+`harness.New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, error)` is the harness constructor. External consumers use the public facade `pkg/tenzing` — pure type/func aliases over `internal/harness` (plus the `runner`, `tooldef`, `core`, and `adapters/eventbus` types its options reference) exposing `tenzing.New` + `Harness.RunTurn` for a single programmatic loop. `pkg/tenzing/models.go` re-exports `common.Model`/`ModelDefinition`/`Provider` and the standard llm-providers models (provider-prefixed, asserted to `ModelDefinition`). `pkg/tenzing/llm.go` re-exports the LLM client layer so consumers never import llm-providers directly: `LLM` (= `common.LLM`) and every type its methods touch (`CompletionRequest`/`CompletionResponse`, `ContentBlock`, `Message`, role/content-type/streaming/stop-reason types with their consts, `Usage`/`TokenCount`/`ModelInfo`), message/content constructors, `CombinedText`, the sentinel errors, and the client constructors `LLMFromModel` (explicit API key) / `LLMFromEnv` with `ClientOption`/`WithBaseURL`. Naming: `common.ToolDefinition` is aliased as `LLMToolDefinition` because `tenzing.ToolDefinition` is the harness-side `tooldef.Definition`. New harness options, Hooks event types, llm-providers standard models, or additions to the `common.LLM` surface must be re-exported there in the same change — new standard models must also be added to `tenzing.StandardModels()` (same file); `cmd/app/models.go` derives its `knownModels` map from that list (see "CLI" below). The brain defaults to the built-in agent implementation (`internal/adapters/agent`); override with `WithAgentBuilder`.
 
 `HarnessConfig` no longer exists. Behavior is configured via flat `HarnessOption` functions (`internal/harness/harness_options.go`):
 
@@ -92,44 +111,76 @@ Models are `common.Model` values (`common.ModelDefinition{Name, MaxTokens, Conte
 - `WithTool` — injects an additional tool implementing `tooldef.Definition` (used by cmd/app to register nexus channel tools).
 - Subagents (`spawn_agent` tool) are enabled by default at depth 1 using the main model; `WithSubagentDepth(0)` disables the tool.
 - `WithBlackboardDisabled` — the shared blackboard REPL is on by default: main agent and subagents share one persistent Python process (`repl` tool); subagent results over 2000 chars are deposited to `bb['<agent_id>']['result']` and returned as a 1500/500-char head/tail preview. Blackboard execs/deposits are logged via `slog` at info level (code capped 500 chars, stdout head 200).
+- `WithBudgets(budgets.Limits{MaxIterations, MaxWallClock, MaxTokens})` — graceful per-turn termination (`terminated: <reason>` error from `RunTurn`); zero fields unlimited. Subagents get `MaxIterations` from `WithSubagentMaxIterations` (default 100) via the same extension.
+- `WithMCPServer(cfg)` — mounts an external MCP server (see "MCP Servers" above); repeat per server.
+- **Permissions (default-on):** the permissions extension gates tool calls by name — the default policy (`permissions.DefaultPolicy`) escalates code-executing/file-writing tools (`bash`, `write`, `edit`, `revert`, `repl`, `spawn_agent`, `advisor`) to `AskUser`; the loop then emits `ApprovalRequestedEvent` and blocks up to `WithApprovalTimeout` (default 120s; 0 = deny immediately) for a `Respond(bool)`. Override the policy with `WithPermissionPolicy`, opt out entirely with `WithPermissionsDisabled()`. Ordering guarantee: permissions run FIRST among extensions, and later hooks can escalate but never lower its decision. **Migration note:** consumers driving the harness headlessly (no `OnApprovalRequested` hook, no cmd/app UI) must either call `WithPermissionsDisabled()` or handle the approval event — otherwise mutating tools are denied after the approval timeout. Subagent loops carry no permissions extension (the parent's spawn was already approved).
+- `WithConversationID(id)` — resumes a prior conversation: the main agent runs under `id` instead of a random one, and `harness.New` loads that conversation's latest persisted memory file (see below) into the main `contextstore.Store`'s `InitialMemory`, which seeds it as a synthetic user/assistant summary exchange before the fresh turn. Omit to start a new conversation under a random ID (`Harness.ConversationID()` returns it either way — the caller's handle for a future resume).
 
 LLM clients are cached per (provider, model, base URL) inside `harness.New`, so roles sharing a model definition share one client.
 
+Memory (`internal/harness/memory.go`) is separate from the in-process `contextstore.Store`: it's the harness's own `ContextCompressedEvent` subscriber, persisting each compaction's summary to a per-conversation file (`.agent_memory-<stamp>-<runnerID>.md`, main-agent files in the OS config dir, subagent files in the OS cache dir) so a later `WithConversationID` resume — even in a new process — has something to load. Neither `internal/core` nor `internal/adapters/contextstore` know this file-backed store exists; they only emit/consume the event.
+
+## CLI (`cmd/app`)
+
+`cmd/app` is a single cobra command, `tenzing` (`cmd/app/root.go`). No `-p/--prompt` → serves the HTTP/SSE app (`runServe`, `NewAppContainer`). With `-p "prompt"` → one headless agent turn then exit (`cmd/app/print.go`): `--output-format text` (default, final answer only) or `json` (JSONL — every harness event plus text/thinking deltas, with a `{"type":"result",...}` line guaranteed last, written only after the event bus is closed and drained). The JSONL schema is the versioned wire contract in `internal/app/wire`: every line is an `Envelope` (`v`, `type`, `ts`, `runner_id`, typed `data` payload), core and nexus events are explicitly mapped (durations converted to real milliseconds — core's `duration_ms` tags marshal nanoseconds), unmapped events become `unknown_event` lines instead of leaking core struct shapes, and any breaking payload change requires a `wire.Version` bump. The serve-mode SSE stream builds its payloads from the same envelopes (`translateSSE` in `cmd/app/server.go`, adding a top-level `agent` label; the embedded UI in `cmd/app/index.go` parses those shapes). RPC mode (PI item 13) reuses this package. Exit codes: `0` success, `1` config/startup error, `2` turn failure. Headless permission default is `WithApprovalTimeout(0)` (deny mutating tools immediately) unless `--approval-timeout` was explicitly passed or `--no-permissions` is set; denied calls emit `core.ToolDeniedEvent` (`tool.denied`), print mode counts them and reports a stderr summary plus a `denied_tools` field on the json result line — exit code stays 0. Event delivery is lossless under stdout backpressure: an unbounded in-memory queue (`eventQueue` in `cmd/app/print.go`) sits between the 256-slot bus subscription and the stdout writer — the drain side never blocks, so the bus's drop-on-full `Emit` never fires for a slow consumer. A *failed* stdout write (consumer closed the pipe) cancels the in-flight turn — no tokens are burned streaming into a void. An explicitly empty prompt (`-p ""`) is a config error, not serve mode.
+
+~19 flags parse into `cliConfig` (`cmd/app/options.go`); `harnessOptions(cfg)` maps them to the same `HarnessOption`s for both modes — model flags (`--model`, `--subagent-model`, `--blackboard-model`, `--advisor-model`, resolved via `cmd/app/models.go`, see below), budgets (`--max-tokens`, `--max-iterations`, `--max-wall-clock`), toggles (`--subagent-depth`, `--no-blackboard`, `--approval-timeout`, `--no-permissions`), wiring (`--mcp-server` repeatable, `--conversation-id`), and serve-only flags (`--port`, `--nexus-config`) — passing those with `-p` prints a stderr warning and they are otherwise ignored. `--debug` is shared by both modes — it never touches stdout, but it does raise the log file to trace level and switch it to a fresh timestamped filename (`setupLogging`), in print mode same as serve mode. Log location differs: serve mode logs in the cwd, print mode under `os.UserCacheDir()/tenzing/` (`printLogDir` in `cmd/app/print.go`, temp-dir fallback). `--subagent-depth` and `--approval-timeout` have unset-vs-zero semantics (0 is a valid explicit value), so `markSetFlags` records cobra's `Changed()` into `cfg.SubagentDepthSet`/`ApprovalTimeoutSet`.
+
+Env precedence: explicit flag > env var (`SERVER_PORT`, `LOG_DEBUG`, `NEXUS_CONFIG` only — the three pre-existing vars) > flag default (`mergeEnv` in `root.go`). There is no `MODEL` env var; `--model` (default `ollama/glm-5.2:cloud`) is the only source for the main model.
+
+`NewAppContainer(cfg *cliConfig)` (was parameterless) builds the HTTP/SSE app from the resolved `cliConfig` — the same `harnessOptions(cfg)` print mode uses, plus nexus wiring and the port/nexus-config serve-only fields (`--debug` is shared, not serve-only — see above).
+
+Model resolution: `cmd/app/models.go` (`resolveModel`, `modelKey`, `modelList`, `--list-models`) keeps a `knownModels` map keyed on `provider/name`, derived from `tenzing.StandardModels()` (`pkg/tenzing/models.go`) — no manual sync.
+
 ## Configuration & DI
 
-All non-invariant behavior flows through `AgentRunnerConfig`. To change runner behavior:
+All non-invariant runner behavior flows through `runner.AgentRunnerOption` functional options (`internal/harness/runner/agent_runner.go`), passed to `runner.NewAgentRunner(agent, opts...)`. To change runner behavior:
 
 - Swap the Agent (different model/provider)
-- Swap the ToolRegistry (different tool set)
-- Swap the SystemPrompt
-- Swap the ReminderBuilder
-- Provide an `events.Emitter` to receive structured events from the loop
-- Provide `OnTextDelta`/`OnThinkingDelta` callbacks for streaming text
+- Swap the ToolRegistry (`WithToolRegistry`, different native tool set) or the whole ToolPort (`WithToolPort` — the harness passes the composite here; unset falls back to wrapping the registry)
+- Swap the ContextStore (`WithContextStore`) — required; the `core.ContextPort` implementation that owns this runner's conversation history
+- Swap the SystemPrompt (`WithSystemPrompt`)
+- Provide a `core.Emitter` to receive structured events from the loop (`WithEmitter`)
+- Provide `WithTextDeltaHandler`/`WithThinkingDeltaHandler` callbacks for streaming text — `func(runnerID, text string)`; the runner tags each delta with its own id so multiplexed consumers (RPC mode) can correlate deltas per turn
 
-Don't modify the loop. Don't add fields to the runner struct. Configure via `AgentRunnerConfig`.
+System reminders (todo state, etc.) no longer flow through the runner. They
+are injected each iteration by `core.Extension`s implementing
+`core.BeforeIterationHook` (e.g. `internal/features/reminders`), registered
+on `*core.Extensions` and passed to the runner via `runner.WithExtensions`.
+`harness.New` wires the default extension set — reminders, skills
+(`skills.Ext`), blackboard (`blackboard.Ext`, unless disabled), and subagents
+(`subagent.SpawnExt`, when depth > 0) — then appends caller extensions from
+`harness.WithExtension` (also re-exported as `tenzing.WithExtension` with the
+`Extension`/hook interfaces and `ToolSpec`).
+
+Don't modify the loop. Don't add fields to the `AgentRunner` struct. Configure via `runner.AgentRunnerOption`.
 
 ## FSM Rules
 
 Six states, six transitions. Don't add states or transitions without updating `SYSTEM_ARCHITECTURE.md`.
 
-The FSM is per-runner instance — subagents and concurrent loops don't share state.
+The FSM lives in `internal/core/fsm.go` and is per-Loop instance — subagents and concurrent loops don't share state.
 
 ## File Conventions
 
 | Pattern                  | Location                                              |
 | ------------------------ | ----------------------------------------------------- |
-| Tool implementations     | `internal/harness/tools/tooldef/tool_*.go`            |
+| Core domain (types/FSM/events/loop/ports) | `internal/core/` |
+| Port adapters (agent, contextstore, eventbus, toolport) | `internal/adapters/` |
+| Features (core.Extension implementations) | `internal/features/<name>/` |
+| Tool authoring contract  | `internal/core/tooldef/tooldef.go`                    |
+| Built-in tool implementations | `internal/features/builtins/tool_*.go`          |
 | Provider implementations | external: `github.com/tab58/llm-providers`            |
-| Prompt templates         | `internal/harness/prompts/*.gotmpl`                   |
-| REPL subprocess machinery | `internal/harness/blackboard/` (Python REPL, Querier) |
-| Context management       | `internal/agent/context/` (compression, task graph)   |
-| App (HTTP/SSE server)    | `cmd/app/`                                            |
+| Prompt templates         | `internal/features/prompts/*.gotmpl`                   |
+| REPL subprocess machinery | `internal/features/blackboard/` (Python REPL, Querier) |
+| Context management       | `internal/adapters/contextstore/` (implements `core.ContextPort`: history, tool_use/tool_result pairing, compression) |
+| App (cobra CLI: HTTP/SSE server by default, `-p` for one-shot print) | `cmd/app/` |
 | Public API facade        | `pkg/tenzing/` (aliases over `internal/harness`)      |
 | Test files               | Same directory as source, `*_test.go`                 |
 | Shared test helpers      | `**/testutil_test.go`                                 |
 | Sub-agent system         | `internal/harness/subagent/`                          |
-| Blackboard (shared REPL)  | `internal/harness/blackboard/` (persistent REPL, repl tool) |
-| Event system             | `internal/harness/events/`                            |
+| Blackboard (shared REPL)  | `internal/features/blackboard/` (persistent REPL, repl tool) |
+| Event system             | `internal/core/` (vocabulary: `Event`, `EventType`, `BaseEvent`, `Emitter`); `internal/adapters/eventbus/` (`EventBus`, `Hooks`) |
 | Embedded assets          | Adjacent to consumer (e.g. `blackboard/bootstrap.py`) |
 | Nexus (input channels)   | `internal/app/nexus/`                                 |
 | Nexus channel tools      | `internal/app/nexus/tools/`                           |

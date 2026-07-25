@@ -48,6 +48,9 @@ const indexHTML = `<!DOCTYPE html>
   .msg.tool-progress { color: var(--fg-dim); font-size: 0.8em; padding-left: 1rem; }
   .msg.error { color: var(--red); }
   .msg.error::before { content: '✗ '; }
+  .msg.approval { color: var(--yellow); border: 1px solid var(--yellow); border-radius: 4px; padding: 0.5rem; }
+  .msg.approval button { margin-right: 0.5rem; margin-top: 0.5rem; }
+  .msg.approval .deny { background: var(--red); }
   .msg.system { color: var(--fg-dim); font-size: 0.85em; }
   .msg.streaming { color: var(--fg); }
   .msg.streaming::after { content: '▊'; animation: blink 1s step-end infinite; }
@@ -167,45 +170,96 @@ function agentTag(d) {
   return d.agent ? '[' + d.agent + '] ' : '';
 }
 
-es.addEventListener('tool_start', e => {
+// SSE payloads are wire envelopes: {v, type, ts, runner_id, data, agent},
+// with the event's fields under .data and the server's subagent label in
+// .agent.
+es.addEventListener('tool_execution.started', e => {
   finalizeStream();
   const d = JSON.parse(e.data);
-  const inp = d.input.length > 500 ? d.input.slice(0, 500) + '…' : d.input;
-  addMsg('tool' + (d.agent ? ' sub' : ''), '⚙ ' + agentTag(d) + d.name + ' ' + inp);
+  const inp = d.data.input.length > 500 ? d.data.input.slice(0, 500) + '…' : d.data.input;
+  addMsg('tool' + (d.agent ? ' sub' : ''), '⚙ ' + agentTag(d) + d.data.tool_name + ' ' + inp);
 });
 
-es.addEventListener('tool_result', e => {
+function toolResult(d, output, isError) {
+  const lines = (output || '').split('\n').slice(0, 10);
+  const prefix = isError ? '✗ ' : '✓ ';
+  const inp = d.data.input.length > 500 ? d.data.input.slice(0, 500) + '…' : d.data.input;
+  addMsg('tool' + (d.agent ? ' sub' : ''), prefix + agentTag(d) + d.data.tool_name + ' ' + inp + '\n' + lines.join('\n'));
+}
+
+es.addEventListener('tool.succeeded', e => {
   const d = JSON.parse(e.data);
-  const lines = (d.output || '').split('\n').slice(0, 10);
-  const prefix = d.error === 'true' ? '✗ ' : '✓ ';
-  const inp = d.input.length > 500 ? d.input.slice(0, 500) + '…' : d.input;
-  addMsg('tool' + (d.agent ? ' sub' : ''), prefix + agentTag(d) + d.name + ' ' + inp + '\n' + lines.join('\n'));
+  toolResult(d, d.data.output, false);
 });
 
-es.addEventListener('subagent', e => {
+es.addEventListener('tool.failed', e => {
+  const d = JSON.parse(e.data);
+  toolResult(d, d.data.error, true);
+});
+
+es.addEventListener('approval.requested', e => {
   finalizeStream();
   const d = JSON.parse(e.data);
-  if (d.state === 'started') {
-    const p = d.prompt.length > 200 ? d.prompt.slice(0, 200) + '…' : d.prompt;
-    addMsg('subagent', '⧉ ' + d.agent + ' spawned: ' + p);
-  } else {
-    addMsg('subagent', '⧉ ' + d.agent + ' done (' + d.duration + ')');
-  }
+  const inp = d.data.input.length > 500 ? d.data.input.slice(0, 500) + '…' : d.data.input;
+  const el = addMsg('approval', '⚠ ' + agentTag(d) + d.data.tool_name + ' wants to run:\n' + inp);
+
+  const approve = document.createElement('button');
+  approve.textContent = 'approve';
+  const deny = document.createElement('button');
+  deny.textContent = 'deny';
+  deny.className = 'deny';
+  const decide = async (approved) => {
+    approve.disabled = deny.disabled = true;
+    try {
+      await fetch('/approve', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({call_id: d.data.call_id, approved}),
+      });
+      el.append(' → ' + (approved ? 'approved' : 'denied'));
+    } catch(err) {
+      addMsg('error', err.message);
+    }
+  };
+  approve.onclick = () => decide(true);
+  deny.onclick = () => decide(false);
+  el.appendChild(document.createElement('br'));
+  el.appendChild(approve);
+  el.appendChild(deny);
+  chat.scrollTop = chat.scrollHeight;
 });
 
-es.addEventListener('tool_progress', e => {
+es.addEventListener('subagent.started', e => {
+  finalizeStream();
   const d = JSON.parse(e.data);
-  if (d.detail.trim()) {
-    addMsg('tool-progress', '▸ ' + d.phase + '\n' + d.detail);
-  }
-  updateStatus('⚙ ' + d.tool + ' → ' + d.phase);
+  const p = d.data.prompt.length > 200 ? d.data.prompt.slice(0, 200) + '…' : d.data.prompt;
+  addMsg('subagent', '⧉ ' + d.data.agent_id + ' spawned: ' + p);
 });
 
-es.addEventListener('llm_meta', e => {
+es.addEventListener('subagent.stopped', e => {
+  finalizeStream();
   const d = JSON.parse(e.data);
-  inputTokens += d.input_tokens;
-  outputTokens += d.output_tokens;
+  addMsg('subagent', '⧉ ' + d.data.agent_id + ' done (' + fmtDuration(d.data.duration_ms) + ')');
 });
+
+es.addEventListener('tool.progress', e => {
+  const d = JSON.parse(e.data);
+  if (d.data.detail.trim()) {
+    addMsg('tool-progress', '▸ ' + d.data.phase + '\n' + d.data.detail);
+  }
+  updateStatus('⚙ ' + d.data.tool_name + ' → ' + d.data.phase);
+});
+
+es.addEventListener('llm.response', e => {
+  const d = JSON.parse(e.data);
+  inputTokens += d.data.input_tokens;
+  outputTokens += d.data.output_tokens;
+});
+
+function fmtDuration(ms) {
+  if (ms >= 1000) return (ms / 1000).toFixed(1) + 's';
+  return ms + 'ms';
+}
 
 es.addEventListener('answer', e => {
   const d = JSON.parse(e.data);

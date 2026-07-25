@@ -6,41 +6,48 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
-	"github.com/tab58/tenzing-agent-harness/internal/agent"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/advisor"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/blackboard"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/prompts"
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/agent"
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/contextstore"
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/features/advisor"
+	"github.com/tab58/tenzing-agent-harness/internal/features/blackboard"
+	"github.com/tab58/tenzing-agent-harness/internal/features/budgets"
+	"github.com/tab58/tenzing-agent-harness/internal/features/builtins"
+	"github.com/tab58/tenzing-agent-harness/internal/features/mcp"
+	"github.com/tab58/tenzing-agent-harness/internal/features/permissions"
+	"github.com/tab58/tenzing-agent-harness/internal/features/prompts"
+	"github.com/tab58/tenzing-agent-harness/internal/features/reminders"
+	"github.com/tab58/tenzing-agent-harness/internal/features/skills"
+	"github.com/tab58/tenzing-agent-harness/internal/features/todo"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/subagent"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/todo"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 
 	"github.com/tab58/llm-providers/common"
 )
 
 type Harness struct {
 	mainAgentRunner *runner.AgentRunner
-	toolRegistry    *tools.Registry
+	toolPort        *toolport.Composite
 	todoFile        *todo.TodoFile
-	eventBus        *events.EventBus
+	eventBus        *eventbus.EventBus
 	stopHooks       func()
 	stopMemoryHook  func()
-	blackboard      *blackboard.Blackboard
+	extensions      *core.Extensions
 }
 
 // EventBus returns the harness event bus. It is always non-nil.
-func (h *Harness) EventBus() *events.EventBus {
+func (h *Harness) EventBus() *eventbus.EventBus {
 	return h.eventBus
 }
 
 // defaultAgentBuilder adapts the built-in agent implementation to the
 // runner.AgentBuilder contract.
-func defaultAgentBuilder(llm common.LLM, systemPrompt string) (runner.Agent, error) {
+func defaultAgentBuilder(llm common.LLM, systemPrompt string) (core.Agent, error) {
 	return agent.New(agent.AgentConfig{Model: llm, SystemPrompt: systemPrompt})
 }
 
@@ -95,7 +102,7 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 	// register hooks to event bus
 	var stopHooks func()
 	if !hooksEmpty(o.hooks) {
-		stopHooks = events.StartHooks(o.eventBus, o.hooks)
+		stopHooks = eventbus.StartHooks(o.eventBus, o.hooks)
 	}
 
 	// set up todo store
@@ -107,18 +114,17 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 	for _, skillDir := range o.skillDirs {
 		skillsRegistry.RegisterSkillDir(skillDir)
 	}
+	skillsExt := skills.NewExt(skillsRegistry)
 
-	toolRegistry := tools.NewRegistry(cwd)
-	toolRegistry.RegisterFromProvider(skillsRegistry)
-	toolRegistry.RegisterFromProvider(todoFile)
-
+	// The blackboard instance lives at the composition root and is SHARED:
+	// the main agent and every subagent wrap the same instance in their own
+	// blackboard.Ext under their own agent ID.
 	var bb *blackboard.Blackboard
 	if !o.blackboardDisabled {
 		bb = blackboard.New(blackboard.Config{
 			Querier:    blackboard.NewLLMQuerier(blackboardLLM),
 			WorkingDir: cwd,
 		})
-		toolRegistry.Register(blackboard.NewREPLTool(bb, "main"))
 	}
 
 	// Conversation identity: resume under the supplied ID or start fresh.
@@ -128,6 +134,56 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 	if mainRunnerID == "" {
 		mainRunnerID = runner.NewID()
 	}
+
+	// default extensions run first, then any caller-supplied via WithExtension.
+	// Permissions come FIRST so later hooks observe (and may escalate, never
+	// lower) its decision.
+	var defaultExts []core.Extension
+	if !o.permissionsDisabled {
+		policy := permissions.DefaultPolicy()
+		if o.permissionPolicy != nil {
+			policy = *o.permissionPolicy
+		}
+		defaultExts = append(defaultExts, permissions.New(policy))
+	}
+	defaultExts = append(defaultExts,
+		reminders.New(todoFile.FormatReminder),
+		skillsExt,
+	)
+	if o.budgetLimits != (budgets.Limits{}) {
+		defaultExts = append(defaultExts, budgets.New(o.budgetLimits))
+	}
+	if len(o.mcpServers) > 0 {
+		defaultExts = append(defaultExts, mcp.New(o.mcpServers...))
+	}
+	if bb != nil {
+		defaultExts = append(defaultExts, blackboard.NewExt(bb, "main"))
+	}
+	if o.subagentMaxDepth > 0 {
+		subagentLLM, err := llms.get(subagentModel)
+		if err != nil {
+			return nil, fmt.Errorf("build subagent LLM: %w", err)
+		}
+		subagentFactory := subagent.NewSubAgentFactory(subagent.SubAgentFactoryConfig{
+			AgentLLM:      subagentLLM,
+			AgentBuilder:  brain,
+			MaxDepth:      o.subagentMaxDepth,
+			MaxIterations: o.subagentMaxIterations,
+			Cwd:           cwd,
+			Emitter:       o.eventBus,
+			Blackboard:    bb,
+			ParentID:      mainRunnerID,
+			SkillsExt:     skillsExt,
+		})
+		defaultExts = append(defaultExts, subagent.NewSpawnExt(subagentFactory))
+	}
+	allExts := core.NewExtensions(append(defaultExts, o.extensions...)...)
+
+	toolRegistry := toolport.NewRegistry(cwd)
+	for _, def := range builtins.Defaults() {
+		toolRegistry.Register(def)
+	}
+	toolRegistry.RegisterFromProvider(todoFile)
 
 	// Memory: the harness owns persistence. Summaries arrive on the event
 	// bus (ContextCompressedEvent) and are written per-conversation; the
@@ -143,29 +199,11 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		}
 	}
 
-	stopMemoryHook := events.StartHooks(o.eventBus, events.Hooks{
-		OnContextCompressed: func(e events.ContextCompressedEvent) {
+	stopMemoryHook := eventbus.StartHooks(o.eventBus, eventbus.Hooks{
+		OnContextCompressed: func(e core.ContextCompressedEvent) {
 			memory.persist(e.RunnerID, e.Summary)
 		},
 	})
-
-	if o.subagentMaxDepth > 0 {
-		subagentLLM, err := llms.get(subagentModel)
-		if err != nil {
-			return nil, fmt.Errorf("build subagent LLM: %w", err)
-		}
-		subagentFactory := subagent.NewSubAgentFactory(subagent.SubAgentFactoryConfig{
-			AgentLLM:      subagentLLM,
-			AgentBuilder:  brain,
-			MaxDepth:      o.subagentMaxDepth,
-			MaxIterations: o.subagentMaxIterations,
-			Cwd:           cwd,
-			Emitter:       o.eventBus,
-			Blackboard:    bb,
-			ParentID:      mainRunnerID,
-		})
-		toolRegistry.Register(subagent.NewSpawnAgentTool(subagentFactory))
-	}
 
 	if o.advisorModel.Name != "" {
 		advisorLLM, err := llms.get(o.advisorModel)
@@ -191,49 +229,77 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 	if mainSystemPrompt == "" {
 		mainSystemPrompt = prompts.DefaultSystemPrompt()
 	}
+	// Extension prompt fragments (skills index, …) are appended at the
+	// composition root — the agent no longer assembles any of its prompt.
+	// Registration order = fragment order (cache-stable).
+	if frags := allExts.PromptFragments(); len(frags) > 0 {
+		mainSystemPrompt = mainSystemPrompt + "\n\n" + strings.Join(frags, "\n\n")
+	}
 
-	// Build and wire the main agent. The default builder path passes resumed
-	// memory; custom builders own their memory story.
-	var mainAgent runner.Agent
+	// Build and wire the main agent. The default builder path is stateless;
+	// custom builders own their own memory story.
+	var mainAgent core.Agent
 	if o.agentBuilder != nil {
 		mainAgent, err = o.agentBuilder(mainLLM, mainSystemPrompt)
 	} else {
 		mainAgent, err = agent.New(agent.AgentConfig{
-			Model:         mainLLM,
-			SystemPrompt:  mainSystemPrompt,
-			InitialMemory: initialMemory,
+			Model:        mainLLM,
+			SystemPrompt: mainSystemPrompt,
 		})
 	}
 	if err != nil {
 		return nil, fmt.Errorf("build main agent: %w", err)
 	}
-	mainAgent.UpdateToolDefinitions(toolRegistry.ProviderDefinitions())
-	mainAgent.SetTodoProvider(todoFile.FormatReminder)
+
+	// The composite ToolPort mounts the native registry plus any extension
+	// tool sources; the loop snapshots it each turn and passes definitions
+	// per reasoning call.
+	composite, err := toolport.NewComposite(toolRegistry, allExts)
+	if err != nil {
+		return nil, fmt.Errorf("build tool port: %w", err)
+	}
+
+	// The runner owns conversation history via a ContextPort; the store
+	// seeds resumed memory and emits ContextCompressedEvent on compaction.
+	mainStore := contextstore.New(contextstore.Config{
+		LLM:           mainLLM,
+		InitialMemory: initialMemory,
+		Emitter:       o.eventBus,
+		RunnerID:      mainRunnerID,
+	})
 
 	// create agent runner
 	mainAgentRunner, err := runner.NewAgentRunner(
 		mainAgent,
 		runner.WithID(mainRunnerID),
 		runner.WithToolRegistry(toolRegistry),
-		runner.WithSkillsRegistry(skillsRegistry),
-		runner.WithTodoFile(todoFile),
+		runner.WithToolPort(composite),
+		runner.WithContextStore(mainStore),
 		runner.WithEmitter(o.eventBus),
 		runner.WithTextDeltaHandler(o.onTextDelta),
 		runner.WithThinkingDeltaHandler(o.onThinkingDelta),
 		runner.WithSystemPrompt(mainSystemPrompt),
+		runner.WithExtensions(allExts),
+		runner.WithApprovalTimeout(o.approvalTimeout),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("unable to initialize runner: %w", err)
 	}
 
+	// Session-start hooks are load-bearing: an extension that cannot start
+	// (MCP connect, later) fails harness construction.
+	if err := allExts.RunSessionStart(context.Background()); err != nil {
+		return nil, fmt.Errorf("session start hooks: %w", err)
+	}
+
 	return &Harness{
 		mainAgentRunner: mainAgentRunner,
-		toolRegistry:    toolRegistry,
+		toolPort:        composite,
 		todoFile:        todoFile,
 		eventBus:        o.eventBus,
 		stopHooks:       stopHooks,
 		stopMemoryHook:  stopMemoryHook,
-		blackboard:      bb,
+		extensions:      allExts,
 	}, nil
 }
 
@@ -244,17 +310,21 @@ func (h *Harness) Shutdown() {
 	if h.stopMemoryHook != nil {
 		h.stopMemoryHook()
 	}
-	if h.blackboard != nil {
-		_ = h.blackboard.Close()
-	}
+	// Session-end hooks (blackboard close, …) degrade on error and get a
+	// bounded window to clean up.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	h.extensions.RunSessionEnd(ctx)
 }
 
 func (h *Harness) GetCurrentModel() string {
 	return h.mainAgentRunner.GetCurrentModel()
 }
 
-func (h *Harness) ToolDefinitions() []tooldef.Definition {
-	return h.toolRegistry.Definitions()
+// ToolDefinitions returns the full mounted tool surface — native registry
+// tools plus extension-provided tools — as the model sees it.
+func (h *Harness) ToolDefinitions() []common.ToolDefinition {
+	return h.toolPort.Definitions()
 }
 
 func (h *Harness) SystemPrompt() string {
@@ -272,7 +342,7 @@ func (h *Harness) RunTurn(ctx context.Context, query string) (string, error) {
 }
 
 // hooksEmpty reports whether no hook callbacks are set in h.
-func hooksEmpty(h events.Hooks) bool {
+func hooksEmpty(h eventbus.Hooks) bool {
 	return h.OnSessionStarted == nil &&
 		h.OnSessionEnded == nil &&
 		h.OnTurnStarted == nil &&
@@ -290,6 +360,7 @@ func hooksEmpty(h events.Hooks) bool {
 		h.OnContextCompressing == nil &&
 		h.OnContextCompressed == nil &&
 		h.OnError == nil &&
+		h.OnApprovalRequested == nil &&
 		h.OnSubagentStarted == nil &&
 		h.OnSubagentStopped == nil &&
 		h.OnTaskCreated == nil &&

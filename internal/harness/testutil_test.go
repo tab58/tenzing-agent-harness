@@ -10,9 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/contextstore"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 
 	"github.com/tab58/llm-providers/common"
 )
@@ -20,19 +19,19 @@ import (
 // testEventCollector captures emitted events for assertion in tests.
 type testEventCollector struct {
 	mu   sync.Mutex
-	evts []events.Event
+	evts []core.Event
 }
 
-func (c *testEventCollector) Emit(ev events.Event) {
+func (c *testEventCollector) Emit(ev core.Event) {
 	c.mu.Lock()
 	c.evts = append(c.evts, ev)
 	c.mu.Unlock()
 }
 
-func (c *testEventCollector) byType(t events.EventType) []events.Event {
+func (c *testEventCollector) byType(t core.EventType) []core.Event {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var out []events.Event
+	var out []core.Event
 	for _, ev := range c.evts {
 		if ev.Type() == t {
 			out = append(out, ev)
@@ -46,43 +45,47 @@ func (c *testEventCollector) byType(t events.EventType) []events.Event {
 // Captures all inputs for assertion.
 type ScriptedAgent struct {
 	mu        sync.Mutex
-	steps     []runner.ReasoningResult
+	steps     []core.ReasoningResult
 	callIndex int
 	captured  []capturedCall
 }
 
 type capturedCall struct {
-	Inputs    []string
+	Messages  []common.Message
 	Reminders []string
 }
 
-func newScriptedAgent(steps ...runner.ReasoningResult) *ScriptedAgent {
+func newScriptedAgent(steps ...core.ReasoningResult) *ScriptedAgent {
 	return &ScriptedAgent{steps: steps}
 }
 
-func (s *ScriptedAgent) GetCurrentModel() string                                         { return "scripted-model" }
-func (s *ScriptedAgent) UpdateToolDefinitions(_ []common.ToolDefinition)                 {}
-func (s *ScriptedAgent) UpdateSkillMap(_ map[string]string)                              {}
-func (s *ScriptedAgent) UpdateStreamCallback(_ func(string))                             {}
-func (s *ScriptedAgent) UpdateThinkingCallback(_ func(string))                           {}
-func (s *ScriptedAgent) SetTodoProvider(_ func() string)                                 {}
+func (s *ScriptedAgent) GetCurrentModel() string               { return "scripted-model" }
+func (s *ScriptedAgent) UpdateStreamCallback(_ func(string))   {}
+func (s *ScriptedAgent) UpdateThinkingCallback(_ func(string)) {}
 
-func (s *ScriptedAgent) DoReasoning(_ context.Context, inputs []string, reminders []string) (runner.ReasoningResult, error) {
+func (s *ScriptedAgent) DoReasoning(_ context.Context, messages []common.Message, reminders []string, _ []common.ToolDefinition) (core.ReasoningResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.captured = append(s.captured, capturedCall{
-		Inputs:    append([]string{}, inputs...),
+		Messages:  append([]common.Message{}, messages...),
 		Reminders: append([]string{}, reminders...),
 	})
 
 	if s.callIndex >= len(s.steps) {
-		return runner.ReasoningResult{}, fmt.Errorf("ScriptedAgent: no more steps (called %d times, only %d steps)", s.callIndex+1, len(s.steps))
+		return core.ReasoningResult{}, fmt.Errorf("ScriptedAgent: no more steps (called %d times, only %d steps)", s.callIndex+1, len(s.steps))
 	}
 
 	result := s.steps[s.callIndex]
 	s.callIndex++
 	return result, nil
+}
+
+// newTestContextStore returns a fresh, isolated in-memory context store for
+// tests that construct an AgentRunner directly (WithContextStore is
+// required).
+func newTestContextStore() core.ContextPort {
+	return contextstore.New(contextstore.Config{})
 }
 
 func (s *ScriptedAgent) callCount() int {
@@ -101,14 +104,42 @@ func (s *ScriptedAgent) capturedCalls() []capturedCall {
 
 // step builders
 
-func toolStep(name, input string) runner.ReasoningResult {
-	return runner.ReasoningResult{
-		ToolCalls: []tooldef.ToolCall{{Name: name, Input: input}},
+// toolStepSeq gives each toolStep call a distinct tool_use id — tests never
+// run these builders concurrently (they're called during test setup, not
+// from DoReasoning), so a plain counter is safe.
+var toolStepSeq int
+
+// toolStep builds a ReasoningResult for a single tool_use response, keeping
+// ToolCalls and Meta.AssistantMessage in sync — as the real agent does (see
+// internal/adapters/agent/agent.go). The context store pairs tool_results against the
+// assistant message's own tool_use content blocks, not the parallel
+// ToolCalls list, so a fixture that only set ToolCalls silently dropped
+// every tool result (empty pending) instead of exercising the real path.
+func toolStep(name, input string) core.ReasoningResult {
+	toolStepSeq++
+	id := fmt.Sprintf("tu-%d", toolStepSeq)
+	call := core.ToolCall{ID: id, Name: name, Input: input}
+	return core.ReasoningResult{
+		ToolCalls: []core.ToolCall{call},
+		Meta: core.ResponseMeta{
+			AssistantMessage: common.Message{
+				Role:    common.RoleAssistant,
+				Content: []common.ContentBlock{common.NewToolUseContent(call.ID, call.Name, []byte(call.Input))},
+			},
+		},
 	}
 }
 
-func finalStep(answer string) runner.ReasoningResult {
-	return runner.ReasoningResult{FinalAnswer: answer}
+// finalStep builds a ReasoningResult for a final-answer response, with
+// Meta.AssistantMessage carrying the same text as FinalAnswer — matching
+// what the real agent returns (see internal/adapters/agent/agent.go DoReasoning).
+func finalStep(answer string) core.ReasoningResult {
+	return core.ReasoningResult{
+		FinalAnswer: answer,
+		Meta: core.ResponseMeta{
+			AssistantMessage: common.NewAssistantMessage(answer),
+		},
+	}
 }
 
 func jsonInput(fields map[string]any) string {

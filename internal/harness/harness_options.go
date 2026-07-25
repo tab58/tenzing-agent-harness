@@ -1,9 +1,15 @@
 package harness
 
 import (
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
+	"time"
+
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/features/budgets"
+	"github.com/tab58/tenzing-agent-harness/internal/features/mcp"
+	"github.com/tab58/tenzing-agent-harness/internal/features/permissions"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 
 	"github.com/tab58/llm-providers/common"
 )
@@ -40,16 +46,18 @@ type harnessOptions struct {
 	// advisorModel enables the advisor tool when set (non-zero Name).
 	advisorModel common.ModelDefinition
 
-	// onTextDelta is called with incremental text output from the agent.
-	// It is called from the agent's goroutine, so it should not block.
-	onTextDelta func(string)
+	// onTextDelta is called with incremental text output from the agent,
+	// tagged with the emitting runner's id. It is called from the agent's
+	// goroutine, so it should not block.
+	onTextDelta func(runnerID, text string)
 
 	// onThinkingDelta is called with incremental thinking output from the
-	// agent. Called from the agent's goroutine, so it should not block.
-	onThinkingDelta func(string)
+	// agent, tagged with the emitting runner's id. Called from the agent's
+	// goroutine, so it should not block.
+	onThinkingDelta func(runnerID, text string)
 
 	// eventBus is an event bus that transports all events
-	eventBus *events.EventBus
+	eventBus *eventbus.EventBus
 
 	// mainSystemPrompt is the system prompt of the main agent
 	mainSystemPrompt string
@@ -61,7 +69,7 @@ type harnessOptions struct {
 
 	// hooks holds optional typed callbacks dispatched from the event
 	// bus. Only set hooks fire; leave the rest nil.
-	hooks events.Hooks
+	hooks eventbus.Hooks
 
 	// extraTools are additional tools to add the registry
 	extraTools map[string]tooldef.Definition
@@ -76,11 +84,36 @@ type harnessOptions struct {
 	// blackboardDisabled turns off the shared blackboard REPL and its
 	// repl tool (enabled by default).
 	blackboardDisabled bool
+
+	// extensions are additional core.Extension registrations, appended after
+	// the default extensions (e.g. reminders). Order of WithExtension calls
+	// is hook execution order.
+	extensions []core.Extension
+
+	// permissionPolicy overrides the default tool permission policy.
+	// Nil means permissions.DefaultPolicy().
+	permissionPolicy *permissions.Policy
+
+	// permissionsDisabled skips registering the permissions extension
+	// entirely (explicit opt-out for headless/trusted drivers).
+	permissionsDisabled bool
+
+	// approvalTimeout bounds how long an AskUser tool call waits for an
+	// approval response before being denied.
+	approvalTimeout time.Duration
+
+	// budgetLimits, when non-zero, registers the budgets extension for the
+	// main loop (graceful termination on iteration/wall-clock/token caps).
+	budgetLimits budgets.Limits
+
+	// mcpServers are external MCP servers to mount as dynamic tool sources.
+	// The mcp extension is registered only when at least one is configured.
+	mcpServers []mcp.ServerConfig
 }
 
 func defaultHarnessOptions() *harnessOptions {
 	return &harnessOptions{
-		eventBus: events.NewEventBus(),
+		eventBus: eventbus.NewEventBus(),
 		skillDirs: []string{
 			"~/.claude/skills",
 		},
@@ -88,6 +121,7 @@ func defaultHarnessOptions() *harnessOptions {
 		baseURLs:              make(map[common.Provider]string),
 		subagentMaxDepth:      1,
 		subagentMaxIterations: 100,
+		approvalTimeout:       120 * time.Second,
 	}
 }
 
@@ -181,7 +215,7 @@ func WithTool(tool tooldef.Definition) HarnessOption {
 	}
 }
 
-func WithHooks(hooks events.Hooks) HarnessOption {
+func WithHooks(hooks eventbus.Hooks) HarnessOption {
 	return func(o *harnessOptions) {
 		o.hooks = hooks
 	}
@@ -202,19 +236,24 @@ func WithConversationID(id string) HarnessOption {
 	}
 }
 
-func WithEventBus(bus *events.EventBus) HarnessOption {
+func WithEventBus(bus *eventbus.EventBus) HarnessOption {
 	return func(o *harnessOptions) {
 		o.eventBus = bus
 	}
 }
 
-func WithTextDeltaHandler(f func(string)) HarnessOption {
+// WithTextDeltaHandler registers a callback for incremental text output.
+// runnerID identifies the emitting runner so multiplexed consumers (RPC
+// mode) can correlate deltas with their turn.
+func WithTextDeltaHandler(f func(runnerID, text string)) HarnessOption {
 	return func(o *harnessOptions) {
 		o.onTextDelta = f
 	}
 }
 
-func WithThinkingDeltaHandler(f func(string)) HarnessOption {
+// WithThinkingDeltaHandler registers a callback for incremental thinking
+// output, tagged with the emitting runner's id like WithTextDeltaHandler.
+func WithThinkingDeltaHandler(f func(runnerID, text string)) HarnessOption {
 	return func(o *harnessOptions) {
 		o.onThinkingDelta = f
 	}
@@ -226,4 +265,47 @@ func WithBlackboardDisabled() HarnessOption {
 	return func(o *harnessOptions) {
 		o.blackboardDisabled = true
 	}
+}
+
+// WithExtension registers an additional core extension. Order of WithExtension
+// calls is hook execution order (after the default extensions).
+func WithExtension(ext core.Extension) HarnessOption {
+	return func(o *harnessOptions) { o.extensions = append(o.extensions, ext) }
+}
+
+// WithPermissionPolicy replaces the default tool permission policy
+// (permissions.DefaultPolicy: ask for code-executing/file-writing tools,
+// allow the rest).
+func WithPermissionPolicy(p permissions.Policy) HarnessOption {
+	return func(o *harnessOptions) { o.permissionPolicy = &p }
+}
+
+// WithPermissionsDisabled skips the permissions extension entirely — every
+// tool call runs unquestioned. Explicit opt-out for headless or fully
+// trusted drivers.
+func WithPermissionsDisabled() HarnessOption {
+	return func(o *harnessOptions) { o.permissionsDisabled = true }
+}
+
+// WithApprovalTimeout bounds how long an AskUser tool call waits for an
+// approval response before being denied. Default 120s; 0 denies immediately
+// (unattended drivers with nobody to answer).
+func WithApprovalTimeout(d time.Duration) HarnessOption {
+	return func(o *harnessOptions) { o.approvalTimeout = d }
+}
+
+// WithBudgets registers the budgets extension for the main loop: the turn
+// terminates gracefully (TurnResult.Terminated, surfaced by RunTurn as a
+// "terminated: ..." error) when any limit is exceeded. Zero fields are
+// unlimited.
+func WithBudgets(l budgets.Limits) HarnessOption {
+	return func(o *harnessOptions) { o.budgetLimits = l }
+}
+
+// WithMCPServer mounts an external MCP server (stdio transport) as a dynamic
+// tool source: its tools appear as "mcp__<server>__<tool>" and are re-listed
+// at each turn boundary. MCP-origin tools require approval under the default
+// permission policy. Repeat the option per server.
+func WithMCPServer(cfg mcp.ServerConfig) HarnessOption {
+	return func(o *harnessOptions) { o.mcpServers = append(o.mcpServers, cfg) }
 }

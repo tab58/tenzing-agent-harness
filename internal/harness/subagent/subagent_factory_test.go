@@ -7,8 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tab58/tenzing-agent-harness/internal/harness/blackboard"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/features/blackboard"
+	"github.com/tab58/tenzing-agent-harness/internal/features/todo"
 
 	"github.com/tab58/llm-providers/common"
 )
@@ -36,15 +38,12 @@ func (s *stubLLM) ProviderName() common.Provider { return common.ProviderOllama 
 
 type stubAgent struct{}
 
-func (s *stubAgent) GetCurrentModel() string                         { return "stub" }
-func (s *stubAgent) UpdateToolDefinitions(_ []common.ToolDefinition) {}
-func (s *stubAgent) UpdateSkillMap(_ map[string]string)              {}
-func (s *stubAgent) UpdateStreamCallback(_ func(string))             {}
-func (s *stubAgent) UpdateThinkingCallback(_ func(string))           {}
-func (s *stubAgent) SetTodoProvider(_ func() string)                 {}
+func (s *stubAgent) GetCurrentModel() string               { return "stub" }
+func (s *stubAgent) UpdateStreamCallback(_ func(string))   {}
+func (s *stubAgent) UpdateThinkingCallback(_ func(string)) {}
 
-func (s *stubAgent) DoReasoning(_ context.Context, _ []string, _ []string) (runner.ReasoningResult, error) {
-	return runner.ReasoningResult{FinalAnswer: "done"}, nil
+func (s *stubAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string, _ []common.ToolDefinition) (core.ReasoningResult, error) {
+	return core.ReasoningResult{FinalAnswer: "done"}, nil
 }
 
 func TestNewSubAgentFactory(t *testing.T) {
@@ -53,7 +52,7 @@ func TestNewSubAgentFactory(t *testing.T) {
 		MaxDepth:      2,
 		MaxIterations: 10,
 		Cwd:           t.TempDir(),
-		AgentBuilder: func(llm common.LLM, sp string) (runner.Agent, error) {
+		AgentBuilder: func(llm common.LLM, sp string) (core.Agent, error) {
 			return &stubAgent{}, nil
 		},
 	})
@@ -81,7 +80,7 @@ func TestSubAgentFactorySpawnsAgent(t *testing.T) {
 		MaxDepth:      1,
 		MaxIterations: 5,
 		Cwd:           t.TempDir(),
-		AgentBuilder: func(llm common.LLM, sp string) (runner.Agent, error) {
+		AgentBuilder: func(llm common.LLM, sp string) (core.Agent, error) {
 			return &stubAgent{}, nil
 		},
 	})
@@ -103,9 +102,15 @@ func TestSubAgentFactoryChildAtMaxDepthHasNoSpawnAgent(t *testing.T) {
 		Cwd:           t.TempDir(),
 	})
 
-	registry := factory.buildChildToolRegistry("a0")
-	for _, def := range registry.Definitions() {
-		if def.Name() == "spawn_agent" {
+	port, err := toolport.NewComposite(
+		factory.buildChildToolRegistry("a0"),
+		factory.childExtensions("a0", todo.NewTodoStore()),
+	)
+	if err != nil {
+		t.Fatalf("NewComposite: %v", err)
+	}
+	for _, def := range port.Definitions() {
+		if def.Name == "spawn_agent" {
 			t.Fatal("child at max depth should not have spawn_agent tool")
 		}
 	}
@@ -117,15 +122,21 @@ func TestSubAgentFactoryChildBelowMaxDepthHasSpawnAgent(t *testing.T) {
 		MaxDepth:      2,
 		MaxIterations: 5,
 		Cwd:           t.TempDir(),
-		AgentBuilder: func(llm common.LLM, sp string) (runner.Agent, error) {
+		AgentBuilder: func(llm common.LLM, sp string) (core.Agent, error) {
 			return &stubAgent{}, nil
 		},
 	})
 
-	registry := factory.buildChildToolRegistry("a0")
+	port, err := toolport.NewComposite(
+		factory.buildChildToolRegistry("a0"),
+		factory.childExtensions("a0", todo.NewTodoStore()),
+	)
+	if err != nil {
+		t.Fatalf("NewComposite: %v", err)
+	}
 	found := false
-	for _, def := range registry.Definitions() {
-		if def.Name() == "spawn_agent" {
+	for _, def := range port.Definitions() {
+		if def.Name == "spawn_agent" {
 			found = true
 			break
 		}
@@ -145,6 +156,7 @@ func TestSubAgentFactoryImmutability(t *testing.T) {
 
 	depthBefore := factory.currentDepth
 	_ = factory.buildChildToolRegistry("a0")
+	_ = factory.childExtensions("a0", todo.NewTodoStore())
 
 	if factory.currentDepth != depthBefore {
 		t.Fatalf("factory currentDepth mutated: was %d, now %d", depthBefore, factory.currentDepth)
@@ -154,14 +166,11 @@ func TestSubAgentFactoryImmutability(t *testing.T) {
 // fixedAnswerAgent returns a canned final answer of any size.
 type fixedAnswerAgent struct{ answer string }
 
-func (s *fixedAnswerAgent) GetCurrentModel() string                         { return "stub" }
-func (s *fixedAnswerAgent) UpdateToolDefinitions(_ []common.ToolDefinition) {}
-func (s *fixedAnswerAgent) UpdateSkillMap(_ map[string]string)              {}
-func (s *fixedAnswerAgent) UpdateStreamCallback(_ func(string))             {}
-func (s *fixedAnswerAgent) UpdateThinkingCallback(_ func(string))           {}
-func (s *fixedAnswerAgent) SetTodoProvider(_ func() string)                 {}
-func (s *fixedAnswerAgent) DoReasoning(_ context.Context, _ []string, _ []string) (runner.ReasoningResult, error) {
-	return runner.ReasoningResult{FinalAnswer: s.answer}, nil
+func (s *fixedAnswerAgent) GetCurrentModel() string               { return "stub" }
+func (s *fixedAnswerAgent) UpdateStreamCallback(_ func(string))   {}
+func (s *fixedAnswerAgent) UpdateThinkingCallback(_ func(string)) {}
+func (s *fixedAnswerAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string, _ []common.ToolDefinition) (core.ReasoningResult, error) {
+	return core.ReasoningResult{FinalAnswer: s.answer}, nil
 }
 
 func newTestBlackboard(t *testing.T) *blackboard.Blackboard {
@@ -182,7 +191,7 @@ func factoryWithAnswer(t *testing.T, bb *blackboard.Blackboard, answer string) *
 		MaxIterations: 5,
 		Cwd:           t.TempDir(),
 		Blackboard:    bb,
-		AgentBuilder: func(llm common.LLM, sp string) (runner.Agent, error) {
+		AgentBuilder: func(llm common.LLM, sp string) (core.Agent, error) {
 			return &fixedAnswerAgent{answer: answer}, nil
 		},
 	})
@@ -251,20 +260,27 @@ func TestSpawnAgentNilBlackboardReturnsFullResult(t *testing.T) {
 	}
 }
 
-func TestChildRegistryHasREPLToolWhenBlackboardSet(t *testing.T) {
+func TestChildToolSurfaceHasREPLToolWhenBlackboardSet(t *testing.T) {
 	bb := newTestBlackboard(t)
 	factory := factoryWithAnswer(t, bb, "x")
 
-	registry := factory.buildChildToolRegistry("a99")
+	// repl mounts via the child's blackboard extension, not the registry.
+	port, err := toolport.NewComposite(
+		factory.buildChildToolRegistry("a99"),
+		factory.childExtensions("a99", todo.NewTodoStore()),
+	)
+	if err != nil {
+		t.Fatalf("NewComposite: %v", err)
+	}
 	found := false
-	for _, def := range registry.Definitions() {
-		if def.Name() == "repl" {
+	for _, def := range port.Definitions() {
+		if def.Name == "repl" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("child registry missing repl tool when blackboard is set")
+		t.Error("child tool surface missing repl tool when blackboard is set")
 	}
 }
 
@@ -276,7 +292,7 @@ func TestSubAgentSystemPromptIncludesWorkingDir(t *testing.T) {
 	factory := NewSubAgentFactory(SubAgentFactoryConfig{
 		AgentLLM: &stubLLM{},
 		Cwd:      cwd,
-		AgentBuilder: func(llm common.LLM, sp string) (runner.Agent, error) {
+		AgentBuilder: func(llm common.LLM, sp string) (core.Agent, error) {
 			capturedPrompt = sp
 			return &stubAgent{}, nil
 		},
@@ -302,15 +318,15 @@ func TestChildRegistryHasNoREPLToolWithoutBlackboard(t *testing.T) {
 	}
 }
 
-// recordingAgent captures the inputs RunLoop feeds into reasoning.
+// recordingAgent captures the messages RunLoop feeds into reasoning.
 type recordingAgent struct {
 	stubAgent
-	inputs []string
+	messages []common.Message
 }
 
-func (r *recordingAgent) DoReasoning(_ context.Context, inputs []string, _ []string) (runner.ReasoningResult, error) {
-	r.inputs = append(r.inputs, inputs...)
-	return runner.ReasoningResult{FinalAnswer: "done"}, nil
+func (r *recordingAgent) DoReasoning(_ context.Context, messages []common.Message, _ []string, _ []common.ToolDefinition) (core.ReasoningResult, error) {
+	r.messages = append(r.messages, messages...)
+	return core.ReasoningResult{FinalAnswer: "done"}, nil
 }
 
 // Regression: sub-agents obeyed task-prompt instructions to deposit under
@@ -324,7 +340,7 @@ func TestSpawnAgentTaskInoculatedWithOwnSlot(t *testing.T) {
 		Cwd:        t.TempDir(),
 		Blackboard: bb,
 		ParentID:   "beef0000",
-		AgentBuilder: func(_ common.LLM, _ string) (runner.Agent, error) {
+		AgentBuilder: func(_ common.LLM, _ string) (core.Agent, error) {
 			return rec, nil
 		},
 	})
@@ -332,10 +348,10 @@ func TestSpawnAgentTaskInoculatedWithOwnSlot(t *testing.T) {
 	if _, err := factory.SpawnAgent(context.Background(), "dump files into bb['agents_md']['result']", ""); err != nil {
 		t.Fatalf("SpawnAgent: %v", err)
 	}
-	if len(rec.inputs) == 0 {
+	if len(rec.messages) == 0 {
 		t.Fatal("agent received no input")
 	}
-	input := rec.inputs[0]
+	input := common.CombinedText(rec.messages[0].Content)
 	if !strings.Contains(input, "Deposit results ONLY in bb['beef0000_") {
 		t.Fatalf("task not inoculated with canonical slot:\n%s", input)
 	}

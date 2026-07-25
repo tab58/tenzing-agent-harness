@@ -10,10 +10,14 @@
 package tenzing
 
 import (
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/features/budgets"
+	"github.com/tab58/tenzing-agent-harness/internal/features/mcp"
+	"github.com/tab58/tenzing-agent-harness/internal/features/permissions"
 	"github.com/tab58/tenzing-agent-harness/internal/harness"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
 )
 
 // Harness wires an agent, tool registry, and event bus into a runnable loop.
@@ -46,22 +50,72 @@ var (
 	WithTextDeltaHandler      = harness.WithTextDeltaHandler
 	WithThinkingDeltaHandler  = harness.WithThinkingDeltaHandler
 	WithBlackboardDisabled    = harness.WithBlackboardDisabled
+	WithExtension             = harness.WithExtension
+	WithPermissionPolicy      = harness.WithPermissionPolicy
+	WithPermissionsDisabled   = harness.WithPermissionsDisabled
+	WithApprovalTimeout       = harness.WithApprovalTimeout
+)
+
+// Tool permission policy (default-on: code-executing/file-writing tools ask
+// for approval; opt out with WithPermissionsDisabled).
+type PermissionPolicy = permissions.Policy
+
+var DefaultPermissionPolicy = permissions.DefaultPolicy
+
+// Budget limits for WithBudgets; zero fields are unlimited.
+type BudgetLimits = budgets.Limits
+
+var WithBudgets = harness.WithBudgets
+
+// MCP server config for WithMCPServer (stdio transport).
+type MCPServerConfig = mcp.ServerConfig
+
+var WithMCPServer = harness.WithMCPServer
+
+// Extension system: implement Extension plus any of the capability hook
+// interfaces below and register via WithExtension.
+type (
+	Extension = core.Extension
+
+	SessionStartHook    = core.SessionStartHook
+	SessionEndHook      = core.SessionEndHook
+	BeforeIterationHook = core.BeforeIterationHook
+	ToolCallHook        = core.ToolCallHook
+	ToolResultHook      = core.ToolResultHook
+	AfterTurnHook       = core.AfterTurnHook
+	PromptContributor   = core.PromptContributor
+	ToolProvider        = core.ToolProvider
+	DynamicToolSource   = core.DynamicToolSource
+
+	TurnContext       = core.TurnContext
+	ToolCallContext   = core.ToolCallContext
+	ToolResultContext = core.ToolResultContext
+	TurnResult        = core.TurnResult
+	ToolSpec          = core.ToolSpec
+	Decision          = core.Decision
+)
+
+// Tool-gating decisions for ToolCallHook implementations.
+const (
+	Allow   = core.Allow
+	AskUser = core.AskUser
+	Deny    = core.Deny
 )
 
 // Agent is the "brain" contract consumed by the runner; implement it and
 // pass a builder via WithAgentBuilder to replace the default agent.
 type (
-	Agent           = runner.Agent
+	Agent           = core.Agent
 	AgentBuilder    = runner.AgentBuilder
-	ReasoningResult = runner.ReasoningResult
+	ReasoningResult = core.ReasoningResult
 )
 
 // Tool types, for implementing custom tools passed via WithTool.
 type (
 	ToolDefinition   = tooldef.Definition
-	ToolResult       = tooldef.ToolResult
+	ToolResult       = core.ToolResult
 	ToolResultOption = tooldef.ToolResultOption
-	ToolCall         = tooldef.ToolCall
+	ToolCall         = core.ToolCall
 	ExecutionContext = tooldef.ExecutionContext
 	Schema           = tooldef.Schema
 	SchemaProperty   = tooldef.SchemaProperty
@@ -88,34 +142,36 @@ const (
 
 // Event system, for WithEventBus / WithHooks consumers.
 type (
-	Event    = events.Event
-	EventBus = events.EventBus
-	Hooks    = events.Hooks
+	Event    = core.Event
+	EventBus = eventbus.EventBus
+	Hooks    = eventbus.Hooks
 )
 
-var NewEventBus = events.NewEventBus
+var NewEventBus = eventbus.NewEventBus
 
 // Typed events delivered to Hooks callbacks and EventBus subscribers.
 type (
-	SessionStartedEvent        = events.SessionStartedEvent
-	SessionEndedEvent          = events.SessionEndedEvent
-	TurnStartedEvent           = events.TurnStartedEvent
-	TurnCompletedEvent         = events.TurnCompletedEvent
-	LoopStartedEvent           = events.LoopStartedEvent
-	LoopStoppedEvent           = events.LoopStoppedEvent
-	ReasoningStartedEvent      = events.ReasoningStartedEvent
-	ReasoningFinishedEvent     = events.ReasoningFinishedEvent
-	ToolExecutionStartedEvent  = events.ToolExecutionStartedEvent
-	ToolExecutionFinishedEvent = events.ToolExecutionFinishedEvent
-	LLMResponseEvent           = events.LLMResponseEvent
-	ToolSucceededEvent         = events.ToolSucceededEvent
-	ToolFailedEvent            = events.ToolFailedEvent
-	ToolProgressEvent          = events.ToolProgressEvent
-	ContextCompressingEvent    = events.ContextCompressingEvent
-	ContextCompressedEvent     = events.ContextCompressedEvent
-	ErrorEvent                 = events.ErrorEvent
-	SubagentStartedEvent       = events.SubagentStartedEvent
-	SubagentStoppedEvent       = events.SubagentStoppedEvent
-	TaskCreatedEvent           = events.TaskCreatedEvent
-	TaskCompletedEvent         = events.TaskCompletedEvent
+	SessionStartedEvent        = core.SessionStartedEvent
+	SessionEndedEvent          = core.SessionEndedEvent
+	TurnStartedEvent           = core.TurnStartedEvent
+	TurnCompletedEvent         = core.TurnCompletedEvent
+	LoopStartedEvent           = core.LoopStartedEvent
+	LoopStoppedEvent           = core.LoopStoppedEvent
+	ReasoningStartedEvent      = core.ReasoningStartedEvent
+	ReasoningFinishedEvent     = core.ReasoningFinishedEvent
+	ToolExecutionStartedEvent  = core.ToolExecutionStartedEvent
+	ToolExecutionFinishedEvent = core.ToolExecutionFinishedEvent
+	LLMResponseEvent           = core.LLMResponseEvent
+	ToolSucceededEvent         = core.ToolSucceededEvent
+	ToolFailedEvent            = core.ToolFailedEvent
+	ToolDeniedEvent            = core.ToolDeniedEvent
+	ToolProgressEvent          = core.ToolProgressEvent
+	ContextCompressingEvent    = core.ContextCompressingEvent
+	ContextCompressedEvent     = core.ContextCompressedEvent
+	ErrorEvent                 = core.ErrorEvent
+	SubagentStartedEvent       = core.SubagentStartedEvent
+	SubagentStoppedEvent       = core.SubagentStoppedEvent
+	TaskCreatedEvent           = core.TaskCreatedEvent
+	TaskCompletedEvent         = core.TaskCompletedEvent
+	ApprovalRequestedEvent     = core.ApprovalRequestedEvent
 )

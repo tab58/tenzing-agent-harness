@@ -14,10 +14,12 @@ import (
 	srverrors "github.com/tab58/huma-http-server/errors"
 	"github.com/tab58/huma-http-server/router"
 
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/app"
 	"github.com/tab58/tenzing-agent-harness/internal/app/nexus"
+	"github.com/tab58/tenzing-agent-harness/internal/app/wire"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
 
 	"github.com/tab58/llm-providers/common"
 )
@@ -26,7 +28,7 @@ import (
 // stream, and JSON endpoints to start/cancel agent turns.
 type agentServer struct {
 	harness   *harness.Harness
-	bus       *events.EventBus
+	bus       *eventbus.EventBus
 	nexus     *nexus.Nexus // nil when no channels configured
 	logB      *app.LogBroadcaster
 	onTurnEnd func() // trigger flush hook; called after every turn
@@ -38,9 +40,16 @@ type agentServer struct {
 
 	clients   map[*sseClient]struct{}
 	clientsMu sync.RWMutex
+
+	// approvals holds pending AskUser responders keyed by tool-call ID.
+	// Entries are removed when answered; timed-out entries are dropped when
+	// the same call ID can no longer arrive (Respond is idempotent, so a
+	// late answer to a timed-out request is a harmless no-op).
+	approvals   map[string]func(bool)
+	approvalsMu sync.Mutex
 }
 
-func newAgentServer(model common.ModelDefinition, bus *events.EventBus, nx *nexus.Nexus, logB *app.LogBroadcaster, onTurnEnd func(), extraOpts ...harness.HarnessOption) (*agentServer, error) {
+func newAgentServer(model common.ModelDefinition, bus *eventbus.EventBus, nx *nexus.Nexus, logB *app.LogBroadcaster, onTurnEnd func(), extraOpts ...harness.HarnessOption) (*agentServer, error) {
 	s := &agentServer{
 		bus:       bus,
 		nexus:     nx,
@@ -48,12 +57,13 @@ func newAgentServer(model common.ModelDefinition, bus *events.EventBus, nx *nexu
 		onTurnEnd: onTurnEnd,
 		done:      make(chan struct{}),
 		clients:   make(map[*sseClient]struct{}),
+		approvals: make(map[string]func(bool)),
 	}
 
 	opts := append([]harness.HarnessOption{
 		harness.WithEventBus(bus),
-		harness.WithTextDeltaHandler(func(text string) { s.broadcastSSE("text_delta", text) }),
-		harness.WithThinkingDeltaHandler(func(text string) { s.broadcastSSE("thinking_delta", text) }),
+		harness.WithTextDeltaHandler(func(_, text string) { s.broadcastSSE("text_delta", text) }),
+		harness.WithThinkingDeltaHandler(func(_, text string) { s.broadcastSSE("thinking_delta", text) }),
 	}, extraOpts...)
 
 	h, err := harness.New(model, opts...)
@@ -90,6 +100,14 @@ func (s *agentServer) registerRoutes(srv *httpserver.Server[router.MapAuthInfo])
 			Path:        "/cancel",
 		},
 		Handler: s.handleCancel,
+	})
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[approveInput, statusOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "approve",
+			Method:      http.MethodPost,
+			Path:        "/approve",
+		},
+		Handler: s.handleApprove,
 	})
 	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[struct{}, infoOutput, router.MapAuthInfo]{
 		Operation: huma.Operation{
@@ -150,74 +168,59 @@ func (s *agentServer) broadcastSSEJSON(event string, v any) {
 	s.broadcastSSE(event, string(b))
 }
 
-func (s *agentServer) forwardEvents(ch <-chan events.Event) {
+// sseEnvelope is one SSE payload: the wire envelope plus the server-side
+// agent label (blackboard slot name) for events from subagent runners. The
+// SSE event name is the envelope's Type.
+type sseEnvelope struct {
+	wire.Envelope
+	Agent string `json:"agent,omitempty"`
+}
+
+// translateSSE maps one bus event to its SSE message via the wire schema.
+// subagents maps runner IDs to blackboard slot names ("a1", ...); ok=false
+// means the event type is not forwarded to the UI.
+func translateSSE(ev core.Event, subagents map[string]string) (event string, payload sseEnvelope, ok bool) {
+	var agent string
+	switch e := ev.(type) {
+	case core.ToolExecutionStartedEvent:
+		agent = subagents[e.RunnerID]
+	case core.ToolSucceededEvent:
+		agent = subagents[e.RunnerID]
+	case core.ToolFailedEvent:
+		agent = subagents[e.RunnerID]
+	case core.ApprovalRequestedEvent:
+		agent = subagents[e.RunnerID]
+	case core.SubagentStartedEvent, core.SubagentStoppedEvent,
+		core.LLMResponseEvent, core.ToolProgressEvent,
+		nexus.ChannelErrorEvent, nexus.ChannelStatusEvent, nexus.TriggerEvent:
+		// forwarded without an agent label
+	default:
+		return "", sseEnvelope{}, false
+	}
+	env := wire.ToWire(ev)
+	return env.Type, sseEnvelope{Envelope: env, Agent: agent}, true
+}
+
+func (s *agentServer) forwardEvents(ch <-chan core.Event) {
 	// Sub-agent runners share the bus; map their runner IDs to blackboard
 	// slot names ("a1", ...) so tool events can be labeled per agent. Only
 	// this goroutine touches the map.
 	subagents := make(map[string]string)
 	for ev := range ch {
+		// Side effects the pure translation can't own: subagent-label
+		// bookkeeping and approval-responder capture.
 		switch e := ev.(type) {
-		case events.SubagentStartedEvent:
+		case core.SubagentStartedEvent:
 			subagents[e.RunnerID] = e.AgentID
-			s.broadcastSSEJSON("subagent", map[string]string{
-				"agent":  e.AgentID,
-				"state":  "started",
-				"prompt": e.Prompt,
-			})
-		case events.SubagentStoppedEvent:
+		case core.SubagentStoppedEvent:
 			delete(subagents, e.RunnerID)
-			s.broadcastSSEJSON("subagent", map[string]string{
-				"agent":    e.AgentID,
-				"state":    "stopped",
-				"duration": e.Duration.String(),
-			})
-		case events.ToolExecutionStartedEvent:
-			s.broadcastSSEJSON("tool_start", map[string]string{
-				"name":  e.ToolName,
-				"input": e.Input,
-				"agent": subagents[e.RunnerID],
-			})
-		case events.ToolSucceededEvent:
-			s.broadcastSSEJSON("tool_result", map[string]string{
-				"name":   e.ToolName,
-				"input":  e.Input,
-				"output": e.Output,
-				"agent":  subagents[e.RunnerID],
-			})
-		case events.ToolFailedEvent:
-			s.broadcastSSEJSON("tool_result", map[string]string{
-				"name":   e.ToolName,
-				"input":  e.Input,
-				"output": e.Error,
-				"error":  "true",
-				"agent":  subagents[e.RunnerID],
-			})
-		case events.LLMResponseEvent:
-			s.broadcastSSEJSON("llm_meta", map[string]int64{
-				"input_tokens":  e.InputTokens,
-				"output_tokens": e.OutputTokens,
-			})
-		case events.ToolProgressEvent:
-			s.broadcastSSEJSON("tool_progress", map[string]string{
-				"tool":   e.ToolName,
-				"phase":  e.Phase,
-				"detail": e.Detail,
-			})
-		case nexus.ChannelErrorEvent:
-			s.broadcastSSEJSON("channel_error", map[string]any{
-				"channel": e.Channel,
-				"text":    e.Text,
-				"seq":     e.Seq,
-			})
-		case nexus.ChannelStatusEvent:
-			s.broadcastSSEJSON("channel_status", map[string]string{
-				"channel": e.Channel,
-				"state":   e.State,
-			})
-		case nexus.TriggerEvent:
-			s.broadcastSSEJSON("nexus_trigger", map[string]any{
-				"channels": e.Channels,
-			})
+		case core.ApprovalRequestedEvent:
+			s.approvalsMu.Lock()
+			s.approvals[e.CallID] = e.Respond
+			s.approvalsMu.Unlock()
+		}
+		if name, payload, ok := translateSSE(ev, subagents); ok {
+			s.broadcastSSEJSON(name, payload)
 		}
 	}
 }
@@ -343,7 +346,7 @@ func (s *agentServer) startNexusTurn(channels []string) bool {
 		return false
 	}
 	s.bus.Emit(nexus.TriggerEvent{
-		BaseEvent: events.NewBaseEvent(nexus.EventTrigger, "nexus"),
+		BaseEvent: core.NewBaseEvent(nexus.EventTrigger, "nexus"),
 		Channels:  channels,
 	})
 	return true
@@ -392,6 +395,33 @@ func (s *agentServer) handleCancel(_ context.Context, _ router.MapAuthInfo, _ *s
 	cancel()
 	out := &statusOutput{}
 	out.Body.Status = "cancelled"
+	return out, nil
+}
+
+type approveInput struct {
+	Body struct {
+		CallID   string `json:"call_id" doc:"Tool-call ID from the approval_requested event"`
+		Approved bool   `json:"approved" doc:"true to run the tool, false to deny"`
+	}
+}
+
+func (s *agentServer) handleApprove(_ context.Context, _ router.MapAuthInfo, in *approveInput) (*statusOutput, error) {
+	s.approvalsMu.Lock()
+	respond, ok := s.approvals[in.Body.CallID]
+	delete(s.approvals, in.Body.CallID)
+	s.approvalsMu.Unlock()
+
+	if !ok {
+		return nil, srverrors.Wrap(srverrors.ErrBadRequest, "no pending approval for call_id")
+	}
+	respond(in.Body.Approved)
+
+	out := &statusOutput{}
+	if in.Body.Approved {
+		out.Body.Status = "approved"
+	} else {
+		out.Body.Status = "denied"
+	}
 	return out, nil
 }
 

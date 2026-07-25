@@ -2,33 +2,33 @@ package runner
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
-	"github.com/tab58/tenzing-agent-harness/internal/harness/events"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/skills"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/todo"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools"
-	"github.com/tab58/tenzing-agent-harness/internal/harness/tools/tooldef"
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/contextstore"
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 
 	"github.com/tab58/llm-providers/common"
 )
 
 type eventCollector struct {
 	mu     sync.Mutex
-	events []events.Event
+	events []core.Event
 }
 
-func (c *eventCollector) Emit(ev events.Event) {
+func (c *eventCollector) Emit(ev core.Event) {
 	c.mu.Lock()
 	c.events = append(c.events, ev)
 	c.mu.Unlock()
 }
 
-func (c *eventCollector) byType(t events.EventType) []events.Event {
+func (c *eventCollector) byType(t core.EventType) []core.Event {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var out []events.Event
+	var out []core.Event
 	for _, ev := range c.events {
 		if ev.Type() == t {
 			out = append(out, ev)
@@ -38,42 +38,59 @@ func (c *eventCollector) byType(t events.EventType) []events.Event {
 }
 
 type minimalAgent struct {
-	mu     sync.Mutex
-	steps  []ReasoningResult
-	idx    int
-	inputs [][]string
+	mu       sync.Mutex
+	steps    []core.ReasoningResult
+	idx      int
+	messages [][]common.Message
 }
 
-func (a *minimalAgent) GetCurrentModel() string                                         { return "" }
-func (a *minimalAgent) UpdateToolDefinitions(_ []common.ToolDefinition)                 {}
-func (a *minimalAgent) UpdateSkillMap(_ map[string]string)                              {}
-func (a *minimalAgent) UpdateStreamCallback(_ func(string))                             {}
-func (a *minimalAgent) UpdateThinkingCallback(_ func(string))                           {}
-func (a *minimalAgent) SetTodoProvider(_ func() string)                                 {}
+func (a *minimalAgent) GetCurrentModel() string               { return "" }
+func (a *minimalAgent) UpdateStreamCallback(_ func(string))   {}
+func (a *minimalAgent) UpdateThinkingCallback(_ func(string)) {}
 
-func (a *minimalAgent) DoReasoning(_ context.Context, inputs []string, _ []string) (ReasoningResult, error) {
+func (a *minimalAgent) DoReasoning(_ context.Context, messages []common.Message, _ []string, _ []common.ToolDefinition) (core.ReasoningResult, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.inputs = append(a.inputs, inputs)
+	a.messages = append(a.messages, messages)
 	r := a.steps[a.idx]
 	a.idx++
 	return r, nil
 }
 
+// newTestContextStore returns a fresh, isolated in-memory context store for
+// tests that just need RunLoop to have somewhere to build history.
+func newTestContextStore() core.ContextPort {
+	return contextstore.New(contextstore.Config{})
+}
+
+// toolCallStep builds a ReasoningResult for a tool_use response, keeping
+// ToolCalls and Meta.AssistantMessage in sync — as the real agent does. The
+// context store pairs tool_results against the message's own tool_use
+// blocks, not the parallel ToolCalls list, so tests must supply both.
+func toolCallStep(calls ...core.ToolCall) core.ReasoningResult {
+	blocks := make([]common.ContentBlock, len(calls))
+	for i, c := range calls {
+		blocks[i] = common.NewToolUseContent(c.ID, c.Name, []byte(c.Input))
+	}
+	return core.ReasoningResult{
+		ToolCalls: calls,
+		Meta:      core.ResponseMeta{AssistantMessage: common.Message{Role: common.RoleAssistant, Content: blocks}},
+	}
+}
+
 func TestRunnerEmitsTurnAndLoopEvents(t *testing.T) {
 	collector := &eventCollector{}
 
-	agent := &minimalAgent{steps: []ReasoningResult{
+	agent := &minimalAgent{steps: []core.ReasoningResult{
 		{FinalAnswer: "done"},
 	}}
 
 	r, err := NewAgentRunner(
 		agent,
 		WithEmitter(collector),
-		WithToolRegistry(tools.NewRegistry("")),
-		WithSkillsRegistry(skills.NewRegistry()),
-		WithTodoFile(todo.NewTodoStore()),
+		WithToolRegistry(toolport.NewRegistry("")),
 		WithSystemPrompt("test"),
+		WithContextStore(newTestContextStore()),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -87,34 +104,34 @@ func TestRunnerEmitsTurnAndLoopEvents(t *testing.T) {
 		t.Errorf("answer = %q, want %q", answer, "done")
 	}
 
-	if len(collector.byType(events.EventTurnStarted)) != 1 {
-		t.Errorf("expected 1 TurnStarted, got %d", len(collector.byType(events.EventTurnStarted)))
+	if len(collector.byType(core.EventTurnStarted)) != 1 {
+		t.Errorf("expected 1 TurnStarted, got %d", len(collector.byType(core.EventTurnStarted)))
 	}
-	if len(collector.byType(events.EventLoopStarted)) != 1 {
-		t.Errorf("expected 1 LoopStarted, got %d", len(collector.byType(events.EventLoopStarted)))
+	if len(collector.byType(core.EventLoopStarted)) != 1 {
+		t.Errorf("expected 1 LoopStarted, got %d", len(collector.byType(core.EventLoopStarted)))
 	}
-	if len(collector.byType(events.EventReasoningStarted)) != 1 {
-		t.Errorf("expected 1 ReasoningStarted, got %d", len(collector.byType(events.EventReasoningStarted)))
+	if len(collector.byType(core.EventReasoningStarted)) != 1 {
+		t.Errorf("expected 1 ReasoningStarted, got %d", len(collector.byType(core.EventReasoningStarted)))
 	}
-	if len(collector.byType(events.EventReasoningFinished)) != 1 {
-		t.Errorf("expected 1 ReasoningFinished, got %d", len(collector.byType(events.EventReasoningFinished)))
+	if len(collector.byType(core.EventReasoningFinished)) != 1 {
+		t.Errorf("expected 1 ReasoningFinished, got %d", len(collector.byType(core.EventReasoningFinished)))
 	}
-	if len(collector.byType(events.EventLoopStopped)) != 1 {
-		t.Errorf("expected 1 LoopStopped, got %d", len(collector.byType(events.EventLoopStopped)))
+	if len(collector.byType(core.EventLoopStopped)) != 1 {
+		t.Errorf("expected 1 LoopStopped, got %d", len(collector.byType(core.EventLoopStopped)))
 	}
-	if len(collector.byType(events.EventTurnCompleted)) != 1 {
-		t.Errorf("expected 1 TurnCompleted, got %d", len(collector.byType(events.EventTurnCompleted)))
+	if len(collector.byType(core.EventTurnCompleted)) != 1 {
+		t.Errorf("expected 1 TurnCompleted, got %d", len(collector.byType(core.EventTurnCompleted)))
 	}
 }
 
 func TestRunnerEmitsToolEvents(t *testing.T) {
 	collector := &eventCollector{}
 
-	registry := tools.NewRegistry("")
+	registry := toolport.NewRegistry("")
 	registry.Register(&echoTool{})
 
-	agent := &minimalAgent{steps: []ReasoningResult{
-		{ToolCalls: []tooldef.ToolCall{{ID: "1", Name: "echo", Input: `{"text":"hi"}`}}},
+	agent := &minimalAgent{steps: []core.ReasoningResult{
+		toolCallStep(core.ToolCall{ID: "1", Name: "echo", Input: `{"text":"hi"}`}),
 		{FinalAnswer: "done"},
 	}}
 
@@ -122,9 +139,8 @@ func TestRunnerEmitsToolEvents(t *testing.T) {
 		agent,
 		WithEmitter(collector),
 		WithToolRegistry(registry),
-		WithSkillsRegistry(skills.NewRegistry()),
-		WithTodoFile(todo.NewTodoStore()),
 		WithSystemPrompt("test"),
+		WithContextStore(newTestContextStore()),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -135,14 +151,14 @@ func TestRunnerEmitsToolEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(collector.byType(events.EventToolExecutionStarted)) != 1 {
-		t.Errorf("expected 1 ToolExecutionStarted, got %d", len(collector.byType(events.EventToolExecutionStarted)))
+	if len(collector.byType(core.EventToolExecutionStarted)) != 1 {
+		t.Errorf("expected 1 ToolExecutionStarted, got %d", len(collector.byType(core.EventToolExecutionStarted)))
 	}
-	if len(collector.byType(events.EventToolSucceeded)) != 1 {
-		t.Errorf("expected 1 ToolSucceeded, got %d", len(collector.byType(events.EventToolSucceeded)))
+	if len(collector.byType(core.EventToolSucceeded)) != 1 {
+		t.Errorf("expected 1 ToolSucceeded, got %d", len(collector.byType(core.EventToolSucceeded)))
 	}
-	if len(collector.byType(events.EventToolExecutionFinished)) != 1 {
-		t.Errorf("expected 1 ToolExecutionFinished, got %d", len(collector.byType(events.EventToolExecutionFinished)))
+	if len(collector.byType(core.EventToolExecutionFinished)) != 1 {
+		t.Errorf("expected 1 ToolExecutionFinished, got %d", len(collector.byType(core.EventToolExecutionFinished)))
 	}
 }
 
@@ -153,15 +169,15 @@ func TestRunnerEmitsToolEvents(t *testing.T) {
 func TestRunnerExecutesAllToolCallsInBatch(t *testing.T) {
 	collector := &eventCollector{}
 
-	registry := tools.NewRegistry("")
+	registry := toolport.NewRegistry("")
 	registry.Register(&echoTool{})
 
-	agent := &minimalAgent{steps: []ReasoningResult{
-		{ToolCalls: []tooldef.ToolCall{
-			{ID: "1", Name: "echo", Input: `{"text":"one"}`},
-			{ID: "2", Name: "echo", Input: `{"text":"two"}`},
-			{ID: "3", Name: "echo", Input: `{"text":"three"}`},
-		}},
+	agent := &minimalAgent{steps: []core.ReasoningResult{
+		toolCallStep(
+			core.ToolCall{ID: "1", Name: "echo", Input: `{"text":"one"}`},
+			core.ToolCall{ID: "2", Name: "echo", Input: `{"text":"two"}`},
+			core.ToolCall{ID: "3", Name: "echo", Input: `{"text":"three"}`},
+		),
 		{FinalAnswer: "done"},
 	}}
 
@@ -169,9 +185,8 @@ func TestRunnerExecutesAllToolCallsInBatch(t *testing.T) {
 		agent,
 		WithEmitter(collector),
 		WithToolRegistry(registry),
-		WithSkillsRegistry(skills.NewRegistry()),
-		WithTodoFile(todo.NewTodoStore()),
 		WithSystemPrompt("test"),
+		WithContextStore(newTestContextStore()),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -181,24 +196,31 @@ func TestRunnerExecutesAllToolCallsInBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := len(collector.byType(events.EventToolExecutionStarted)); got != 3 {
+	if got := len(collector.byType(core.EventToolExecutionStarted)); got != 3 {
 		t.Errorf("expected 3 ToolExecutionStarted, got %d", got)
 	}
-	if got := len(collector.byType(events.EventToolSucceeded)); got != 3 {
+	if got := len(collector.byType(core.EventToolSucceeded)); got != 3 {
 		t.Errorf("expected 3 ToolSucceeded, got %d", got)
 	}
 
-	if len(agent.inputs) != 2 {
-		t.Fatalf("expected 2 reasoning calls, got %d", len(agent.inputs))
+	if len(agent.messages) != 2 {
+		t.Fatalf("expected 2 reasoning calls, got %d", len(agent.messages))
 	}
-	second := agent.inputs[1]
+	// The second reasoning call must see the tool_result message with all
+	// three outputs paired by id, in order — none dropped or replaced with a
+	// placeholder.
+	second := agent.messages[1]
+	last := second[len(second)-1]
+	if last.Role != common.RoleTool {
+		t.Fatalf("last message role = %q, want tool", last.Role)
+	}
 	want := []string{`echo: {"text":"one"}`, `echo: {"text":"two"}`, `echo: {"text":"three"}`}
-	if len(second) != len(want) {
-		t.Fatalf("second reasoning inputs = %v, want %v", second, want)
+	if len(last.Content) != len(want) {
+		t.Fatalf("tool_result blocks = %d, want %d: %+v", len(last.Content), len(want), last.Content)
 	}
 	for i := range want {
-		if second[i] != want[i] {
-			t.Errorf("input[%d] = %q, want %q", i, second[i], want[i])
+		if last.Content[i].ToolOutput != want[i] {
+			t.Errorf("tool_result[%d].ToolOutput = %q, want %q", i, last.Content[i].ToolOutput, want[i])
 		}
 	}
 }
@@ -210,6 +232,89 @@ func (e *echoTool) Description() string { return "echoes input" }
 func (e *echoTool) Schema() tooldef.Schema {
 	return tooldef.Schema{Properties: map[string]tooldef.SchemaProperty{"text": {Type: tooldef.JsonTypeString}}}
 }
-func (e *echoTool) Execute(_ context.Context, exctx tooldef.ExecutionContext) (tooldef.ToolResult, error) {
+func (e *echoTool) Execute(_ context.Context, exctx tooldef.ExecutionContext) (core.ToolResult, error) {
 	return tooldef.NewToolResult("echo: " + exctx.Arguments[0]), nil
+}
+
+// countingEchoTool tracks how many times Execute is called, so tests can
+// assert a denied tool call never reaches the underlying tool.
+type countingEchoTool struct {
+	mu      sync.Mutex
+	invoked int
+}
+
+func (c *countingEchoTool) Name() string        { return "echo" }
+func (c *countingEchoTool) Description() string { return "echoes input" }
+func (c *countingEchoTool) Schema() tooldef.Schema {
+	return tooldef.Schema{Properties: map[string]tooldef.SchemaProperty{"text": {Type: tooldef.JsonTypeString}}}
+}
+func (c *countingEchoTool) Execute(_ context.Context, exctx tooldef.ExecutionContext) (core.ToolResult, error) {
+	c.mu.Lock()
+	c.invoked++
+	c.mu.Unlock()
+	return tooldef.NewToolResult("echo: " + exctx.Arguments[0]), nil
+}
+
+func (c *countingEchoTool) invocations() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.invoked
+}
+
+// denyExt is a test extension that denies every tool call.
+type denyExt struct{}
+
+func (denyExt) Name() string { return "deny-all" }
+func (denyExt) OnToolCall(ctx context.Context, tcc *core.ToolCallContext) error {
+	tcc.Decision = core.Deny
+	tcc.Reason = "test policy"
+	return nil
+}
+
+// TestToolCallDeniedByExtension verifies that when a registered extension
+// denies a tool call, the loop feeds back a denied-by-policy error result
+// without ever invoking the underlying tool.
+func TestToolCallDeniedByExtension(t *testing.T) {
+	collector := &eventCollector{}
+
+	registry := toolport.NewRegistry("")
+	tool := &countingEchoTool{}
+	registry.Register(tool)
+
+	agent := &minimalAgent{steps: []core.ReasoningResult{
+		toolCallStep(core.ToolCall{ID: "1", Name: "echo", Input: `{"text":"hi"}`}),
+		{FinalAnswer: "done"},
+	}}
+
+	r, err := NewAgentRunner(
+		agent,
+		WithEmitter(collector),
+		WithToolRegistry(registry),
+		WithSystemPrompt("test"),
+		WithContextStore(newTestContextStore()),
+		WithExtensions(core.NewExtensions(denyExt{})),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.RunLoop(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := tool.invocations(); got != 0 {
+		t.Errorf("expected tool to never execute, invoked %d times", got)
+	}
+
+	failed := collector.byType(core.EventToolFailed)
+	if len(failed) != 1 {
+		t.Fatalf("expected 1 ToolFailedEvent, got %d", len(failed))
+	}
+	ev, ok := failed[0].(core.ToolFailedEvent)
+	if !ok {
+		t.Fatalf("event is not ToolFailedEvent: %T", failed[0])
+	}
+	if !strings.Contains(ev.Error, "denied by policy") {
+		t.Errorf("error = %q, want substring %q", ev.Error, "denied by policy")
+	}
 }
