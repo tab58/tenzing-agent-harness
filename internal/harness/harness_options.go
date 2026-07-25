@@ -46,13 +46,15 @@ type harnessOptions struct {
 	// advisorModel enables the advisor tool when set (non-zero Name).
 	advisorModel common.ModelDefinition
 
-	// onTextDelta is called with incremental text output from the agent.
-	// It is called from the agent's goroutine, so it should not block.
-	onTextDelta func(string)
+	// onTextDelta is called with incremental text output from the agent,
+	// tagged with the emitting runner's id. It is called from the agent's
+	// goroutine, so it should not block.
+	onTextDelta func(runnerID, text string)
 
 	// onThinkingDelta is called with incremental thinking output from the
-	// agent. Called from the agent's goroutine, so it should not block.
-	onThinkingDelta func(string)
+	// agent, tagged with the emitting runner's id. Called from the agent's
+	// goroutine, so it should not block.
+	onThinkingDelta func(runnerID, text string)
 
 	// eventBus is an event bus that transports all events
 	eventBus *eventbus.EventBus
@@ -240,13 +242,18 @@ func WithEventBus(bus *eventbus.EventBus) HarnessOption {
 	}
 }
 
-func WithTextDeltaHandler(f func(string)) HarnessOption {
+// WithTextDeltaHandler registers a callback for incremental text output.
+// runnerID identifies the emitting runner so multiplexed consumers (RPC
+// mode) can correlate deltas with their turn.
+func WithTextDeltaHandler(f func(runnerID, text string)) HarnessOption {
 	return func(o *harnessOptions) {
 		o.onTextDelta = f
 	}
 }
 
-func WithThinkingDeltaHandler(f func(string)) HarnessOption {
+// WithThinkingDeltaHandler registers a callback for incremental thinking
+// output, tagged with the emitting runner's id like WithTextDeltaHandler.
+func WithThinkingDeltaHandler(f func(runnerID, text string)) HarnessOption {
 	return func(o *harnessOptions) {
 		o.onThinkingDelta = f
 	}

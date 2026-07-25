@@ -140,11 +140,13 @@ func (l *Loop) executeBatched(ctx context.Context, iteration int, bc batchCall) 
 		toolResult = ToolResult{ToolUseID: bc.call.ID, Output: fmt.Sprintf("tool call blocked by extension: %v", bc.hookErr), IsError: true}
 	case bc.decision == Deny:
 		toolResult = ToolResult{ToolUseID: bc.call.ID, Output: fmt.Sprintf("tool call denied by policy: %s", bc.reason), IsError: true}
+		l.emitToolDenied(bc.call, bc.reason)
 	case bc.decision == AskUser:
 		if approved, denyReason := l.waitApproval(ctx, bc.approval, bc.reason); approved {
 			toolResult = l.tools.Execute(ctx, bc.call)
 		} else {
 			toolResult = ToolResult{ToolUseID: bc.call.ID, Output: denyReason, IsError: true}
+			l.emitToolDenied(bc.call, denyReason)
 		}
 	default:
 		toolResult = l.tools.Execute(ctx, bc.call)
@@ -186,6 +188,17 @@ func (l *Loop) emit(e Event) {
 	if l.emitter != nil {
 		l.emitter.Emit(e)
 	}
+}
+
+// emitToolDenied fires the typed permission-denial signal for one blocked
+// call (alongside the ToolFailedEvent the error result produces).
+func (l *Loop) emitToolDenied(call ToolCall, reason string) {
+	l.emit(ToolDeniedEvent{
+		BaseEvent: NewBaseEvent(EventToolDenied, l.id),
+		ToolName:  call.Name,
+		Input:     call.Input,
+		Reason:    reason,
+	})
 }
 
 // RunTurn executes a single turn: user input -> agent plan/execute loop -> agent result

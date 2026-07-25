@@ -19,6 +19,7 @@ const (
 	EventLLMResponse           EventType = "llm.response"
 	EventToolSucceeded         EventType = "tool.succeeded"
 	EventToolFailed            EventType = "tool.failed"
+	EventToolDenied            EventType = "tool.denied"
 	EventToolProgress          EventType = "tool.progress"
 	EventContextCompressing    EventType = "context.compressing"
 	EventContextCompressed     EventType = "context.compressed"

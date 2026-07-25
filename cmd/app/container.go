@@ -6,15 +6,14 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"time"
 
 	httpserver "github.com/tab58/huma-http-server"
-	"github.com/tab58/huma-http-server/config"
 	"github.com/tab58/huma-http-server/router"
 	"github.com/tab58/llm-providers/common"
 	"github.com/tab58/llm-providers/ollama"
-
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/app"
 	"github.com/tab58/tenzing-agent-harness/internal/app/nexus"
@@ -22,6 +21,9 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness"
 )
+
+// defaultModel is the model used when --model is not passed.
+var defaultModel = ollama.Model_GLM5_2_Cloud.(common.ModelDefinition)
 
 type Config struct {
 	ServerPort  int    `mapstructure:"SERVER_PORT" default:"8080"`
@@ -33,7 +35,7 @@ type Config struct {
 // logging, the agent server (which owns the harness and LLM), and the
 // HTTP server it is mounted on.
 type AppContainer struct {
-	cfg     *Config
+	cfg     *cliConfig
 	cwd     string
 	logFile *os.File
 	logB    *app.LogBroadcaster
@@ -45,24 +47,23 @@ type AppContainer struct {
 // NewAppContainer builds the container eagerly: config → cwd → logging →
 // agent server (harness + event bus) → HTTP routes. Any failure after the
 // log file opens closes it before returning.
-func NewAppContainer() (*AppContainer, error) {
-	cfg := &Config{}
-	if err := config.Load(cfg); err != nil {
-		return nil, fmt.Errorf("load config: %w", err)
-	}
-
+func NewAppContainer(cfg *cliConfig) (*AppContainer, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("get working directory: %w", err)
 	}
 
 	logB := app.NewLogBroadcaster()
-	logFile, err := setupLogging(cwd, cfg.LogDebug, logB)
+	logFile, err := setupLogging(cwd, cfg.Debug, logB)
 	if err != nil {
 		return nil, err
 	}
 
-	model := ollama.Model_GLM5_2_Cloud.(common.ModelDefinition)
+	model, err := resolveModel(cfg.Model)
+	if err != nil {
+		logFile.Close()
+		return nil, err
+	}
 
 	bus := eventbus.NewEventBus()
 
@@ -91,7 +92,11 @@ func NewAppContainer() (*AppContainer, error) {
 		}
 	}
 
-	var extraOpts []harness.HarnessOption
+	extraOpts, err := harnessOptions(cfg)
+	if err != nil {
+		logFile.Close()
+		return nil, err
+	}
 	if nx != nil {
 		extraOpts = append(extraOpts,
 			harness.WithTool(nexustools.NewListChannelsTool(nx)),
@@ -129,10 +134,11 @@ func NewAppContainer() (*AppContainer, error) {
 	}, nil
 }
 
-// setupLogging opens the log file and installs it as the slog default,
-// teeing output to the /debug SSE broadcaster. Debug runs get a fresh
-// timestamped file at trace level; normal runs append at info level.
-func setupLogging(cwd string, debug bool, tee io.Writer) (*os.File, error) {
+// setupLogging opens the log file in dir and installs it as the slog
+// default, teeing output to the /debug SSE broadcaster. Debug runs get a
+// fresh timestamped file at trace level; normal runs append at info level.
+// Serve mode passes the cwd; print mode passes printLogDir().
+func setupLogging(dir string, debug bool, tee io.Writer) (*os.File, error) {
 	name := ".tenzing-agent.log"
 	level := slog.LevelInfo
 	if debug {
@@ -140,7 +146,7 @@ func setupLogging(cwd string, debug bool, tee io.Writer) (*os.File, error) {
 		level = core.LevelTrace
 	}
 
-	logFile, err := os.OpenFile(filepath.Join(cwd, name), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	logFile, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("open log file: %w", err)
 	}
@@ -151,7 +157,7 @@ func setupLogging(cwd string, debug bool, tee io.Writer) (*os.File, error) {
 
 // Start runs the HTTP server until ctx is cancelled or the server fails.
 func (ac *AppContainer) Start(ctx context.Context) error {
-	errCh, err := ac.server.Start(fmt.Sprintf("127.0.0.1:%d", ac.cfg.ServerPort))
+	errCh, err := ac.server.Start(fmt.Sprintf("127.0.0.1:%d", ac.cfg.Port))
 	if err != nil {
 		return fmt.Errorf("http server start: %w", err)
 	}
@@ -197,5 +203,35 @@ func (ac *AppContainer) Cwd() string {
 }
 
 func (ac *AppContainer) Addr() string {
-	return fmt.Sprintf(":%d", ac.cfg.ServerPort)
+	return fmt.Sprintf(":%d", ac.cfg.Port)
+}
+
+// runServe builds the container and serves until ctx is cancelled.
+func runServe(ctx context.Context, cfg *cliConfig) error {
+	app, err := NewAppContainer(cfg)
+	if err != nil {
+		return fmt.Errorf("startup failed: %w", err)
+	}
+	defer app.Shutdown()
+
+	fmt.Println("tenzing agent harness")
+	fmt.Printf("  model   %s\n", app.Harness().GetCurrentModel())
+	fmt.Printf("  cwd     %s\n", app.Cwd())
+	fmt.Printf("  tools   %d registered\n", len(app.Harness().ToolDefinitions()))
+	fmt.Printf("  listen  http://localhost%s\n", app.Addr())
+	fmt.Println()
+
+	err = app.Start(ctx)
+	// Restore default SIGINT handling: a second Ctrl+C during the shutdown
+	// window below (HTTP graceful timeout + harness.Shutdown) now kills the
+	// process instead of being swallowed by the NotifyContext registered in
+	// main.
+	signal.Reset(os.Interrupt)
+	fmt.Println("shutting down (Ctrl+C again to force)")
+	if err != nil {
+		slog.Error("server ended with error", "error", err)
+		return err
+	}
+	slog.Info("server stopped")
+	return nil
 }

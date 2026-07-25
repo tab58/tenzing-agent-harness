@@ -18,6 +18,7 @@ type Hooks struct {
 	OnLLMResponse           func(core.LLMResponseEvent)
 	OnToolSucceeded         func(core.ToolSucceededEvent)
 	OnToolFailed            func(core.ToolFailedEvent)
+	OnToolDenied            func(core.ToolDeniedEvent)
 	OnToolProgress          func(core.ToolProgressEvent)
 	OnContextCompressing    func(core.ContextCompressingEvent)
 	OnContextCompressed     func(core.ContextCompressedEvent)
@@ -97,6 +98,10 @@ func dispatch(ev core.Event, h Hooks) {
 	case core.ToolFailedEvent:
 		if h.OnToolFailed != nil {
 			h.OnToolFailed(e)
+		}
+	case core.ToolDeniedEvent:
+		if h.OnToolDenied != nil {
+			h.OnToolDenied(e)
 		}
 	case core.ToolProgressEvent:
 		if h.OnToolProgress != nil {

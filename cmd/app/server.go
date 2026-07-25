@@ -17,6 +17,7 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/app"
 	"github.com/tab58/tenzing-agent-harness/internal/app/nexus"
+	"github.com/tab58/tenzing-agent-harness/internal/app/wire"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness"
 
@@ -61,8 +62,8 @@ func newAgentServer(model common.ModelDefinition, bus *eventbus.EventBus, nx *ne
 
 	opts := append([]harness.HarnessOption{
 		harness.WithEventBus(bus),
-		harness.WithTextDeltaHandler(func(text string) { s.broadcastSSE("text_delta", text) }),
-		harness.WithThinkingDeltaHandler(func(text string) { s.broadcastSSE("thinking_delta", text) }),
+		harness.WithTextDeltaHandler(func(_, text string) { s.broadcastSSE("text_delta", text) }),
+		harness.WithThinkingDeltaHandler(func(_, text string) { s.broadcastSSE("thinking_delta", text) }),
 	}, extraOpts...)
 
 	h, err := harness.New(model, opts...)
@@ -167,85 +168,59 @@ func (s *agentServer) broadcastSSEJSON(event string, v any) {
 	s.broadcastSSE(event, string(b))
 }
 
+// sseEnvelope is one SSE payload: the wire envelope plus the server-side
+// agent label (blackboard slot name) for events from subagent runners. The
+// SSE event name is the envelope's Type.
+type sseEnvelope struct {
+	wire.Envelope
+	Agent string `json:"agent,omitempty"`
+}
+
+// translateSSE maps one bus event to its SSE message via the wire schema.
+// subagents maps runner IDs to blackboard slot names ("a1", ...); ok=false
+// means the event type is not forwarded to the UI.
+func translateSSE(ev core.Event, subagents map[string]string) (event string, payload sseEnvelope, ok bool) {
+	var agent string
+	switch e := ev.(type) {
+	case core.ToolExecutionStartedEvent:
+		agent = subagents[e.RunnerID]
+	case core.ToolSucceededEvent:
+		agent = subagents[e.RunnerID]
+	case core.ToolFailedEvent:
+		agent = subagents[e.RunnerID]
+	case core.ApprovalRequestedEvent:
+		agent = subagents[e.RunnerID]
+	case core.SubagentStartedEvent, core.SubagentStoppedEvent,
+		core.LLMResponseEvent, core.ToolProgressEvent,
+		nexus.ChannelErrorEvent, nexus.ChannelStatusEvent, nexus.TriggerEvent:
+		// forwarded without an agent label
+	default:
+		return "", sseEnvelope{}, false
+	}
+	env := wire.ToWire(ev)
+	return env.Type, sseEnvelope{Envelope: env, Agent: agent}, true
+}
+
 func (s *agentServer) forwardEvents(ch <-chan core.Event) {
 	// Sub-agent runners share the bus; map their runner IDs to blackboard
 	// slot names ("a1", ...) so tool events can be labeled per agent. Only
 	// this goroutine touches the map.
 	subagents := make(map[string]string)
 	for ev := range ch {
+		// Side effects the pure translation can't own: subagent-label
+		// bookkeeping and approval-responder capture.
 		switch e := ev.(type) {
 		case core.SubagentStartedEvent:
 			subagents[e.RunnerID] = e.AgentID
-			s.broadcastSSEJSON("subagent", map[string]string{
-				"agent":  e.AgentID,
-				"state":  "started",
-				"prompt": e.Prompt,
-			})
 		case core.SubagentStoppedEvent:
 			delete(subagents, e.RunnerID)
-			s.broadcastSSEJSON("subagent", map[string]string{
-				"agent":    e.AgentID,
-				"state":    "stopped",
-				"duration": e.Duration.String(),
-			})
-		case core.ToolExecutionStartedEvent:
-			s.broadcastSSEJSON("tool_start", map[string]string{
-				"name":  e.ToolName,
-				"input": e.Input,
-				"agent": subagents[e.RunnerID],
-			})
-		case core.ToolSucceededEvent:
-			s.broadcastSSEJSON("tool_result", map[string]string{
-				"name":   e.ToolName,
-				"input":  e.Input,
-				"output": e.Output,
-				"agent":  subagents[e.RunnerID],
-			})
-		case core.ToolFailedEvent:
-			s.broadcastSSEJSON("tool_result", map[string]string{
-				"name":   e.ToolName,
-				"input":  e.Input,
-				"output": e.Error,
-				"error":  "true",
-				"agent":  subagents[e.RunnerID],
-			})
-		case core.LLMResponseEvent:
-			s.broadcastSSEJSON("llm_meta", map[string]int64{
-				"input_tokens":  e.InputTokens,
-				"output_tokens": e.OutputTokens,
-			})
-		case core.ToolProgressEvent:
-			s.broadcastSSEJSON("tool_progress", map[string]string{
-				"tool":   e.ToolName,
-				"phase":  e.Phase,
-				"detail": e.Detail,
-			})
 		case core.ApprovalRequestedEvent:
 			s.approvalsMu.Lock()
 			s.approvals[e.CallID] = e.Respond
 			s.approvalsMu.Unlock()
-			s.broadcastSSEJSON("approval_requested", map[string]string{
-				"call_id": e.CallID,
-				"tool":    e.ToolName,
-				"input":   e.Input,
-				"reason":  e.Reason,
-				"agent":   subagents[e.RunnerID],
-			})
-		case nexus.ChannelErrorEvent:
-			s.broadcastSSEJSON("channel_error", map[string]any{
-				"channel": e.Channel,
-				"text":    e.Text,
-				"seq":     e.Seq,
-			})
-		case nexus.ChannelStatusEvent:
-			s.broadcastSSEJSON("channel_status", map[string]string{
-				"channel": e.Channel,
-				"state":   e.State,
-			})
-		case nexus.TriggerEvent:
-			s.broadcastSSEJSON("nexus_trigger", map[string]any{
-				"channels": e.Channels,
-			})
+		}
+		if name, payload, ok := translateSSE(ev, subagents); ok {
+			s.broadcastSSEJSON(name, payload)
 		}
 	}
 }

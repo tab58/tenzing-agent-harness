@@ -27,8 +27,8 @@ type agentRunnerOptions struct {
 	toolRegistry    *toolport.Registry
 	toolPort        core.ToolPort
 	contextStore    core.ContextPort
-	onTextDelta     func(string)
-	onThinkingDelta func(string)
+	onTextDelta     func(runnerID, text string)
+	onThinkingDelta func(runnerID, text string)
 	systemPrompt    string
 	emitter         core.Emitter
 	extensions      *core.Extensions
@@ -54,13 +54,18 @@ func WithID(id string) AgentRunnerOption {
 	}
 }
 
-func WithTextDeltaHandler(f func(string)) AgentRunnerOption {
+// WithTextDeltaHandler registers a streaming-text callback. The runner
+// tags each delta with its own id before invoking f, so consumers can
+// correlate deltas across concurrent runners.
+func WithTextDeltaHandler(f func(runnerID, text string)) AgentRunnerOption {
 	return func(o *agentRunnerOptions) {
 		o.onTextDelta = f
 	}
 }
 
-func WithThinkingDeltaHandler(f func(string)) AgentRunnerOption {
+// WithThinkingDeltaHandler registers a streaming-thinking callback, tagged
+// with the runner id like WithTextDeltaHandler.
+func WithThinkingDeltaHandler(f func(runnerID, text string)) AgentRunnerOption {
 	return func(o *agentRunnerOptions) {
 		o.onThinkingDelta = f
 	}
@@ -136,12 +141,16 @@ func NewAgentRunner(agent core.Agent, opts ...AgentRunnerOption) (*AgentRunner, 
 	}
 
 	// One-time agent wiring — these are construction-time setups, not
-	// per-iteration calls. The core.Loop never touches them.
+	// per-iteration calls. The core.Loop never touches them. The agent's
+	// callback contract is func(text); the runner closes over its own id
+	// so deltas stay correlatable across concurrent runners.
 	if o.onTextDelta != nil {
-		agent.UpdateStreamCallback(o.onTextDelta)
+		f, id := o.onTextDelta, o.id
+		agent.UpdateStreamCallback(func(text string) { f(id, text) })
 	}
 	if o.onThinkingDelta != nil {
-		agent.UpdateThinkingCallback(o.onThinkingDelta)
+		f, id := o.onThinkingDelta, o.id
+		agent.UpdateThinkingCallback(func(text string) { f(id, text) })
 	}
 
 	tp := o.toolPort

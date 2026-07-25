@@ -52,6 +52,16 @@ go build ./...
 task app
 # or directly:
 go run ./cmd/app
+
+# One-shot programmatic run
+go run ./cmd/app -p "summarize README.md"
+
+# JSONL event stream
+go run ./cmd/app -p "..." --output-format json
+
+# Pick a model / set budgets
+go run ./cmd/app -p "..." --model anthropic/claude-sonnet-4-6 --max-tokens 50000
+go run ./cmd/app --list-models
 ```
 
 Set your provider API key in the environment (e.g. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`).
@@ -68,7 +78,8 @@ go vet ./...            # static analysis
 
 ```
 cmd/
-  app/                  Entry point — HTTP/SSE server with embedded chat UI
+  app/                  Entry point — cobra CLI: HTTP/SSE server with embedded chat UI
+                        by default, or one-shot print mode (`-p`)
 
 internal/
   core/                 Invariant domain: types, FSM, events, loop, all ports, the Agent

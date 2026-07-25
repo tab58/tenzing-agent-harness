@@ -164,6 +164,7 @@ type (
 	LLMResponseEvent           = core.LLMResponseEvent
 	ToolSucceededEvent         = core.ToolSucceededEvent
 	ToolFailedEvent            = core.ToolFailedEvent
+	ToolDeniedEvent            = core.ToolDeniedEvent
 	ToolProgressEvent          = core.ToolProgressEvent
 	ContextCompressingEvent    = core.ContextCompressingEvent
 	ContextCompressedEvent     = core.ContextCompressedEvent

@@ -95,6 +95,18 @@ type ToolFailedEvent struct {
 	Duration time.Duration `json:"duration_ms"`
 }
 
+// ToolDeniedEvent fires when a tool call is blocked by the permission
+// system — a policy Deny, or an AskUser escalation that was not approved
+// (user denial, timeout, cancellation, or no approver configured). The call
+// also produces a ToolFailedEvent; this event is the typed signal that the
+// failure was a permission denial, not a tool error.
+type ToolDeniedEvent struct {
+	BaseEvent
+	ToolName string `json:"tool_name"`
+	Input    string `json:"input"`
+	Reason   string `json:"reason"`
+}
+
 type ToolProgressEvent struct {
 	BaseEvent
 	ToolName  string `json:"tool_name"`

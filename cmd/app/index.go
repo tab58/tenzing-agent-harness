@@ -170,26 +170,38 @@ function agentTag(d) {
   return d.agent ? '[' + d.agent + '] ' : '';
 }
 
-es.addEventListener('tool_start', e => {
+// SSE payloads are wire envelopes: {v, type, ts, runner_id, data, agent},
+// with the event's fields under .data and the server's subagent label in
+// .agent.
+es.addEventListener('tool_execution.started', e => {
   finalizeStream();
   const d = JSON.parse(e.data);
-  const inp = d.input.length > 500 ? d.input.slice(0, 500) + '…' : d.input;
-  addMsg('tool' + (d.agent ? ' sub' : ''), '⚙ ' + agentTag(d) + d.name + ' ' + inp);
+  const inp = d.data.input.length > 500 ? d.data.input.slice(0, 500) + '…' : d.data.input;
+  addMsg('tool' + (d.agent ? ' sub' : ''), '⚙ ' + agentTag(d) + d.data.tool_name + ' ' + inp);
 });
 
-es.addEventListener('tool_result', e => {
+function toolResult(d, output, isError) {
+  const lines = (output || '').split('\n').slice(0, 10);
+  const prefix = isError ? '✗ ' : '✓ ';
+  const inp = d.data.input.length > 500 ? d.data.input.slice(0, 500) + '…' : d.data.input;
+  addMsg('tool' + (d.agent ? ' sub' : ''), prefix + agentTag(d) + d.data.tool_name + ' ' + inp + '\n' + lines.join('\n'));
+}
+
+es.addEventListener('tool.succeeded', e => {
   const d = JSON.parse(e.data);
-  const lines = (d.output || '').split('\n').slice(0, 10);
-  const prefix = d.error === 'true' ? '✗ ' : '✓ ';
-  const inp = d.input.length > 500 ? d.input.slice(0, 500) + '…' : d.input;
-  addMsg('tool' + (d.agent ? ' sub' : ''), prefix + agentTag(d) + d.name + ' ' + inp + '\n' + lines.join('\n'));
+  toolResult(d, d.data.output, false);
 });
 
-es.addEventListener('approval_requested', e => {
+es.addEventListener('tool.failed', e => {
+  const d = JSON.parse(e.data);
+  toolResult(d, d.data.error, true);
+});
+
+es.addEventListener('approval.requested', e => {
   finalizeStream();
   const d = JSON.parse(e.data);
-  const inp = d.input.length > 500 ? d.input.slice(0, 500) + '…' : d.input;
-  const el = addMsg('approval', '⚠ ' + agentTag(d) + d.tool + ' wants to run:\n' + inp);
+  const inp = d.data.input.length > 500 ? d.data.input.slice(0, 500) + '…' : d.data.input;
+  const el = addMsg('approval', '⚠ ' + agentTag(d) + d.data.tool_name + ' wants to run:\n' + inp);
 
   const approve = document.createElement('button');
   approve.textContent = 'approve';
@@ -202,7 +214,7 @@ es.addEventListener('approval_requested', e => {
       await fetch('/approve', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({call_id: d.call_id, approved}),
+        body: JSON.stringify({call_id: d.data.call_id, approved}),
       });
       el.append(' → ' + (approved ? 'approved' : 'denied'));
     } catch(err) {
@@ -217,30 +229,37 @@ es.addEventListener('approval_requested', e => {
   chat.scrollTop = chat.scrollHeight;
 });
 
-es.addEventListener('subagent', e => {
+es.addEventListener('subagent.started', e => {
   finalizeStream();
   const d = JSON.parse(e.data);
-  if (d.state === 'started') {
-    const p = d.prompt.length > 200 ? d.prompt.slice(0, 200) + '…' : d.prompt;
-    addMsg('subagent', '⧉ ' + d.agent + ' spawned: ' + p);
-  } else {
-    addMsg('subagent', '⧉ ' + d.agent + ' done (' + d.duration + ')');
-  }
+  const p = d.data.prompt.length > 200 ? d.data.prompt.slice(0, 200) + '…' : d.data.prompt;
+  addMsg('subagent', '⧉ ' + d.data.agent_id + ' spawned: ' + p);
 });
 
-es.addEventListener('tool_progress', e => {
+es.addEventListener('subagent.stopped', e => {
+  finalizeStream();
   const d = JSON.parse(e.data);
-  if (d.detail.trim()) {
-    addMsg('tool-progress', '▸ ' + d.phase + '\n' + d.detail);
-  }
-  updateStatus('⚙ ' + d.tool + ' → ' + d.phase);
+  addMsg('subagent', '⧉ ' + d.data.agent_id + ' done (' + fmtDuration(d.data.duration_ms) + ')');
 });
 
-es.addEventListener('llm_meta', e => {
+es.addEventListener('tool.progress', e => {
   const d = JSON.parse(e.data);
-  inputTokens += d.input_tokens;
-  outputTokens += d.output_tokens;
+  if (d.data.detail.trim()) {
+    addMsg('tool-progress', '▸ ' + d.data.phase + '\n' + d.data.detail);
+  }
+  updateStatus('⚙ ' + d.data.tool_name + ' → ' + d.data.phase);
 });
+
+es.addEventListener('llm.response', e => {
+  const d = JSON.parse(e.data);
+  inputTokens += d.data.input_tokens;
+  outputTokens += d.data.output_tokens;
+});
+
+function fmtDuration(ms) {
+  if (ms >= 1000) return (ms / 1000).toFixed(1) + 's';
+  return ms + 'ms';
+}
 
 es.addEventListener('answer', e => {
   const d = JSON.parse(e.data);

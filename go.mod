@@ -6,6 +6,7 @@ require (
 	github.com/danielgtaylor/huma/v2 v2.38.0
 	github.com/looplab/fsm v1.0.3
 	github.com/modelcontextprotocol/go-sdk v1.6.1
+	github.com/spf13/cobra v1.10.2
 	github.com/tab58/huma-http-server v0.3.0
 	github.com/tab58/llm-providers v0.3.2
 	go.yaml.in/yaml/v3 v3.0.4
@@ -20,6 +21,7 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/openai/openai-go/v3 v3.41.0 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
