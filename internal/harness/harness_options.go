@@ -81,10 +81,6 @@ type harnessOptions struct {
 	// registration, including built-ins like "bash" and "edit".
 	disabledTools []string
 
-	// blackboardDisabled turns off the shared blackboard REPL and its
-	// repl tool (enabled by default).
-	blackboardDisabled bool
-
 	// extensions are additional core.Extension registrations, appended after
 	// the default extensions (e.g. reminders). Order of WithExtension calls
 	// is hook execution order.
@@ -109,6 +105,38 @@ type harnessOptions struct {
 	// mcpServers are external MCP servers to mount as dynamic tool sources.
 	// The mcp extension is registered only when at least one is configured.
 	mcpServers []mcp.ServerConfig
+
+	// thinking toggles model reasoning for the main agent; nil leaves the
+	// provider default.
+	thinking *bool
+
+	// llmRetryMax / llmRetryBaseDelay tune the default agent's transient-
+	// error retry policy. Zero values keep the agent defaults (3 / 2s);
+	// negative llmRetryMax disables retries.
+	llmRetryMax       int
+	llmRetryBaseDelay time.Duration
+
+	// compressionThreshold / compressionKeepMessages tune the main context
+	// store's auto-compression; zero keeps the defaults (0.75 / 6).
+	compressionThreshold    float64
+	compressionKeepMessages int
+
+	// sessionDir relocates message-level session persistence (default
+	// <UserConfigDir>/tenzing/sessions); sessionDisabled opts out entirely.
+	sessionDir      string
+	sessionDisabled bool
+
+	// promptTemplateDirs are directories of *.md slash-command templates,
+	// invoked as "/name args..." in a RunTurn query.
+	promptTemplateDirs []string
+
+	// contextFilesDisabled turns off automatic AGENTS.md loading into the
+	// main system prompt.
+	contextFilesDisabled bool
+
+	// toolGate, when set, is consulted before every tool call (main agent
+	// and all subagents).
+	toolGate ToolCallGate
 }
 
 func defaultHarnessOptions() *harnessOptions {
@@ -259,14 +287,6 @@ func WithThinkingDeltaHandler(f func(runnerID, text string)) HarnessOption {
 	}
 }
 
-// WithBlackboardDisabled turns off the shared blackboard REPL. The repl
-// tool is not registered and subagent results are always returned inline.
-func WithBlackboardDisabled() HarnessOption {
-	return func(o *harnessOptions) {
-		o.blackboardDisabled = true
-	}
-}
-
 // WithExtension registers an additional core extension. Order of WithExtension
 // calls is hook execution order (after the default extensions).
 func WithExtension(ext core.Extension) HarnessOption {
@@ -300,6 +320,77 @@ func WithApprovalTimeout(d time.Duration) HarnessOption {
 // unlimited.
 func WithBudgets(l budgets.Limits) HarnessOption {
 	return func(o *harnessOptions) { o.budgetLimits = l }
+}
+
+// WithPromptTemplatesDir registers an additional prompt-template directory
+// (repeatable). Templates are *.md files invoked as "/name args..." in a
+// RunTurn query, with bash-style argument substitution ($1, $@, ${1:-def},
+// ${@:N:L}). Later directories override earlier ones on name collision.
+// Nonexistent directories are skipped at discovery time.
+func WithPromptTemplatesDir(dir string) HarnessOption {
+	return func(o *harnessOptions) {
+		o.promptTemplateDirs = append(o.promptTemplateDirs, dir)
+	}
+}
+
+// WithContextFilesDisabled turns off automatic AGENTS.md loading into the
+// system prompt.
+func WithContextFilesDisabled() HarnessOption {
+	return func(o *harnessOptions) {
+		o.contextFilesDisabled = true
+	}
+}
+
+// WithToolCallGate installs a gate consulted before every tool call — the
+// main agent's and all subagents' (one shared gate, implemented as a
+// core.Extension ToolCallHook). Returning a non-nil error blocks the call;
+// the error string is fed back to the model as the tool result so it can
+// adapt.
+func WithToolCallGate(gate ToolCallGate) HarnessOption {
+	return func(o *harnessOptions) {
+		o.toolGate = gate
+	}
+}
+
+// WithSessionDir relocates message-level session persistence (default
+// <UserConfigDir>/tenzing/sessions).
+func WithSessionDir(dir string) HarnessOption {
+	return func(o *harnessOptions) { o.sessionDir = dir }
+}
+
+// WithSessionDisabled turns off message-level session persistence; the
+// compression-summary memory files remain the only resume mechanism.
+func WithSessionDisabled() HarnessOption {
+	return func(o *harnessOptions) { o.sessionDisabled = true }
+}
+
+// WithThinking toggles model reasoning for the main agent's requests.
+// Without this option the provider default applies.
+func WithThinking(enabled bool) HarnessOption {
+	return func(o *harnessOptions) { o.thinking = &enabled }
+}
+
+// WithLLMRetry tunes the default agent's transient-LLM-error retry policy:
+// max attempts (negative disables) and the base backoff delay. Ignored by
+// custom agent builders.
+func WithLLMRetry(max int, baseDelay time.Duration) HarnessOption {
+	return func(o *harnessOptions) {
+		o.llmRetryMax = max
+		o.llmRetryBaseDelay = baseDelay
+	}
+}
+
+// WithCompressionThreshold overrides the auto-compress trigger point as a
+// fraction of the model's context window (default 0.75). Values outside
+// (0,1] are ignored.
+func WithCompressionThreshold(frac float64) HarnessOption {
+	return func(o *harnessOptions) { o.compressionThreshold = frac }
+}
+
+// WithCompressionKeepMessages overrides how many recent messages survive
+// compression verbatim (default 6). Non-positive values are ignored.
+func WithCompressionKeepMessages(n int) HarnessOption {
+	return func(o *harnessOptions) { o.compressionKeepMessages = n }
 }
 
 // WithMCPServer mounts an external MCP server (stdio transport) as a dynamic

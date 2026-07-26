@@ -83,7 +83,7 @@ func TestDefaultPolicyAsksForMCPOrigins(t *testing.T) {
 
 func TestDefaultPolicyAsksForMutatingTools(t *testing.T) {
 	p := DefaultPolicy()
-	for _, tool := range []string{"bash", "write", "edit", "revert", "repl", "spawn_agent", "advisor"} {
+	for _, tool := range []string{"bash", "write", "edit", "repl", "spawn_agent", "advisor"} {
 		if got := decideFor(t, p, tool, core.Allow); got != core.AskUser {
 			t.Errorf("DefaultPolicy(%s) = %v, want AskUser", tool, got)
 		}

@@ -20,6 +20,10 @@ const (
 	// how much of the final pre-cut assistant message is quoted verbatim
 	// under "## Last position"
 	lastPositionTailChars = 500
+	// imageEstimateChars is the size charged per image block when estimating
+	// context usage: ~1600 tokens (a full-size provider image) at ~4 chars
+	// per token. The base64 payload itself never reaches the summarizer.
+	imageEstimateChars = 1600 * charsPerToken
 )
 
 const summarizeSystem = "You are a session summarizer. The user message contains a <transcript> of an agent session. " +
@@ -35,8 +39,10 @@ const summarizeInstruction = `Summarize the transcript into exactly these markdo
 
 type Compressor struct {
 	llm             common.LLM
+	contextWindow   int
 	threshold       int
 	summarizeBudget int
+	keepRecent      int
 }
 
 // NewCompressor creates an in-context compressor. It performs no file I/O;
@@ -49,8 +55,31 @@ func NewCompressor(llm common.LLM, contextWindow int) *Compressor {
 
 	return &Compressor{
 		llm:             llm,
+		contextWindow:   contextWindow,
 		threshold:       contextWindow * compressAtFraction,
 		summarizeBudget: contextWindow * charsPerToken / summarizeBudgetDivisor,
+		keepRecent:      KeepRecent,
+	}
+}
+
+// SetLLM swaps the summarization client (mid-session model switching).
+func (c *Compressor) SetLLM(llm common.LLM) {
+	c.llm = llm
+}
+
+// SetThresholdFraction overrides the auto-compress trigger point (default
+// 0.75 of the context window). Values outside (0,1] are ignored.
+func (c *Compressor) SetThresholdFraction(frac float64) {
+	if frac > 0 && frac <= 1 {
+		c.threshold = int(float64(c.contextWindow*charsPerToken) * frac)
+	}
+}
+
+// SetKeepRecent overrides how many recent messages survive compression
+// verbatim (default 6). Non-positive values are ignored.
+func (c *Compressor) SetKeepRecent(n int) {
+	if n > 0 {
+		c.keepRecent = n
 	}
 }
 
@@ -62,15 +91,22 @@ func (c *Compressor) MaybeCompress(ctx context.Context, messages []common.Messag
 	if c.EstimateSize(messages) < c.threshold {
 		return messages, "", false, nil
 	}
-	if len(messages) <= KeepRecent {
+	return c.Compress(ctx, messages, "")
+}
+
+// Compress summarizes unconditionally (manual compaction), bypassing the
+// size threshold. instructions, when non-empty, steer the summary. Histories
+// at or under the keep-recent tail are returned unchanged.
+func (c *Compressor) Compress(ctx context.Context, messages []common.Message, instructions string) ([]common.Message, string, bool, error) {
+	if len(messages) <= c.keepRecent {
 		return messages, "", false, nil
 	}
 
-	splitIdx := len(messages) - KeepRecent
+	splitIdx := len(messages) - c.keepRecent
 	old := messages[:splitIdx]
 	recent := messages[splitIdx:]
 
-	summary, err := c.summarize(ctx, old)
+	summary, err := c.summarize(ctx, old, instructions)
 	if err != nil {
 		return messages, "", false, fmt.Errorf("compression summarize: %w", err)
 	}
@@ -97,12 +133,15 @@ func (c *Compressor) EstimateSize(messages []common.Message) int {
 			size += len(block.Text)
 			size += len(block.ToolOutput) / toolOutputWeight
 			size += len(block.ToolInput)
+			if block.Image != nil {
+				size += imageEstimateChars
+			}
 		}
 	}
 	return size
 }
 
-func (c *Compressor) summarize(ctx context.Context, messages []common.Message) (string, error) {
+func (c *Compressor) summarize(ctx context.Context, messages []common.Message, instructions string) (string, error) {
 	var sb strings.Builder
 	for _, msg := range messages {
 		fmt.Fprintf(&sb, "[%s] ", msg.Role)
@@ -130,11 +169,16 @@ func (c *Compressor) summarize(ctx context.Context, messages []common.Message) (
 
 	// Plumbing call: disable model reasoning — summarization happens inside
 	// the agent loop and shouldn't burn thinking tokens or latency.
+	instruction := summarizeInstruction
+	if instructions != "" {
+		instruction += "\nAdditional instructions from the user for this summary:\n" + instructions + "\n"
+	}
+
 	noThink := false
 	resp, err := c.llm.SendSyncMessage(ctx, common.CompletionRequest{
 		Model:     c.llm.GetCurrentModel(),
 		System:    summarizeSystem,
-		Messages:  []common.Message{common.NewUserMessage(summarizeInstruction + "\n<transcript>\n" + text + "\n</transcript>")},
+		Messages:  []common.Message{common.NewUserMessage(instruction + "\n<transcript>\n" + text + "\n</transcript>")},
 		MaxTokens: 4096,
 		Think:     &noThink,
 	})

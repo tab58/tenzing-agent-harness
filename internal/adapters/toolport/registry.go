@@ -96,6 +96,13 @@ func (r *Registry) ProviderDefinitions() []common.ToolDefinition {
 // 	return r.workingDir
 // }
 
+// IsReadOnly reports whether the named tool declares itself read-only via
+// tooldef.ReadOnlyReporter. Unknown tools report false.
+func (r *Registry) IsReadOnly(name string) bool {
+	def, ok := r.tools[strings.ToLower(name)]
+	return ok && tooldef.IsReadOnly(def)
+}
+
 func (r *Registry) Execute(ctx context.Context, name string, input string) (core.ToolResult, error) {
 	toolDef, ok := r.tools[strings.ToLower(name)]
 	if !ok {

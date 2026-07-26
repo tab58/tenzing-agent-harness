@@ -42,6 +42,7 @@ func NewComposite(native *Registry, exts *core.Extensions) (*Composite, error) {
 		static = append(static, core.ToolSpec{
 			Definition: def,
 			Origin:     "native",
+			ReadOnly:   native.IsReadOnly(def.Name),
 			Execute:    nativeExecute(native),
 		})
 	}
@@ -129,6 +130,15 @@ func (c *Composite) Origin(name string) string {
 		return s.Origin
 	}
 	return "native"
+}
+
+// ReadOnly reports whether the named mounted tool declares itself read-only.
+// Unknown names report false (treated as mutating).
+func (c *Composite) ReadOnly(name string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	s, ok := c.byName[strings.ToLower(name)]
+	return ok && s.ReadOnly
 }
 
 // Execute routes the call to the owning source's Execute func. Panics are

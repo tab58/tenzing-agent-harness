@@ -26,6 +26,8 @@ func (p *registryPort) Definitions() []common.ToolDefinition { return p.reg.Prov
 
 func (p *registryPort) Origin(name string) string { return "native" }
 
+func (p *registryPort) ReadOnly(name string) bool { return p.reg.IsReadOnly(name) }
+
 func (p *registryPort) Execute(ctx context.Context, call core.ToolCall) (result core.ToolResult) {
 	defer func() {
 		if r := recover(); r != nil {

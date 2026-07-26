@@ -1,12 +1,20 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/tab58/llm-providers/common"
+
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
+	"github.com/tab58/tenzing-agent-harness/internal/app"
 	"github.com/tab58/tenzing-agent-harness/internal/app/nexus"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/internal/harness"
 )
 
 // TestTranslateSSE proves the SSE payload for each forwarded event type is
@@ -62,6 +70,36 @@ func TestTranslateSSE(t *testing.T) {
 			`{"v":1,"type":"subagent.started","ts":"2026-07-25T12:00:00Z","runner_id":"runner-sub","data":{"agent_id":"a1","agent_type":"general","prompt":"p"}}`,
 		},
 		{
+			"steering injected",
+			core.SteeringInjectedEvent{BaseEvent: base(core.EventSteeringInjected, "main"), Message: "focus"},
+			true, "steering.injected",
+			`{"v":1,"type":"steering.injected","ts":"2026-07-25T12:00:00Z","runner_id":"main","data":{"message":"focus"}}`,
+		},
+		{
+			"model changed",
+			core.ModelChangedEvent{BaseEvent: base(core.EventModelChanged, "main"), From: "a", To: "b"},
+			true, "model.changed",
+			`{"v":1,"type":"model.changed","ts":"2026-07-25T12:00:00Z","runner_id":"main","data":{"from":"a","to":"b"}}`,
+		},
+		{
+			"thinking changed",
+			core.ThinkingChangedEvent{BaseEvent: base(core.EventThinkingChanged, "main"), Enabled: true},
+			true, "thinking.changed",
+			`{"v":1,"type":"thinking.changed","ts":"2026-07-25T12:00:00Z","runner_id":"main","data":{"enabled":true}}`,
+		},
+		{
+			"llm retry",
+			core.LLMRetryEvent{BaseEvent: base(core.EventLLMRetry, "main"), Attempt: 1, MaxRetries: 3, Error: "overloaded", Delay: 2 * time.Second},
+			true, "llm.retry",
+			`{"v":1,"type":"llm.retry","ts":"2026-07-25T12:00:00Z","runner_id":"main","data":{"attempt":1,"max_retries":3,"error":"overloaded","delay_ms":2000}}`,
+		},
+		{
+			"images attached",
+			core.ImagesAttachedEvent{BaseEvent: base(core.EventImagesAttached, "main"), Images: []core.ImageData{{MediaType: "image/png", Data: "eA=="}}},
+			true, "images.attached",
+			`{"v":1,"type":"images.attached","ts":"2026-07-25T12:00:00Z","runner_id":"main","data":{"count":1,"media_types":["image/png"]}}`,
+		},
+		{
 			"nexus channel error",
 			nexus.ChannelErrorEvent{BaseEvent: base(nexus.EventChannelError, "nexus"), Channel: "logs", Text: "oops", Seq: 7},
 			true, "nexus.channel_error",
@@ -95,4 +133,195 @@ func TestTranslateSSE(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- serve-mode test harness ---
+
+// lastMessageText extracts the text of the newest message in the history —
+// the query the current turn was started with.
+func lastMessageText(messages []common.Message) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, c := range messages[len(messages)-1].Content {
+		b.WriteString(c.Text)
+	}
+	return b.String()
+}
+
+// gatedAgent blocks each turn until released, recording the query it saw.
+// One DoReasoning call per turn (always a final answer).
+type gatedAgent struct {
+	mu      sync.Mutex
+	queries []string
+	gate    chan struct{}
+}
+
+func (a *gatedAgent) GetCurrentModel() string               { return "gated" }
+func (a *gatedAgent) UpdateStreamCallback(_ func(string))   {}
+func (a *gatedAgent) UpdateThinkingCallback(_ func(string)) {}
+
+func (a *gatedAgent) DoReasoning(ctx context.Context, messages []common.Message, _ []string, _ []common.ToolDefinition) (core.ReasoningResult, error) {
+	a.mu.Lock()
+	a.queries = append(a.queries, lastMessageText(messages))
+	a.mu.Unlock()
+	select {
+	case <-a.gate:
+	case <-ctx.Done():
+		return core.ReasoningResult{}, ctx.Err()
+	}
+	return core.ReasoningResult{FinalAnswer: "ok"}, nil
+}
+
+func (a *gatedAgent) seen() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	cp := make([]string, len(a.queries))
+	copy(cp, a.queries)
+	return cp
+}
+
+func newTestServer(t *testing.T, agent core.Agent, extraOpts ...harness.HarnessOption) *agentServer {
+	t.Helper()
+	bus := eventbus.NewEventBus()
+	api, err := newAgentServer(
+		defaultModel,
+		bus, nil, app.NewLogBroadcaster(), nil, nil,
+		append([]harness.HarnessOption{
+			harness.WithLLMFactory(func(_ common.ModelDefinition) (common.LLM, error) { return &stubLLM{}, nil }),
+			harness.WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return agent, nil }),
+			harness.WithSubagentDepth(0),
+			// keep session files out of the real user config dir
+			harness.WithSessionDir(t.TempDir()),
+		}, extraOpts...)...,
+	)
+	if err != nil {
+		t.Fatalf("newAgentServer: %v", err)
+	}
+	t.Cleanup(func() {
+		api.cancelActiveTurn()
+		api.harness.Shutdown()
+		bus.Close()
+	})
+	return api
+}
+
+// waitFor polls cond until it holds or the deadline passes.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+func TestQueryQueuesWhileBusyAndDrainsInOrder(t *testing.T) {
+	agent := &gatedAgent{gate: make(chan struct{})}
+	api := newTestServer(t, agent)
+
+	if got := api.startTurnOrQueue(turnRequest{query: "q1"}); got != "started" {
+		t.Fatalf("first query status = %q, want started", got)
+	}
+	waitFor(t, "q1 to reach the agent", func() bool { return len(agent.seen()) == 1 })
+
+	if got := api.startTurnOrQueue(turnRequest{query: "q2"}); got != "queued" {
+		t.Fatalf("second query status = %q, want queued", got)
+	}
+	if got := api.startTurnOrQueue(turnRequest{query: "q3"}); got != "queued" {
+		t.Fatalf("third query status = %q, want queued", got)
+	}
+
+	agent.gate <- struct{}{} // finish q1
+	waitFor(t, "q2 to start from the queue", func() bool { return len(agent.seen()) == 2 })
+	agent.gate <- struct{}{} // finish q2
+	waitFor(t, "q3 to start from the queue", func() bool { return len(agent.seen()) == 3 })
+	agent.gate <- struct{}{} // finish q3
+
+	waitFor(t, "server to go idle", func() bool {
+		api.mu.Lock()
+		defer api.mu.Unlock()
+		return api.cancelFn == nil && len(api.queue) == 0
+	})
+
+	got := agent.seen()
+	want := []string{"q1", "q2", "q3"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("processed order = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestCancelDropsQueue(t *testing.T) {
+	agent := &gatedAgent{gate: make(chan struct{})}
+	api := newTestServer(t, agent)
+
+	if got := api.startTurnOrQueue(turnRequest{query: "q1"}); got != "started" {
+		t.Fatalf("first query status = %q, want started", got)
+	}
+	waitFor(t, "q1 to reach the agent", func() bool { return len(agent.seen()) == 1 })
+	if got := api.startTurnOrQueue(turnRequest{query: "q2"}); got != "queued" {
+		t.Fatalf("second query status = %q, want queued", got)
+	}
+
+	out, err := api.handleCancel(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("handleCancel: %v", err)
+	}
+	if !strings.Contains(out.Body.Status, "cancelled") {
+		t.Fatalf("cancel status = %q, want cancelled", out.Body.Status)
+	}
+
+	waitFor(t, "server to go idle after cancel", func() bool {
+		api.mu.Lock()
+		defer api.mu.Unlock()
+		return api.cancelFn == nil
+	})
+	// q2 must never run: the cancel dropped it before q1 finished.
+	if got := agent.seen(); len(got) != 1 {
+		t.Fatalf("queries after cancel = %v, want only q1", got)
+	}
+}
+
+func TestStateEndpoint(t *testing.T) {
+	agent := &gatedAgent{gate: make(chan struct{})}
+	api := newTestServer(t, agent)
+
+	out, err := api.handleState(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("handleState: %v", err)
+	}
+	if out.Body.State != "idle" {
+		t.Fatalf("state = %q, want idle", out.Body.State)
+	}
+	if out.Body.ConversationID == "" || out.Body.Model == "" || out.Body.Tools == 0 {
+		t.Fatalf("state missing metadata: %+v", out.Body)
+	}
+	if out.Body.Vision {
+		t.Fatalf("vision = true for non-vision test model")
+	}
+
+	if got := api.startTurnOrQueue(turnRequest{query: "q1"}); got != "started" {
+		t.Fatalf("query status = %q, want started", got)
+	}
+	waitFor(t, "q1 to reach the agent", func() bool { return len(agent.seen()) == 1 })
+	api.startTurnOrQueue(turnRequest{query: "q2"})
+
+	out, err = api.handleState(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("handleState while running: %v", err)
+	}
+	if out.Body.State != "running" {
+		t.Fatalf("state = %q, want running", out.Body.State)
+	}
+	if out.Body.Queued != 1 {
+		t.Fatalf("queued = %d, want 1", out.Body.Queued)
+	}
+	agent.gate <- struct{}{}
+	agent.gate <- struct{}{}
 }

@@ -20,7 +20,10 @@ type ProviderToolDefinition = common.ToolDefinition
 type ToolSpec struct {
 	Definition ProviderToolDefinition
 	Origin     string // "native", "mcp:<server>", "extension:<name>"
-	Execute    func(ctx context.Context, call ToolCall) ToolResult
+	// ReadOnly marks a tool that performs no mutations; the loop may run it
+	// concurrently with adjacent read-only calls. Defaults to false.
+	ReadOnly bool
+	Execute  func(ctx context.Context, call ToolCall) ToolResult
 }
 
 // ToolCall is one tool_use request from the model.
@@ -42,12 +45,16 @@ type ToolResult struct {
 // ResponseMeta carries per-call metadata about one ModelPort.DoReasoning
 // invocation, for logging/events.
 type ResponseMeta struct {
-	Model         string
-	ResponseID    string
-	InputTokens   int64
-	OutputTokens  int64
-	StopReason    string
-	AssistantText string
+	Model        string
+	ResponseID   string
+	InputTokens  int64
+	OutputTokens int64
+	// CacheReadInputTokens / CacheCreationInputTokens report prompt-cache
+	// usage (Anthropic; zero elsewhere).
+	CacheReadInputTokens     int64
+	CacheCreationInputTokens int64
+	StopReason               string
+	AssistantText            string
 	// AssistantMessage is the full assistant message (all content blocks,
 	// including tool_use) as produced by the model. The runner appends it
 	// to the ContextPort — the model itself is stateless.

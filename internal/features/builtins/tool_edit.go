@@ -13,12 +13,21 @@ import (
 
 var _ tooldef.Definition = (*EditTool)(nil)
 
-type EditTool struct{}
+type EditTool struct {
+	tracker *FileTracker
+}
+
+// NewEditTool returns an EditTool enforcing read-before-edit via tracker.
+// A nil tracker disables enforcement.
+func NewEditTool(tracker *FileTracker) *EditTool {
+	return &EditTool{tracker: tracker}
+}
 
 func (t *EditTool) Name() string { return "Edit" }
 
 func (t *EditTool) Description() string {
-	return "Replace a string in a file. Fails if old_string is not found or is not unique (unless replace_all=true)."
+	return "Replace a string in a file. The file must have been Read first. " +
+		"Fails if old_string is not found or is not unique (unless replace_all=true)."
 }
 
 func (t *EditTool) Schema() tooldef.Schema {
@@ -51,14 +60,24 @@ func (t *EditTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) 
 		return tooldef.NewToolResult("file_path and old_string are required", tooldef.WithError()), nil
 	}
 
-	filePath := input.FilePath
+	filePath := resolvePath(exctx.WorkingDir, input.FilePath)
 	oldString := input.OldString
 	newString := input.NewString
 	replaceAll := input.ReplaceAll
 
+	// Hold the path lock across read-verify-write so the verified content is
+	// the content the write is based on.
+	defer lockPath(filePath)()
+
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return tooldef.NewToolResult(fmt.Sprintf("cannot read file: %v", err), tooldef.WithError()), nil
+	}
+
+	if t.tracker != nil {
+		if verr := t.tracker.Verify(filePath, data); verr != nil {
+			return tooldef.NewToolResult(fmt.Sprintf("cannot edit %s: %v", filePath, verr), tooldef.WithError()), nil
+		}
 	}
 
 	content := string(data)
@@ -83,8 +102,11 @@ func (t *EditTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) 
 		updated = strings.Replace(content, oldString, newString, 1)
 	}
 
-	if err := os.WriteFile(filePath, []byte(updated), 0644); err != nil {
+	if err := writeFileAtomic(filePath, []byte(updated)); err != nil {
 		return tooldef.NewToolResult(fmt.Sprintf("cannot write file: %v", err), tooldef.WithError()), nil
+	}
+	if t.tracker != nil {
+		t.tracker.Record(filePath, []byte(updated))
 	}
 
 	return tooldef.NewToolResult("Edit applied."), nil

@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	httpserver "github.com/tab58/huma-http-server"
@@ -20,6 +22,7 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/app/wire"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness"
+	"github.com/tab58/tenzing-agent-harness/internal/harness/session"
 
 	"github.com/tab58/llm-providers/common"
 )
@@ -31,11 +34,19 @@ type agentServer struct {
 	bus       *eventbus.EventBus
 	nexus     *nexus.Nexus // nil when no channels configured
 	logB      *app.LogBroadcaster
-	onTurnEnd func() // trigger flush hook; called after every turn
+	onTurnEnd func()         // trigger flush hook; called after every turn
+	models    *modelRegistry // nil-safe: set by the container after construction
+	costs     *costTracker
+
+	// cwd / trustEnvDefault back the /trust endpoints; set by the container
+	// after construction (like models).
+	cwd             string
+	trustEnvDefault string
 
 	mu       sync.Mutex
 	cancelFn context.CancelFunc
 	closing  bool
+	queue    []turnRequest // follow-up queries waiting for the current turn to end
 	done     chan struct{} // closed on shutdown; unblocks SSE handlers
 
 	clients   map[*sseClient]struct{}
@@ -49,7 +60,10 @@ type agentServer struct {
 	approvalsMu sync.Mutex
 }
 
-func newAgentServer(model common.ModelDefinition, bus *eventbus.EventBus, nx *nexus.Nexus, logB *app.LogBroadcaster, onTurnEnd func(), extraOpts ...harness.HarnessOption) (*agentServer, error) {
+// newAgentServer builds the server. pricing (model name → USD per MTok) may
+// be nil; it must be passed here rather than set later because the event
+// forwarding goroutine starts reading the cost tracker immediately.
+func newAgentServer(model common.ModelDefinition, bus *eventbus.EventBus, nx *nexus.Nexus, logB *app.LogBroadcaster, onTurnEnd func(), pricing map[string]costEntry, extraOpts ...harness.HarnessOption) (*agentServer, error) {
 	s := &agentServer{
 		bus:       bus,
 		nexus:     nx,
@@ -58,6 +72,7 @@ func newAgentServer(model common.ModelDefinition, bus *eventbus.EventBus, nx *ne
 		done:      make(chan struct{}),
 		clients:   make(map[*sseClient]struct{}),
 		approvals: make(map[string]func(bool)),
+		costs:     newCostTracker(pricing),
 	}
 
 	opts := append([]harness.HarnessOption{
@@ -116,6 +131,112 @@ func (s *agentServer) registerRoutes(srv *httpserver.Server[router.MapAuthInfo])
 			Path:        "/info",
 		},
 		Handler: s.handleInfo,
+	})
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[steerInput, statusOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "steer",
+			Method:      http.MethodPost,
+			Path:        "/steer",
+		},
+		Handler: s.handleSteer,
+	})
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[struct{}, stateOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "state",
+			Method:      http.MethodGet,
+			Path:        "/state",
+		},
+		Handler: s.handleState,
+	})
+
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[struct{}, sessionsOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "sessions-list",
+			Method:      http.MethodGet,
+			Path:        "/sessions",
+		},
+		Handler: s.handleSessionsList,
+	})
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[sessionIDInput, statusOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "sessions-delete",
+			Method:      http.MethodDelete,
+			Path:        "/sessions/{id}",
+		},
+		Handler: s.handleSessionDelete,
+	})
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[sessionRenameInput, statusOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "sessions-rename",
+			Method:      http.MethodPatch,
+			Path:        "/sessions/{id}",
+		},
+		Handler: s.handleSessionRename,
+	})
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[struct{}, messagesOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "messages",
+			Method:      http.MethodGet,
+			Path:        "/messages",
+		},
+		Handler: s.handleMessages,
+	})
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[compactInput, statusOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "compact",
+			Method:      http.MethodPost,
+			Path:        "/compact",
+		},
+		Handler: s.handleCompact,
+	})
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[thinkingInput, statusOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "thinking",
+			Method:      http.MethodPost,
+			Path:        "/thinking",
+		},
+		Handler: s.handleThinking,
+	})
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[modelInput, statusOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "model-set",
+			Method:      http.MethodPost,
+			Path:        "/model",
+		},
+		Handler: s.handleModelSet,
+	})
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[struct{}, modelsOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "models-list",
+			Method:      http.MethodGet,
+			Path:        "/models",
+		},
+		Handler: s.handleModelsList,
+	})
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[struct{}, statsOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "stats",
+			Method:      http.MethodGet,
+			Path:        "/stats",
+		},
+		Handler: s.handleStats,
+	})
+
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[struct{}, trustOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "trust-get",
+			Method:      http.MethodGet,
+			Path:        "/trust",
+		},
+		Handler: s.handleTrustGet,
+	})
+	httpserver.RegisterRoute(srv, router.RegisterRouteArgs[trustInput, trustOutput, router.MapAuthInfo]{
+		Operation: huma.Operation{
+			OperationID: "trust-set",
+			Method:      http.MethodPost,
+			Path:        "/trust",
+		},
+		Handler: s.handleTrustSet,
 	})
 
 	srv.Handle("GET /debug", s.logB.SSEHandler())
@@ -192,6 +313,9 @@ func translateSSE(ev core.Event, subagents map[string]string) (event string, pay
 		agent = subagents[e.RunnerID]
 	case core.SubagentStartedEvent, core.SubagentStoppedEvent,
 		core.LLMResponseEvent, core.ToolProgressEvent,
+		core.SteeringInjectedEvent, core.LLMRetryEvent,
+		core.ModelChangedEvent, core.ThinkingChangedEvent,
+		core.ImagesAttachedEvent,
 		nexus.ChannelErrorEvent, nexus.ChannelStatusEvent, nexus.TriggerEvent:
 		// forwarded without an agent label
 	default:
@@ -208,7 +332,7 @@ func (s *agentServer) forwardEvents(ch <-chan core.Event) {
 	subagents := make(map[string]string)
 	for ev := range ch {
 		// Side effects the pure translation can't own: subagent-label
-		// bookkeeping and approval-responder capture.
+		// bookkeeping, approval-responder capture, and cost accounting.
 		switch e := ev.(type) {
 		case core.SubagentStartedEvent:
 			subagents[e.RunnerID] = e.AgentID
@@ -218,9 +342,16 @@ func (s *agentServer) forwardEvents(ch <-chan core.Event) {
 			s.approvalsMu.Lock()
 			s.approvals[e.CallID] = e.Respond
 			s.approvalsMu.Unlock()
+		case core.LLMResponseEvent:
+			s.costs.track(e)
 		}
 		if name, payload, ok := translateSSE(ev, subagents); ok {
 			s.broadcastSSEJSON(name, payload)
+		}
+		if _, ok := ev.(core.LLMResponseEvent); ok {
+			// Running totals ride behind every llm.response so the UI can
+			// show live cost without polling /stats.
+			s.broadcastSSEJSON("cost", s.costs.stats())
 		}
 	}
 }
@@ -264,8 +395,14 @@ func (s *agentServer) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 type queryInput struct {
 	Body struct {
-		Query string `json:"query" doc:"Prompt to run the agent with"`
+		Query  string       `json:"query" doc:"Prompt to run the agent with"`
+		Images []imageInput `json:"images,omitempty" doc:"Images attached to the query (vision-capable models only)"`
 	}
+}
+
+type imageInput struct {
+	MediaType string `json:"media_type" doc:"Image MIME type, e.g. image/png"`
+	Data      string `json:"data" doc:"Base64-encoded image bytes (no data: URI prefix)"`
 }
 
 type statusOutput struct {
@@ -280,8 +417,116 @@ type infoOutput struct {
 	}
 }
 
+type steerInput struct {
+	Body struct {
+		Message string `json:"message" doc:"User message to inject into the running turn at the next tool boundary"`
+	}
+}
+
+type stateOutput struct {
+	Body struct {
+		State          string `json:"state" doc:"running or idle"`
+		LoopState      string `json:"loop_state" doc:"Main runner FSM state"`
+		Queued         int    `json:"queued" doc:"Follow-up queries waiting for the current turn to end"`
+		ConversationID string `json:"conversation_id" doc:"Main agent conversation ID (resume handle)"`
+		Model          string `json:"model" doc:"Active model"`
+		Vision         bool   `json:"vision" doc:"True when the active model accepts image input"`
+		Tools          int    `json:"tools" doc:"Number of registered tools"`
+	}
+}
+
+type sessionsOutput struct {
+	Body struct {
+		Sessions []sessionInfo `json:"sessions" doc:"Sessions recorded for this working directory, newest first"`
+	}
+}
+
+type sessionInfo struct {
+	ConversationID string `json:"conversation_id"`
+	Name           string `json:"name,omitempty" doc:"User-assigned name, empty when never renamed"`
+	Model          string `json:"model"`
+	Created        string `json:"created"`
+	Modified       string `json:"modified"`
+	Entries        int    `json:"entries"`
+	Active         bool   `json:"active" doc:"True for the currently running conversation"`
+}
+
+type sessionIDInput struct {
+	ID string `path:"id" doc:"Conversation ID"`
+}
+
+type sessionRenameInput struct {
+	ID   string `path:"id" doc:"Conversation ID"`
+	Body struct {
+		Name string `json:"name" doc:"New session name"`
+	}
+}
+
+type messagesOutput struct {
+	Body struct {
+		ConversationID string           `json:"conversation_id"`
+		Messages       []messageSummary `json:"messages" doc:"Conversation history reconstructed from the session log"`
+	}
+}
+
+type messageSummary struct {
+	Role string `json:"role"`
+	Text string `json:"text"`
+}
+
+type compactInput struct {
+	Body struct {
+		Instructions string `json:"instructions,omitempty" doc:"Optional steering for the summary"`
+	}
+}
+
+type thinkingInput struct {
+	Body struct {
+		Enabled bool `json:"enabled" doc:"Turn model reasoning on or off"`
+	}
+}
+
+type trustInput struct {
+	Body struct {
+		Trusted bool `json:"trusted" doc:"Whether project-local config in the server's working directory may be loaded"`
+	}
+}
+
+type trustOutput struct {
+	Body struct {
+		Cwd     string `json:"cwd" doc:"Directory the decision applies to"`
+		Trusted bool   `json:"trusted" doc:"Current trust decision"`
+		Source  string `json:"source" doc:"Where the decision came from: persisted, env, default, or error"`
+		Note    string `json:"note,omitempty" doc:"Additional context"`
+	}
+}
+
+type modelInput struct {
+	Body struct {
+		Model string `json:"model" doc:"Model ref as provider/model-name"`
+	}
+}
+
+type modelsOutput struct {
+	Body struct {
+		Current string   `json:"current" doc:"Active model name"`
+		Models  []string `json:"models" doc:"Resolvable provider/model-name refs"`
+	}
+}
+
+type statsOutput struct {
+	Body costStats
+}
+
+// turnRequest is one agent turn's input: the query plus optional images.
+type turnRequest struct {
+	query  string
+	images []common.ImageSource
+}
+
 // startTurn begins an agent turn for query. Returns false when a turn is
-// already running. Used by both the HTTP /query handler and nexus wakes.
+// already running. Used by nexus wakes, which must NOT queue: the trigger
+// keeps its channels pending and retries after the turn ends.
 func (s *agentServer) startTurn(query string) bool {
 	s.mu.Lock()
 	if s.closing || s.cancelFn != nil {
@@ -293,7 +538,39 @@ func (s *agentServer) startTurn(query string) bool {
 	s.cancelFn = cancel
 	s.mu.Unlock()
 
-	s.broadcastSSEJSON("status", map[string]string{"state": "running", "query": query})
+	s.runTurn(ctx, cancel, turnRequest{query: query})
+	return true
+}
+
+// startTurnOrQueue starts a turn immediately, or queues the request as a
+// follow-up when one is already running. Returns "started", "queued", or
+// "rejected" (shutting down). Used by the HTTP /query handler.
+func (s *agentServer) startTurnOrQueue(req turnRequest) string {
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return "rejected"
+	}
+	if s.cancelFn != nil {
+		s.queue = append(s.queue, req)
+		pos := len(s.queue)
+		s.mu.Unlock()
+		s.broadcastSSEJSON("queued", map[string]any{"query": req.query, "position": pos})
+		return "queued"
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cancelFn = cancel
+	s.mu.Unlock()
+
+	s.runTurn(ctx, cancel, req)
+	return "started"
+}
+
+// runTurn runs one agent turn in a goroutine. The busy slot (cancelFn) must
+// already be claimed by the caller; finishTurn releases it or chains into
+// the next queued query.
+func (s *agentServer) runTurn(ctx context.Context, cancel context.CancelFunc, req turnRequest) {
+	s.broadcastSSEJSON("status", map[string]string{"state": "running", "query": req.query})
 
 	go func() {
 		defer func() {
@@ -302,23 +579,60 @@ func (s *agentServer) startTurn(query string) bool {
 				s.broadcastSSEJSON("error", map[string]string{"error": fmt.Sprintf("panic: %v", rec)})
 			}
 			cancel()
-			s.mu.Lock()
-			s.cancelFn = nil
-			s.mu.Unlock()
-			s.broadcastSSEJSON("status", map[string]string{"state": "idle"})
-			if s.onTurnEnd != nil {
-				s.onTurnEnd()
-			}
+			s.finishTurn()
 		}()
 
-		answer, err := s.harness.RunTurn(ctx, query)
+		answer, err := s.harness.RunTurnWithImages(ctx, req.query, req.images)
 		if err != nil {
 			s.broadcastSSEJSON("error", map[string]string{"error": err.Error()})
 			return
 		}
 		s.broadcastSSEJSON("answer", map[string]string{"text": answer})
 	}()
-	return true
+}
+
+// validateImages checks media types and base64 payloads at the trust
+// boundary, returning provider-ready image sources.
+func validateImages(in []imageInput) ([]common.ImageSource, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make([]common.ImageSource, len(in))
+	for i, img := range in {
+		if !strings.HasPrefix(img.MediaType, "image/") {
+			return nil, fmt.Errorf("images[%d]: media_type %q is not an image MIME type", i, img.MediaType)
+		}
+		if img.Data == "" {
+			return nil, fmt.Errorf("images[%d]: empty data", i)
+		}
+		if _, err := base64.StdEncoding.DecodeString(img.Data); err != nil {
+			return nil, fmt.Errorf("images[%d]: data is not valid base64: %v", i, err)
+		}
+		out[i] = common.ImageSource{MediaType: img.MediaType, Data: img.Data}
+	}
+	return out, nil
+}
+
+// finishTurn releases the busy slot. When follow-ups are queued it keeps the
+// slot claimed and chains directly into the next turn — new submissions keep
+// queueing behind it, and nexus wakes stay deferred until the queue drains.
+func (s *agentServer) finishTurn() {
+	s.mu.Lock()
+	if !s.closing && len(s.queue) > 0 {
+		next := s.queue[0]
+		s.queue = s.queue[1:]
+		ctx, cancel := context.WithCancel(context.Background())
+		s.cancelFn = cancel
+		s.mu.Unlock()
+		s.runTurn(ctx, cancel, next)
+		return
+	}
+	s.cancelFn = nil
+	s.mu.Unlock()
+	s.broadcastSSEJSON("status", map[string]string{"state": "idle"})
+	if s.onTurnEnd != nil {
+		s.onTurnEnd()
+	}
 }
 
 func (s *agentServer) handleQuery(_ context.Context, _ router.MapAuthInfo, in *queryInput) (*statusOutput, error) {
@@ -326,11 +640,61 @@ func (s *agentServer) handleQuery(_ context.Context, _ router.MapAuthInfo, in *q
 	if query == "" {
 		return nil, srverrors.Wrap(srverrors.ErrBadRequest, "empty query")
 	}
-	if !s.startTurn(query) {
-		return nil, srverrors.Wrap(srverrors.ErrConflict, "agent already running")
+	images, err := validateImages(in.Body.Images)
+	if err != nil {
+		return nil, srverrors.Wrap(srverrors.ErrBadRequest, err.Error())
+	}
+	// Capability pre-flight: reject before the turn starts (the turn itself
+	// runs async, so its errors can only surface on the SSE stream).
+	if len(images) > 0 && !s.harness.SupportsVision() {
+		return nil, srverrors.Wrap(srverrors.ErrBadRequest,
+			fmt.Sprintf("model %q does not support image input", s.harness.GetCurrentModel()))
+	}
+	status := s.startTurnOrQueue(turnRequest{query: query, images: images})
+	if status == "rejected" {
+		return nil, srverrors.Wrap(srverrors.ErrConflict, "server shutting down")
 	}
 	out := &statusOutput{}
-	out.Body.Status = "started"
+	out.Body.Status = status
+	return out, nil
+}
+
+func (s *agentServer) handleSteer(_ context.Context, _ router.MapAuthInfo, in *steerInput) (*statusOutput, error) {
+	msg := strings.TrimSpace(in.Body.Message)
+	if msg == "" {
+		return nil, srverrors.Wrap(srverrors.ErrBadRequest, "empty message")
+	}
+	s.mu.Lock()
+	running := s.cancelFn != nil
+	s.mu.Unlock()
+	if !running {
+		return nil, srverrors.Wrap(srverrors.ErrBadRequest, "nothing running — use /query")
+	}
+	if err := s.harness.Steer(msg); err != nil {
+		return nil, srverrors.Wrap(srverrors.ErrConflict, err.Error())
+	}
+	out := &statusOutput{}
+	out.Body.Status = "steering"
+	return out, nil
+}
+
+func (s *agentServer) handleState(_ context.Context, _ router.MapAuthInfo, _ *struct{}) (*stateOutput, error) {
+	s.mu.Lock()
+	running := s.cancelFn != nil
+	queued := len(s.queue)
+	s.mu.Unlock()
+
+	out := &stateOutput{}
+	out.Body.State = "idle"
+	if running {
+		out.Body.State = "running"
+	}
+	out.Body.LoopState = s.harness.LoopState()
+	out.Body.Queued = queued
+	out.Body.ConversationID = s.harness.ConversationID()
+	out.Body.Model = s.harness.GetCurrentModel()
+	out.Body.Vision = s.harness.SupportsVision()
+	out.Body.Tools = len(s.harness.ToolDefinitions())
 	return out, nil
 }
 
@@ -369,24 +733,30 @@ func (s *agentServer) nexusPrompt(channels []string) string {
 	return b.String()
 }
 
-// cancelActiveTurn cancels the in-flight agent turn, if any, and closes
-// done so open SSE streams end. Used by container shutdown so a running
-// turn doesn't outlive the harness. Idempotent.
+// cancelActiveTurn cancels the in-flight agent turn, if any, drops the
+// queue, and closes done so open SSE streams end. Used by container
+// shutdown so a running turn doesn't outlive the harness. Idempotent.
 func (s *agentServer) cancelActiveTurn() {
 	s.mu.Lock()
 	if !s.closing {
 		s.closing = true
 		close(s.done)
 	}
+	s.queue = nil
 	if s.cancelFn != nil {
 		s.cancelFn()
 	}
 	s.mu.Unlock()
 }
 
+// handleCancel cancels the in-flight turn AND drops any queued follow-ups:
+// a user cancelling wants the agent to stop, not to watch the queue start
+// the next turn.
 func (s *agentServer) handleCancel(_ context.Context, _ router.MapAuthInfo, _ *struct{}) (*statusOutput, error) {
 	s.mu.Lock()
 	cancel := s.cancelFn
+	dropped := len(s.queue)
+	s.queue = nil
 	s.mu.Unlock()
 
 	if cancel == nil {
@@ -395,6 +765,9 @@ func (s *agentServer) handleCancel(_ context.Context, _ router.MapAuthInfo, _ *s
 	cancel()
 	out := &statusOutput{}
 	out.Body.Status = "cancelled"
+	if dropped > 0 {
+		out.Body.Status = fmt.Sprintf("cancelled (%d queued queries dropped)", dropped)
+	}
 	return out, nil
 }
 
@@ -428,6 +801,194 @@ func (s *agentServer) handleApprove(_ context.Context, _ router.MapAuthInfo, in 
 func (s *agentServer) handleInfo(_ context.Context, _ router.MapAuthInfo, _ *struct{}) (*infoOutput, error) {
 	out := &infoOutput{}
 	out.Body.Tools = len(s.harness.ToolDefinitions())
+	return out, nil
+}
+
+// --- Project trust (F26) ---
+
+// handleTrustGet reports the trust decision for the server's cwd.
+func (s *agentServer) handleTrustGet(_ context.Context, _ router.MapAuthInfo, _ *struct{}) (*trustOutput, error) {
+	path, err := trustFilePath()
+	if err != nil {
+		return nil, srverrors.Wrap(srverrors.ErrInternalServerError, err.Error())
+	}
+	trusted, source := resolveProjectTrust(path, s.cwd, s.trustEnvDefault)
+	out := &trustOutput{}
+	out.Body.Cwd = s.cwd
+	out.Body.Trusted = trusted
+	out.Body.Source = source
+	return out, nil
+}
+
+// handleTrustSet persists a trust decision for the server's cwd. Project
+// config files are read at startup, so the decision applies on restart.
+func (s *agentServer) handleTrustSet(_ context.Context, _ router.MapAuthInfo, in *trustInput) (*trustOutput, error) {
+	path, err := trustFilePath()
+	if err != nil {
+		return nil, srverrors.Wrap(srverrors.ErrInternalServerError, err.Error())
+	}
+	if err := setProjectTrust(path, s.cwd, in.Body.Trusted, time.Now()); err != nil {
+		return nil, srverrors.Wrap(srverrors.ErrInternalServerError, err.Error())
+	}
+	out := &trustOutput{}
+	out.Body.Cwd = s.cwd
+	out.Body.Trusted = in.Body.Trusted
+	out.Body.Source = "persisted"
+	out.Body.Note = "applies to project config loaded at startup; restart to take effect"
+	return out, nil
+}
+
+// --- Runtime controls: compaction, thinking, model, stats ---
+
+func (s *agentServer) handleCompact(ctx context.Context, _ router.MapAuthInfo, in *compactInput) (*statusOutput, error) {
+	if err := s.harness.Compact(ctx, strings.TrimSpace(in.Body.Instructions)); err != nil {
+		return nil, srverrors.Wrap(srverrors.ErrConflict, err.Error())
+	}
+	out := &statusOutput{}
+	out.Body.Status = "compacted"
+	return out, nil
+}
+
+func (s *agentServer) handleThinking(_ context.Context, _ router.MapAuthInfo, in *thinkingInput) (*statusOutput, error) {
+	if err := s.harness.SetThinking(in.Body.Enabled); err != nil {
+		return nil, srverrors.Wrap(srverrors.ErrConflict, err.Error())
+	}
+	out := &statusOutput{}
+	out.Body.Status = "thinking off"
+	if in.Body.Enabled {
+		out.Body.Status = "thinking on"
+	}
+	return out, nil
+}
+
+func (s *agentServer) handleModelSet(_ context.Context, _ router.MapAuthInfo, in *modelInput) (*statusOutput, error) {
+	if s.models == nil {
+		return nil, srverrors.Wrap(srverrors.ErrBadRequest, "no model registry configured")
+	}
+	def, err := s.models.resolve(strings.TrimSpace(in.Body.Model))
+	if err != nil {
+		return nil, srverrors.Wrap(srverrors.ErrBadRequest, err.Error())
+	}
+	if err := s.harness.SetModel(def); err != nil {
+		return nil, srverrors.Wrap(srverrors.ErrConflict, err.Error())
+	}
+	out := &statusOutput{}
+	out.Body.Status = "model set to " + def.Name
+	return out, nil
+}
+
+func (s *agentServer) handleModelsList(_ context.Context, _ router.MapAuthInfo, _ *struct{}) (*modelsOutput, error) {
+	out := &modelsOutput{}
+	out.Body.Current = s.harness.GetCurrentModel()
+	if s.models != nil {
+		out.Body.Models = s.models.availableRefs()
+	}
+	return out, nil
+}
+
+func (s *agentServer) handleStats(_ context.Context, _ router.MapAuthInfo, _ *struct{}) (*statsOutput, error) {
+	return &statsOutput{Body: s.costs.stats()}, nil
+}
+
+// --- Session management (F4) ---
+
+// sessionDir returns the harness's session directory, or an error when
+// persistence is disabled.
+func (s *agentServer) sessionDir() (dir, cwd string, err error) {
+	dir, cwd = s.harness.SessionInfo()
+	if dir == "" {
+		return "", "", srverrors.Wrap(srverrors.ErrBadRequest, "session persistence is disabled")
+	}
+	return dir, cwd, nil
+}
+
+func (s *agentServer) handleSessionsList(_ context.Context, _ router.MapAuthInfo, _ *struct{}) (*sessionsOutput, error) {
+	dir, cwd, err := s.sessionDir()
+	if err != nil {
+		return nil, err
+	}
+	infos, err := session.List(dir, cwd)
+	if err != nil {
+		return nil, srverrors.Wrap(srverrors.ErrInternalServerError, err.Error())
+	}
+	active := s.harness.ConversationID()
+	out := &sessionsOutput{}
+	out.Body.Sessions = make([]sessionInfo, len(infos))
+	for i, in := range infos {
+		out.Body.Sessions[i] = sessionInfo{
+			ConversationID: in.ConversationID,
+			Name:           in.Name,
+			Model:          in.Model,
+			Created:        in.Created.Format(time.RFC3339),
+			Modified:       in.Modified.Format(time.RFC3339),
+			Entries:        in.Entries,
+			Active:         in.ConversationID == active,
+		}
+	}
+	return out, nil
+}
+
+func (s *agentServer) handleSessionDelete(_ context.Context, _ router.MapAuthInfo, in *sessionIDInput) (*statusOutput, error) {
+	dir, cwd, err := s.sessionDir()
+	if err != nil {
+		return nil, err
+	}
+	// The live store holds an open handle on the active session; deleting
+	// it would orphan every subsequent write.
+	if in.ID == s.harness.ConversationID() {
+		return nil, srverrors.Wrap(srverrors.ErrConflict, "cannot delete the active conversation")
+	}
+	if err := session.Delete(dir, cwd, in.ID); err != nil {
+		return nil, srverrors.Wrap(srverrors.ErrNotFound, err.Error())
+	}
+	out := &statusOutput{}
+	out.Body.Status = "deleted"
+	return out, nil
+}
+
+func (s *agentServer) handleSessionRename(_ context.Context, _ router.MapAuthInfo, in *sessionRenameInput) (*statusOutput, error) {
+	dir, cwd, err := s.sessionDir()
+	if err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(in.Body.Name)
+	if name == "" {
+		return nil, srverrors.Wrap(srverrors.ErrBadRequest, "empty name")
+	}
+	if err := session.Rename(dir, cwd, in.ID, name); err != nil {
+		return nil, srverrors.Wrap(srverrors.ErrNotFound, err.Error())
+	}
+	out := &statusOutput{}
+	out.Body.Status = "renamed"
+	return out, nil
+}
+
+func (s *agentServer) handleMessages(_ context.Context, _ router.MapAuthInfo, _ *struct{}) (*messagesOutput, error) {
+	dir, cwd, err := s.sessionDir()
+	if err != nil {
+		return nil, err
+	}
+	id := s.harness.ConversationID()
+	res, err := session.Load(dir, cwd, id)
+	if err != nil {
+		return nil, srverrors.Wrap(srverrors.ErrInternalServerError, err.Error())
+	}
+	out := &messagesOutput{}
+	out.Body.ConversationID = id
+	out.Body.Messages = []messageSummary{}
+	if res == nil {
+		return out, nil
+	}
+	for _, m := range res.History {
+		var text strings.Builder
+		for _, b := range m.Content {
+			text.WriteString(b.Text)
+		}
+		out.Body.Messages = append(out.Body.Messages, messageSummary{
+			Role: string(m.Role),
+			Text: text.String(),
+		})
+	}
 	return out, nil
 }
 

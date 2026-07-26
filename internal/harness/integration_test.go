@@ -12,7 +12,6 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/features/builtins"
 	"github.com/tab58/tenzing-agent-harness/internal/features/reminders"
-	"github.com/tab58/tenzing-agent-harness/internal/features/snapshot"
 	"github.com/tab58/tenzing-agent-harness/internal/features/todo"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 
@@ -20,11 +19,21 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Scenario 1: File tools — Read, Edit, Write, Revert
+// Scenario 1: File tools — Read, Edit, Write (read-before-edit enforced by
+// the registry's shared FileTracker)
 //
 // All tools parse JSON from Arguments[0], matching the format that LLMs
 // produce. Tests exercise both direct registry calls and full agent loop.
 // ---------------------------------------------------------------------------
+
+// readFirst runs Read on path so tracker-enforcing Edit/Write calls pass.
+func readFirst(t *testing.T, registry *toolport.Registry, path string) {
+	t.Helper()
+	res, err := registry.Execute(context.Background(), "Read", jsonInput(map[string]any{"file_path": path}))
+	if err != nil || res.IsError {
+		t.Fatalf("Read failed: err=%v result=%s", err, res.Output)
+	}
+}
 
 func TestIntegration_ReadTool(t *testing.T) {
 	workDir := t.TempDir()
@@ -69,19 +78,18 @@ func TestIntegration_ReadTool_MissingFile(t *testing.T) {
 	}
 }
 
-func TestIntegration_WriteAndRevert(t *testing.T) {
+func TestIntegration_WriteTool(t *testing.T) {
 	workDir := t.TempDir()
 	original := "original content"
 	filePath := seedFile(t, workDir, "target.txt", original)
 
-	snapshots := snapshot.NewSnapshotStore()
-	writeTool := snapshot.NewWriteTool(snapshots)
-	revertTool := snapshot.NewRevertTool(snapshots)
-
 	registry := toolport.NewRegistry("")
-	registry.Register(writeTool)
-	registry.Register(revertTool)
+	for _, def := range builtins.Defaults() {
+		registry.Register(def)
+	}
 
+	// Overwriting an existing file requires Reading it first.
+	readFirst(t, registry, filePath)
 	writeResult, err := registry.Execute(context.Background(), "Write", jsonInput(map[string]any{
 		"file_path": filePath,
 		"content":   "new content",
@@ -94,38 +102,42 @@ func TestIntegration_WriteAndRevert(t *testing.T) {
 	}
 	assertFileEquals(t, filePath, "new content")
 
-	revertResult, err := registry.Execute(context.Background(), "Revert", jsonInput(map[string]any{
-		"file_path": filePath,
+	// New files need no prior Read; parent directories are created.
+	newPath := filepath.Join(workDir, "sub", "fresh.txt")
+	writeResult, err = registry.Execute(context.Background(), "Write", jsonInput(map[string]any{
+		"file_path": newPath,
+		"content":   "fresh",
 	}))
 	if err != nil {
-		t.Fatalf("Revert error: %v", err)
+		t.Fatalf("Write error: %v", err)
 	}
-	if revertResult.IsError {
-		t.Fatalf("Revert returned error: %s", revertResult.Output)
+	if writeResult.IsError {
+		t.Fatalf("Write returned error: %s", writeResult.Output)
 	}
-	assertFileEquals(t, filePath, original)
+	assertFileEquals(t, newPath, "fresh")
 }
 
-func TestIntegration_WriteAndRevert_NoSnapshot(t *testing.T) {
+func TestIntegration_WriteTool_OverwriteUnread(t *testing.T) {
 	workDir := t.TempDir()
 	filePath := seedFile(t, workDir, "target.txt", "content")
 
-	snapshots := snapshot.NewSnapshotStore()
-	revertTool := snapshot.NewRevertTool(snapshots)
-
 	registry := toolport.NewRegistry("")
-	registry.Register(revertTool)
+	for _, def := range builtins.Defaults() {
+		registry.Register(def)
+	}
 
-	result, err := registry.Execute(context.Background(), "Revert", jsonInput(map[string]any{
+	result, err := registry.Execute(context.Background(), "Write", jsonInput(map[string]any{
 		"file_path": filePath,
+		"content":   "clobber",
 	}))
 	if err != nil {
-		t.Fatalf("Revert error: %v", err)
+		t.Fatalf("Write error: %v", err)
 	}
 	if !result.IsError {
-		t.Fatal("Revert without snapshot should return error")
+		t.Fatal("Write over an unread existing file should return error")
 	}
-	assertAnswerContains(t, result.Output, "no snapshot")
+	assertAnswerContains(t, result.Output, "read")
+	assertFileEquals(t, filePath, "content")
 }
 
 func TestIntegration_EditTool(t *testing.T) {
@@ -137,6 +149,7 @@ func TestIntegration_EditTool(t *testing.T) {
 		registry.Register(def)
 	}
 
+	readFirst(t, registry, filePath)
 	result, err := registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
 		"file_path":  filePath,
 		"old_string": "hello",
@@ -182,6 +195,7 @@ func TestIntegration_EditTool_NotUnique(t *testing.T) {
 		registry.Register(def)
 	}
 
+	readFirst(t, registry, filePath)
 	result, err := registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
 		"file_path":  filePath,
 		"old_string": "aaa",
@@ -205,6 +219,7 @@ func TestIntegration_EditTool_ReplaceAll(t *testing.T) {
 		registry.Register(def)
 	}
 
+	readFirst(t, registry, filePath)
 	result, err := registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
 		"file_path":   filePath,
 		"old_string":  "aaa",
@@ -220,23 +235,20 @@ func TestIntegration_EditTool_ReplaceAll(t *testing.T) {
 	assertFileEquals(t, filePath, "ccc bbb ccc")
 }
 
-func TestIntegration_WriteEditRevert_FullCycle(t *testing.T) {
+func TestIntegration_ReadWriteEdit_FullCycle(t *testing.T) {
 	workDir := t.TempDir()
 	original := "func main() {\n\tfmt.Println(\"hello\")\n}\n"
 	filePath := seedFile(t, workDir, "main.go", original)
-
-	snapshots := snapshot.NewSnapshotStore()
-	writeTool := snapshot.NewWriteTool(snapshots)
-	revertTool := snapshot.NewRevertTool(snapshots)
 
 	registry := toolport.NewRegistry("")
 	for _, def := range builtins.Defaults() {
 		registry.Register(def)
 	}
-	registry.Register(writeTool)
-	registry.Register(revertTool)
 
-	// Step 1: Write overwrites and snapshots
+	// Step 1: Read stamps the tracker
+	readFirst(t, registry, filePath)
+
+	// Step 2: Write overwrites (verified fresh by the tracker)
 	res, err := registry.Execute(context.Background(), "Write", jsonInput(map[string]any{
 		"file_path": filePath,
 		"content":   "func main() {\n\tfmt.Println(\"modified\")\n}\n",
@@ -246,7 +258,7 @@ func TestIntegration_WriteEditRevert_FullCycle(t *testing.T) {
 	}
 	assertFileContains(t, filePath, "modified")
 
-	// Step 2: Edit changes content further
+	// Step 3: Edit works without a fresh Read — Write re-stamped the tracker
 	res, err = registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
 		"file_path":  filePath,
 		"old_string": "modified",
@@ -257,38 +269,41 @@ func TestIntegration_WriteEditRevert_FullCycle(t *testing.T) {
 	}
 	assertFileContains(t, filePath, "changed-again")
 
-	// Step 3: Revert restores to pre-Write state (the snapshot), not pre-Edit
-	res, err = registry.Execute(context.Background(), "Revert", jsonInput(map[string]any{
-		"file_path": filePath,
-	}))
-	if err != nil || res.IsError {
-		t.Fatalf("Revert failed: err=%v result=%s", err, res.Output)
+	// Step 4: external modification invalidates the stamp — Edit is rejected
+	if err := os.WriteFile(filePath, []byte("changed externally\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	assertFileEquals(t, filePath, original)
+	res, err = registry.Execute(context.Background(), "Edit", jsonInput(map[string]any{
+		"file_path":  filePath,
+		"old_string": "changed",
+		"new_string": "nope",
+	}))
+	if err != nil {
+		t.Fatalf("Edit error: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("Edit after external change should return error")
+	}
+	assertAnswerContains(t, res.Output, "changed since")
 }
 
-// Full agent loop: Read → Edit → Revert, all through RunLoop
-func TestIntegration_ReadEditRevert_ThroughLoop(t *testing.T) {
+// Full agent loop: Read → Write → Edit, all through RunLoop
+func TestIntegration_ReadWriteEdit_ThroughLoop(t *testing.T) {
 	workDir := t.TempDir()
 	original := "hello world\n"
 	filePath := seedFile(t, workDir, "loopfile.txt", original)
-
-	snapshots := snapshot.NewSnapshotStore()
 
 	agent := newScriptedAgent(
 		toolStep("Read", jsonInput(map[string]any{"file_path": filePath})),
 		toolStep("Write", jsonInput(map[string]any{"file_path": filePath, "content": "goodbye world\n"})),
 		toolStep("Edit", jsonInput(map[string]any{"file_path": filePath, "old_string": "goodbye", "new_string": "farewell"})),
-		toolStep("Revert", jsonInput(map[string]any{"file_path": filePath})),
-		finalStep("reverted"),
+		finalStep("edited"),
 	)
 
 	registry := toolport.NewRegistry("")
 	for _, def := range builtins.Defaults() {
 		registry.Register(def)
 	}
-	registry.Register(snapshot.NewWriteTool(snapshots))
-	registry.Register(snapshot.NewRevertTool(snapshots))
 
 	runner, err := runner.NewAgentRunner(
 		agent,
@@ -300,17 +315,16 @@ func TestIntegration_ReadEditRevert_ThroughLoop(t *testing.T) {
 		t.Fatalf("NewAgentRunner error: %v", err)
 	}
 
-	answer, err := runner.RunLoop(context.Background(), "read, edit, then revert")
+	answer, err := runner.RunLoop(context.Background(), "read, write, then edit")
 	if err != nil {
 		t.Fatalf("RunLoop error: %v", err)
 	}
-	if answer != "reverted" {
-		t.Errorf("answer = %q, want %q", answer, "reverted")
+	if answer != "edited" {
+		t.Errorf("answer = %q, want %q", answer, "edited")
 	}
 
-	// File should be back to original (Revert restores pre-Write snapshot)
-	assertFileEquals(t, filePath, original)
-	assertCallCount(t, agent, 5)
+	assertFileEquals(t, filePath, "farewell world\n")
+	assertCallCount(t, agent, 4)
 }
 
 // ---------------------------------------------------------------------------
@@ -647,6 +661,10 @@ func TestIntegration_ResumeSeedsContextStoreFromPersistedMemory(t *testing.T) {
 		WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return agent1, nil }),
 		WithLLMFactory(func(_ common.ModelDefinition) (common.LLM, error) { return compressionLLM, nil }),
 		WithSystemPrompt("test"),
+		WithContextFilesDisabled(),
+		// Session persistence would resume the full JSONL transcript; this
+		// test pins the memory-summary fallback path.
+		WithSessionDisabled(),
 	)
 	if err != nil {
 		t.Fatalf("New (session 1): %v", err)
@@ -695,6 +713,8 @@ func TestIntegration_ResumeSeedsContextStoreFromPersistedMemory(t *testing.T) {
 		WithLLMFactory(stubFactory),
 		WithSystemPrompt("test"),
 		WithConversationID(convID),
+		WithContextFilesDisabled(),
+		WithSessionDisabled(),
 	)
 	if err != nil {
 		t.Fatalf("New (session 2): %v", err)

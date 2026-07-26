@@ -71,12 +71,14 @@ type ToolExecutionFinishedEvent struct {
 
 type LLMResponseEvent struct {
 	BaseEvent
-	Model        string `json:"model"`
-	ResponseID   string `json:"response_id"`
-	InputTokens  int64  `json:"input_tokens"`
-	OutputTokens int64  `json:"output_tokens"`
-	StopReason   string `json:"stop_reason"`
-	Text         string `json:"text"`
+	Model                    string `json:"model"`
+	ResponseID               string `json:"response_id"`
+	InputTokens              int64  `json:"input_tokens"`
+	OutputTokens             int64  `json:"output_tokens"`
+	CacheReadInputTokens     int64  `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int64  `json:"cache_creation_input_tokens,omitempty"`
+	StopReason               string `json:"stop_reason"`
+	Text                     string `json:"text"`
 }
 
 type ToolSucceededEvent struct {
@@ -133,6 +135,51 @@ type ErrorEvent struct {
 	BaseEvent
 	Error   string `json:"error"`
 	Context string `json:"context"`
+}
+
+// SteeringInjectedEvent fires when a user message submitted mid-turn is
+// injected into the loop at a tool-execution boundary.
+type SteeringInjectedEvent struct {
+	BaseEvent
+	Message string `json:"message"`
+}
+
+// LLMRetryEvent fires before each transient-LLM-error retry sleep.
+type LLMRetryEvent struct {
+	BaseEvent
+	Attempt    int           `json:"attempt"`
+	MaxRetries int           `json:"max_retries"`
+	Error      string        `json:"error"`
+	Delay      time.Duration `json:"delay_ms"`
+}
+
+// ModelChangedEvent fires when the main agent's model is switched between
+// turns via Harness.SetModel.
+type ModelChangedEvent struct {
+	BaseEvent
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+// ThinkingChangedEvent fires when model reasoning is toggled between turns
+// via Harness.SetThinking.
+type ThinkingChangedEvent struct {
+	BaseEvent
+	Enabled bool `json:"enabled"`
+}
+
+// ImageData is one attached image: media type + raw base64 data.
+type ImageData struct {
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
+// ImagesAttachedEvent fires before a turn starts when the query carries
+// images. The session persister writes them as sidecar blobs; the payload
+// carries full base64 data, so consumers that only log should not dump it.
+type ImagesAttachedEvent struct {
+	BaseEvent
+	Images []ImageData `json:"images"`
 }
 
 // --- Subagent lifecycle ---

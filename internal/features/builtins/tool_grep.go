@@ -24,6 +24,9 @@ type GrepTool struct{}
 
 func (t *GrepTool) Name() string { return "Grep" }
 
+// ReadOnly marks Grep as safe for concurrent execution within a tool batch.
+func (t *GrepTool) ReadOnly() bool { return true }
+
 func (t *GrepTool) Description() string {
 	return "Search files for a regexp pattern, returning file:line:content matches."
 }

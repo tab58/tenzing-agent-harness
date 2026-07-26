@@ -4,3 +4,7 @@ tasks:
   app:
     desc: Run the agent app (HTTP/SSE server)
     cmd: go run ./cmd/app
+
+  ask:
+    desc: 'Run one headless query and print the answer (task ask -- "your query")'
+    cmd: go run ./cmd/app -p "{{.CLI_ARGS}}"

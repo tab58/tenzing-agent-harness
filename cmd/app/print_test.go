@@ -93,8 +93,7 @@ func printCfg() *cliConfig {
 	return &cliConfig{
 		Prompt:       "hello",
 		OutputFormat: "text",
-		Model:        modelKey(defaultModel),
-		NoBlackboard: true, // no Python subprocess in tests
+		Model:        modelKey(defaultModel.Provider, defaultModel.Name),
 	}
 }
 

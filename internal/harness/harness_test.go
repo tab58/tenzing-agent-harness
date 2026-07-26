@@ -22,7 +22,13 @@ func (s *stubAgent) UpdateStreamCallback(_ func(string))   {}
 func (s *stubAgent) UpdateThinkingCallback(_ func(string)) {}
 
 func (s *stubAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string, _ []common.ToolDefinition) (core.ReasoningResult, error) {
-	return core.ReasoningResult{FinalAnswer: "done"}, nil
+	return core.ReasoningResult{
+		FinalAnswer: "done",
+		Meta: core.ResponseMeta{
+			AssistantText:    "done",
+			AssistantMessage: common.NewAssistantMessage("done"),
+		},
+	}, nil
 }
 
 type stubLLM struct{}
@@ -61,10 +67,15 @@ func newTestHarness(t *testing.T, opts ...HarnessOption) *Harness {
 		WithAgentBuilder(stubBrain),
 		WithLLMFactory(stubFactory),
 		WithSystemPrompt("test"),
+		WithContextFilesDisabled(),
 	}, opts...)...)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
+	// Stop async persisters (session/memory hooks) before the redirected
+	// HOME TempDir is removed. Shutdown is idempotent, so tests may also
+	// call it themselves.
+	t.Cleanup(h.Shutdown)
 	return h
 }
 
@@ -96,6 +107,7 @@ func TestMainAgentBuiltWithResolvedSystemPrompt(t *testing.T) {
 			h, err := New(testModel, append([]HarnessOption{
 				WithAgentBuilder(builder),
 				WithLLMFactory(stubFactory),
+				WithContextFilesDisabled(),
 			}, tt.opts...)...)
 			if err != nil {
 				t.Fatalf("New() error: %v", err)
@@ -231,7 +243,7 @@ func TestHarnessRoleModelsFallBackToMain(t *testing.T) {
 		built = append(built, m.Name)
 		return &stubLLM{}, nil
 	}
-	_, err := New(testModel, WithAgentBuilder(stubBrain), WithLLMFactory(factory), WithSystemPrompt("test"))
+	_, err := New(testModel, WithAgentBuilder(stubBrain), WithLLMFactory(factory), WithSystemPrompt("test"), WithContextFilesDisabled())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -244,7 +256,7 @@ func TestHarnessRoleModelsFallBackToMain(t *testing.T) {
 
 func TestHarnessDefaultAgentBuilder(t *testing.T) {
 	redirectHome(t)
-	h, err := New(testModel, WithLLMFactory(stubFactory), WithSystemPrompt("test"))
+	h, err := New(testModel, WithLLMFactory(stubFactory), WithSystemPrompt("test"), WithContextFilesDisabled())
 	if err != nil {
 		t.Fatalf("New() without WithAgentBuilder error: %v", err)
 	}
@@ -270,14 +282,6 @@ func TestHarnessRegistersREPLToolByDefault(t *testing.T) {
 	}
 }
 
-func TestHarnessBlackboardDisabled(t *testing.T) {
-	h := newTestHarness(t, WithBlackboardDisabled())
-	defer h.Shutdown()
-	if hasTool(h, "repl") {
-		t.Error("repl tool should not be registered when blackboard is disabled")
-	}
-}
-
 func TestWithConversationIDSetsRunnerID(t *testing.T) {
 	redirectHome(t)
 	configDir, _ := memoryDirs()
@@ -288,7 +292,7 @@ func TestWithConversationIDSetsRunnerID(t *testing.T) {
 
 	// Default builder path (no WithAgentBuilder): construction must succeed
 	// with a memory file present and adopt the supplied conversation ID.
-	h, err := New(testModel, WithLLMFactory(stubFactory), WithConversationID("cafe0001"))
+	h, err := New(testModel, WithLLMFactory(stubFactory), WithConversationID("cafe0001"), WithContextFilesDisabled())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -362,7 +366,7 @@ func TestHarnessDefaultPermissionsAskAndDeny(t *testing.T) {
 		WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return agent, nil }),
 		WithLLMFactory(stubFactory),
 		WithSystemPrompt("test"),
-		WithBlackboardDisabled(),
+		WithContextFilesDisabled(),
 		WithHooks(eventbus.Hooks{
 			OnApprovalRequested: func(e core.ApprovalRequestedEvent) {
 				requested = e
@@ -417,7 +421,7 @@ func TestHarnessPermissionsDisabledRunsToolsDirectly(t *testing.T) {
 		WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return agent, nil }),
 		WithLLMFactory(stubFactory),
 		WithSystemPrompt("test"),
-		WithBlackboardDisabled(),
+		WithContextFilesDisabled(),
 		WithPermissionsDisabled(),
 	)
 	if err != nil {

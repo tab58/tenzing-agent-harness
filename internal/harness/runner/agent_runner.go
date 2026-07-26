@@ -10,6 +10,8 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/toolport"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/features/prompts"
+
+	"github.com/tab58/llm-providers/common"
 )
 
 // AgentRunner is a thin facade over core.Loop. It owns construction-time
@@ -196,7 +198,16 @@ func (h *AgentRunner) GetCurrentModel() string {
 // It delegates to core.Loop.RunTurn and translates TurnResult into the
 // (string, error) contract the harness expects.
 func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error) {
-	tr, err := h.loop.RunTurn(ctx, input)
+	return h.translate(h.loop.RunTurn(ctx, input))
+}
+
+// RunLoopWithImages is RunLoop with image content blocks attached to the
+// turn's user message. The caller owns the vision-capability check.
+func (h *AgentRunner) RunLoopWithImages(ctx context.Context, input string, images []common.ImageSource) (string, error) {
+	return h.translate(h.loop.RunTurnWithImages(ctx, input, images))
+}
+
+func (h *AgentRunner) translate(tr core.TurnResult, err error) (string, error) {
 	if err != nil {
 		return "", err
 	}
@@ -208,6 +219,18 @@ func (h *AgentRunner) RunLoop(ctx context.Context, input string) (string, error)
 
 func (h *AgentRunner) ID() string {
 	return h.id
+}
+
+// Steer queues a user message for injection into the running loop at the
+// next tool-execution boundary. Safe for concurrent use.
+func (h *AgentRunner) Steer(msg string) error {
+	return h.loop.Steer(msg)
+}
+
+// LoopState reports the loop FSM's current state (e.g. "started",
+// "stopped", "reasoning_started"). Safe for concurrent use.
+func (h *AgentRunner) LoopState() string {
+	return h.loop.State()
 }
 
 func (h *AgentRunner) SystemPrompt() string {

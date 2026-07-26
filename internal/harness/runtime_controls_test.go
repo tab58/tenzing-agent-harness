@@ -1,0 +1,106 @@
+package harness
+
+import (
+	"context"
+	"testing"
+
+	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
+	"github.com/tab58/tenzing-agent-harness/internal/core"
+
+	"github.com/tab58/llm-providers/common"
+)
+
+// namedStubLLM reports the model name it was built for, so SetModel is
+// observable through GetCurrentModel.
+type namedStubLLM struct {
+	stubLLM
+	name string
+}
+
+func (s *namedStubLLM) GetCurrentModel() string { return s.name }
+
+// newControlHarness builds a harness on the DEFAULT brain (real agent) with
+// stub LLMs, so the SetLLM/SetThinking sub-interfaces exist.
+func newControlHarness(t *testing.T) (*Harness, <-chan core.Event) {
+	t.Helper()
+	redirectHome(t)
+	bus := eventbus.NewEventBus()
+	h, err := New(testModel,
+		WithLLMFactory(func(m common.ModelDefinition) (common.LLM, error) {
+			return &namedStubLLM{name: m.Name}, nil
+		}),
+		WithSystemPrompt("test"),
+		WithEventBus(bus),
+		WithContextFilesDisabled(),
+		WithSubagentDepth(0),
+		WithPermissionsDisabled(),
+	)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	t.Cleanup(h.Shutdown)
+	return h, bus.Subscribe(16)
+}
+
+func TestSetModelSwitchesBetweenTurns(t *testing.T) {
+	h, ch := newControlHarness(t)
+
+	if got := h.GetCurrentModel(); got != "stub-model" {
+		t.Fatalf("initial model = %q", got)
+	}
+	other := common.ModelDefinition{Name: "other-model", Provider: common.ProviderOllama}
+	if err := h.SetModel(other); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+	if got := h.GetCurrentModel(); got != "other-model" {
+		t.Errorf("model after switch = %q, want other-model", got)
+	}
+	if got := h.CurrentModel().Name; got != "other-model" {
+		t.Errorf("CurrentModel() = %q, want other-model", got)
+	}
+
+	ev := <-ch
+	mc, ok := ev.(core.ModelChangedEvent)
+	if !ok {
+		t.Fatalf("event = %T, want ModelChangedEvent", ev)
+	}
+	if mc.From != "stub-model" || mc.To != "other-model" {
+		t.Errorf("event = %+v", mc)
+	}
+}
+
+func TestSetThinkingEmitsEvent(t *testing.T) {
+	h, ch := newControlHarness(t)
+	if err := h.SetThinking(true); err != nil {
+		t.Fatalf("SetThinking: %v", err)
+	}
+	ev := <-ch
+	tc, ok := ev.(core.ThinkingChangedEvent)
+	if !ok || !tc.Enabled {
+		t.Fatalf("event = %#v, want ThinkingChangedEvent{Enabled:true}", ev)
+	}
+}
+
+func TestCompactEmptyHistoryIsNoop(t *testing.T) {
+	h, ch := newControlHarness(t)
+	if err := h.Compact(context.Background(), ""); err != nil {
+		t.Fatalf("Compact on empty history: %v", err)
+	}
+	select {
+	case ev := <-ch:
+		t.Fatalf("unexpected event %T for no-op compact", ev)
+	default:
+	}
+}
+
+// A custom brain without the sub-interfaces gets clean errors, not panics.
+// (Compact works regardless — the context store, not the brain, owns it.)
+func TestControlsUnsupportedByCustomBrain(t *testing.T) {
+	h := newTestHarness(t) // stubAgent brain: no SetLLM/SetThinking
+	if err := h.SetModel(testModel); err == nil {
+		t.Error("SetModel on stub brain should error")
+	}
+	if err := h.SetThinking(true); err == nil {
+		t.Error("SetThinking on stub brain should error")
+	}
+}

@@ -28,6 +28,11 @@ type Hooks struct {
 	OnTaskCreated           func(core.TaskCreatedEvent)
 	OnTaskCompleted         func(core.TaskCompletedEvent)
 	OnApprovalRequested     func(core.ApprovalRequestedEvent)
+	OnSteeringInjected      func(core.SteeringInjectedEvent)
+	OnLLMRetry              func(core.LLMRetryEvent)
+	OnModelChanged          func(core.ModelChangedEvent)
+	OnThinkingChanged       func(core.ThinkingChangedEvent)
+	OnImagesAttached        func(core.ImagesAttachedEvent)
 }
 
 // StartHooks subscribes to bus with a buffer of 64 and dispatches each
@@ -138,6 +143,26 @@ func dispatch(ev core.Event, h Hooks) {
 	case core.ApprovalRequestedEvent:
 		if h.OnApprovalRequested != nil {
 			h.OnApprovalRequested(e)
+		}
+	case core.SteeringInjectedEvent:
+		if h.OnSteeringInjected != nil {
+			h.OnSteeringInjected(e)
+		}
+	case core.LLMRetryEvent:
+		if h.OnLLMRetry != nil {
+			h.OnLLMRetry(e)
+		}
+	case core.ModelChangedEvent:
+		if h.OnModelChanged != nil {
+			h.OnModelChanged(e)
+		}
+	case core.ThinkingChangedEvent:
+		if h.OnThinkingChanged != nil {
+			h.OnThinkingChanged(e)
+		}
+	case core.ImagesAttachedEvent:
+		if h.OnImagesAttached != nil {
+			h.OnImagesAttached(e)
 		}
 	}
 }

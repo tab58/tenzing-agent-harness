@@ -83,12 +83,14 @@ type toolExecutionFinished struct {
 }
 
 type llmResponse struct {
-	Model        string `json:"model"`
-	ResponseID   string `json:"response_id"`
-	InputTokens  int64  `json:"input_tokens"`
-	OutputTokens int64  `json:"output_tokens"`
-	StopReason   string `json:"stop_reason"`
-	Text         string `json:"text"`
+	Model                    string `json:"model"`
+	ResponseID               string `json:"response_id"`
+	InputTokens              int64  `json:"input_tokens"`
+	OutputTokens             int64  `json:"output_tokens"`
+	CacheReadInputTokens     int64  `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int64  `json:"cache_creation_input_tokens,omitempty"`
+	StopReason               string `json:"stop_reason"`
+	Text                     string `json:"text"`
 }
 
 type toolSucceeded struct {
@@ -164,6 +166,33 @@ type approvalRequested struct {
 	Reason   string `json:"reason"`
 }
 
+type steeringInjected struct {
+	Message string `json:"message"`
+}
+
+type llmRetry struct {
+	Attempt    int    `json:"attempt"`
+	MaxRetries int    `json:"max_retries"`
+	Error      string `json:"error"`
+	DelayMS    int64  `json:"delay_ms"`
+}
+
+type modelChanged struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+type thinkingChanged struct {
+	Enabled bool `json:"enabled"`
+}
+
+// imagesAttached deliberately reports only count + media types — the event's
+// base64 payloads would bloat every consumer's stream.
+type imagesAttached struct {
+	Count      int      `json:"count"`
+	MediaTypes []string `json:"media_types"`
+}
+
 type channelError struct {
 	Channel string `json:"channel"`
 	Text    string `json:"text"`
@@ -234,7 +263,7 @@ func ToWire(ev core.Event) Envelope {
 		env.Data = toolExecutionFinished{ToolName: e.ToolName, DurationMS: e.Duration.Milliseconds()}
 	case core.LLMResponseEvent:
 		setBase(e.BaseEvent)
-		env.Data = llmResponse{Model: e.Model, ResponseID: e.ResponseID, InputTokens: e.InputTokens, OutputTokens: e.OutputTokens, StopReason: e.StopReason, Text: e.Text}
+		env.Data = llmResponse{Model: e.Model, ResponseID: e.ResponseID, InputTokens: e.InputTokens, OutputTokens: e.OutputTokens, CacheReadInputTokens: e.CacheReadInputTokens, CacheCreationInputTokens: e.CacheCreationInputTokens, StopReason: e.StopReason, Text: e.Text}
 	case core.ToolSucceededEvent:
 		setBase(e.BaseEvent)
 		env.Data = toolSucceeded{ToolName: e.ToolName, Input: e.Input, Output: e.Output, DurationMS: e.Duration.Milliseconds()}
@@ -271,6 +300,25 @@ func ToWire(ev core.Event) Envelope {
 	case core.ApprovalRequestedEvent:
 		setBase(e.BaseEvent)
 		env.Data = approvalRequested{CallID: e.CallID, ToolName: e.ToolName, Input: e.Input, Reason: e.Reason}
+	case core.SteeringInjectedEvent:
+		setBase(e.BaseEvent)
+		env.Data = steeringInjected{Message: e.Message}
+	case core.LLMRetryEvent:
+		setBase(e.BaseEvent)
+		env.Data = llmRetry{Attempt: e.Attempt, MaxRetries: e.MaxRetries, Error: e.Error, DelayMS: e.Delay.Milliseconds()}
+	case core.ModelChangedEvent:
+		setBase(e.BaseEvent)
+		env.Data = modelChanged{From: e.From, To: e.To}
+	case core.ThinkingChangedEvent:
+		setBase(e.BaseEvent)
+		env.Data = thinkingChanged{Enabled: e.Enabled}
+	case core.ImagesAttachedEvent:
+		setBase(e.BaseEvent)
+		types := make([]string, len(e.Images))
+		for i, img := range e.Images {
+			types[i] = img.MediaType
+		}
+		env.Data = imagesAttached{Count: len(e.Images), MediaTypes: types}
 	case nexus.ChannelErrorEvent:
 		setBase(e.BaseEvent)
 		env.Data = channelError{Channel: e.Channel, Text: e.Text, Seq: e.Seq}

@@ -39,9 +39,10 @@ func (f *fakeModel) calls() int {
 
 // fakeTools records Execute calls and returns canned results.
 type fakeTools struct {
-	mu      sync.Mutex
-	calls   []ToolCall
-	results map[string]ToolResult // keyed by tool name
+	mu       sync.Mutex
+	calls    []ToolCall
+	results  map[string]ToolResult // keyed by tool name
+	readOnly map[string]bool       // keyed by tool name; nil → all mutating
 }
 
 func newFakeTools(results map[string]ToolResult) *fakeTools {
@@ -51,6 +52,7 @@ func newFakeTools(results map[string]ToolResult) *fakeTools {
 func (f *fakeTools) BeginTurn(_ context.Context)          {}
 func (f *fakeTools) Definitions() []common.ToolDefinition { return nil }
 func (f *fakeTools) Origin(name string) string            { return "native" }
+func (f *fakeTools) ReadOnly(name string) bool            { return f.readOnly[name] }
 
 func (f *fakeTools) Execute(_ context.Context, call ToolCall) ToolResult {
 	f.mu.Lock()
@@ -97,6 +99,14 @@ func (f *fakeContext) AppendUser(_ context.Context, text string) error {
 	defer f.mu.Unlock()
 	f.callLog = append(f.callLog, "AppendUser")
 	f.msgs = append(f.msgs, common.NewUserMessage(text))
+	return nil
+}
+
+func (f *fakeContext) AppendUserContent(_ context.Context, blocks []common.ContentBlock) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.callLog = append(f.callLog, "AppendUserContent")
+	f.msgs = append(f.msgs, common.Message{Role: common.RoleUser, Content: blocks})
 	return nil
 }
 
@@ -687,11 +697,14 @@ func TestRunTurnPopulatesUsageInTurnContext(t *testing.T) {
 
 // --- batch concurrency (Task 19) ------------------------------------------
 
-// sleepyTools sleeps per tool name and records completion times.
+// sleepyTools sleeps per tool name and records completion times. All tools
+// report read-only so batches exercise the concurrent path; set readOnly
+// entries to false to make individual tools act as barriers.
 type sleepyTools struct {
 	mu        sync.Mutex
 	delays    map[string]time.Duration
 	completed map[string]time.Time
+	readOnly  map[string]bool
 }
 
 func newSleepyTools(delays map[string]time.Duration) *sleepyTools {
@@ -701,6 +714,13 @@ func newSleepyTools(delays map[string]time.Duration) *sleepyTools {
 func (s *sleepyTools) BeginTurn(_ context.Context)          {}
 func (s *sleepyTools) Definitions() []common.ToolDefinition { return nil }
 func (s *sleepyTools) Origin(string) string                 { return "native" }
+func (s *sleepyTools) ReadOnly(name string) bool {
+	if s.readOnly == nil {
+		return true
+	}
+	ro, ok := s.readOnly[name]
+	return !ok || ro
+}
 func (s *sleepyTools) Execute(_ context.Context, call ToolCall) ToolResult {
 	time.Sleep(s.delays[call.Name])
 	s.mu.Lock()

@@ -41,13 +41,20 @@ const (
 	ContentTypeText       = common.ContentTypeText
 	ContentTypeToolUse    = common.ContentTypeToolUse
 	ContentTypeToolResult = common.ContentTypeToolResult
+	ContentTypeImage      = common.ContentTypeImage
 )
+
+// ImageSource is the payload of an image content block: a MIME type plus
+// raw base64 data (no data: URI prefix). Passed to
+// Harness.RunTurnWithImages.
+type ImageSource = common.ImageSource
 
 // Content and message constructors, plus text-block helpers.
 var (
 	NewTextContent       = common.NewTextContent
 	NewToolUseContent    = common.NewToolUseContent
 	NewToolResultContent = common.NewToolResultContent
+	NewImageContent      = common.NewImageContent
 	NewUserMessage       = common.NewUserMessage
 	NewAssistantMessage  = common.NewAssistantMessage
 	NewSystemMessage     = common.NewSystemMessage
