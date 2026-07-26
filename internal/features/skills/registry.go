@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"go.yaml.in/yaml/v3"
 )
 
 type Definition struct {
@@ -103,25 +105,21 @@ func parseFrontmatter(path string) (name string, description string, err error) 
 	if !strings.HasPrefix(content, "---") {
 		return "", "", fmt.Errorf("no frontmatter")
 	}
-	end := strings.Index(content[3:], "---")
+	end := strings.Index(content[3:], "\n---")
 	if end == -1 {
 		return "", "", fmt.Errorf("unclosed frontmatter")
 	}
 	fm := content[3 : end+3]
 
-	for _, line := range strings.Split(fm, "\n") {
-		line = strings.TrimSpace(line)
-		if k, v, ok := strings.Cut(line, ":"); ok {
-			switch strings.TrimSpace(k) {
-			case "name":
-				name = strings.TrimSpace(v)
-			case "description":
-				description = strings.TrimSpace(v)
-			}
-		}
+	var meta struct {
+		Name        string `yaml:"name"`
+		Description string `yaml:"description"`
 	}
-	if name == "" {
+	if err := yaml.Unmarshal([]byte(fm), &meta); err != nil {
+		return "", "", fmt.Errorf("parse frontmatter: %w", err)
+	}
+	if meta.Name == "" {
 		return "", "", fmt.Errorf("missing name")
 	}
-	return name, description, nil
+	return meta.Name, meta.Description, nil
 }

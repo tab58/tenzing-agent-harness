@@ -78,7 +78,7 @@ If the tool needs external state (skill registry, task graph), define a narrow i
    ```yaml
    ---
    name: skill-name
-   description: One-line description
+   description: What the skill does and when to use it (full YAML — multi-line/folded values supported)
    ---
    ```
 2. Body is loaded lazily via `load_skill` tool — no registration code needed
