@@ -91,6 +91,15 @@ const indexHTML = `<!DOCTYPE html>
   button:disabled { opacity: 0.4; cursor: default; }
   #cancel-btn { background: var(--red); display: none; }
   #cancel-btn:hover { opacity: 0.8; }
+  #attachments { display: none; gap: 0.5rem; padding: 0.5rem 1rem 0; background: var(--bg2); flex-wrap: wrap; }
+  #attachments.has-items { display: flex; }
+  .chip { position: relative; }
+  .chip img { height: 48px; border: 1px solid var(--accent); border-radius: 4px; display: block; }
+  .chip button {
+    position: absolute; top: -6px; right: -6px;
+    padding: 0; width: 16px; height: 16px; line-height: 14px;
+    border-radius: 50%; background: var(--red); font-size: 0.7rem;
+  }
   pre { background: #0d1117; padding: 0.5rem; border-radius: 4px; overflow-x: auto; margin: 0.25rem 0; }
   code { font-family: var(--mono); }
 </style>
@@ -99,6 +108,7 @@ const indexHTML = `<!DOCTYPE html>
 
 <div id="chat"></div>
 <div id="status"></div>
+<div id="attachments"></div>
 <div id="input-area">
   <textarea id="query" rows="2" placeholder="ask something..." autofocus></textarea>
   <button id="send-btn" onclick="send()">send</button>
@@ -117,6 +127,76 @@ let streamEl = null;
 let thinkEl = null;
 let inputTokens = 0;
 let outputTokens = 0;
+let costUSD = null;
+let visionOK = false;
+let pendingImages = []; // {media_type, data}
+
+const attachmentsEl = document.getElementById('attachments');
+
+async function refreshState() {
+  try {
+    const res = await fetch('/state');
+    const d = await res.json();
+    visionOK = !!d.vision;
+    if (!visionOK && pendingImages.length) {
+      pendingImages = [];
+      renderAttachments();
+    }
+  } catch(_) {}
+}
+refreshState();
+
+function renderAttachments() {
+  attachmentsEl.textContent = '';
+  attachmentsEl.classList.toggle('has-items', pendingImages.length > 0);
+  pendingImages.forEach((img, i) => {
+    const chip = document.createElement('div');
+    chip.className = 'chip';
+    const thumb = document.createElement('img');
+    thumb.src = 'data:' + img.media_type + ';base64,' + img.data;
+    const rm = document.createElement('button');
+    rm.textContent = '×';
+    rm.onclick = () => {
+      pendingImages = pendingImages.filter((_, j) => j !== i);
+      renderAttachments();
+    };
+    chip.appendChild(thumb);
+    chip.appendChild(rm);
+    attachmentsEl.appendChild(chip);
+  });
+}
+
+function attachImage(file) {
+  if (!file || !file.type.startsWith('image/')) return;
+  if (!visionOK) {
+    addMsg('error', 'current model does not accept images');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const data = reader.result.split(',', 2)[1]; // strip data: URI prefix
+    pendingImages = pendingImages.concat({media_type: file.type, data});
+    renderAttachments();
+  };
+  reader.readAsDataURL(file);
+}
+
+queryEl.addEventListener('paste', e => {
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.kind === 'file' && item.type.startsWith('image/')) {
+      e.preventDefault();
+      attachImage(item.getAsFile());
+    }
+  }
+});
+
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  for (const f of e.dataTransfer.files) attachImage(f);
+});
 
 function addMsg(cls, text) {
   const el = document.createElement('div');
@@ -256,6 +336,42 @@ es.addEventListener('llm.response', e => {
   outputTokens += d.data.output_tokens;
 });
 
+es.addEventListener('cost', e => {
+  const d = JSON.parse(e.data);
+  costUSD = d.cost_usd;
+});
+
+es.addEventListener('steering.injected', e => {
+  const d = JSON.parse(e.data);
+  addMsg('system', '↪ steering injected: ' + d.data.message);
+});
+
+es.addEventListener('llm.retry', e => {
+  const d = JSON.parse(e.data);
+  addMsg('system', '↻ llm retry ' + d.data.attempt + '/' + d.data.max_retries + ': ' + d.data.error);
+});
+
+es.addEventListener('model.changed', e => {
+  const d = JSON.parse(e.data);
+  addMsg('system', '⇄ model: ' + d.data.from + ' → ' + d.data.to);
+  refreshState();
+});
+
+es.addEventListener('thinking.changed', e => {
+  const d = JSON.parse(e.data);
+  addMsg('system', '💭 thinking ' + (d.data.enabled ? 'on' : 'off'));
+});
+
+es.addEventListener('images.attached', e => {
+  const d = JSON.parse(e.data);
+  addMsg('system', '🖼 ' + d.data.count + ' image' + (d.data.count > 1 ? 's' : '') + ' attached');
+});
+
+es.addEventListener('queued', e => {
+  const d = JSON.parse(e.data);
+  addMsg('system', '⏳ queued at position ' + d.position + ': ' + d.query);
+});
+
 function fmtDuration(ms) {
   if (ms >= 1000) return (ms / 1000).toFixed(1) + 's';
   return ms + 'ms';
@@ -286,7 +402,8 @@ es.addEventListener('status', e => {
   if (d.state === 'running') {
     updateStatus('thinking…');
   } else {
-    const tk = fmtTokens(inputTokens) + '↑ ' + fmtTokens(outputTokens) + '↓';
+    let tk = fmtTokens(inputTokens) + '↑ ' + fmtTokens(outputTokens) + '↓';
+    if (costUSD != null) tk += ' $' + costUSD.toFixed(4);
     updateStatus(tk);
     setRunning(false);
   }
@@ -302,17 +419,22 @@ async function send() {
   const q = queryEl.value.trim();
   if (!q || running) return;
 
-  addMsg('user', q);
+  const images = pendingImages;
+  pendingImages = [];
+  renderAttachments();
+  addMsg('user', q + (images.length ? ' [' + images.length + ' image' + (images.length > 1 ? 's' : '') + ']' : ''));
   queryEl.value = '';
   setRunning(true);
   streamEl = null;
   thinkEl = null;
 
+  const body = {query: q};
+  if (images.length) body.images = images;
   try {
     const res = await fetch('/query', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({query: q}),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       const txt = await res.text();

@@ -29,6 +29,11 @@ const (
 	EventTaskCreated           EventType = "task.created"
 	EventTaskCompleted         EventType = "task.completed"
 	EventApprovalRequested     EventType = "approval.requested"
+	EventSteeringInjected      EventType = "steering.injected"
+	EventLLMRetry              EventType = "llm.retry"
+	EventModelChanged          EventType = "model.changed"
+	EventThinkingChanged       EventType = "thinking.changed"
+	EventImagesAttached        EventType = "images.attached"
 )
 
 // Event is the common interface for all harness events.

@@ -57,6 +57,21 @@ type Definition interface {
 	Execute(ctx context.Context, exctx ExecutionContext) (core.ToolResult, error)
 }
 
+// ReadOnlyReporter is an optional marker on a Definition: tools that perform
+// no mutations implement it returning true, allowing the loop to execute
+// them concurrently with adjacent read-only calls. Tools without it are
+// treated as mutating.
+type ReadOnlyReporter interface {
+	ReadOnly() bool
+}
+
+// IsReadOnly reports whether def declares itself read-only via
+// ReadOnlyReporter.
+func IsReadOnly(def Definition) bool {
+	r, ok := def.(ReadOnlyReporter)
+	return ok && r.ReadOnly()
+}
+
 type ExecutionContext struct {
 	Arguments  []string `json:"arguments"`
 	WorkingDir string   `json:"working_dir"`
@@ -108,7 +123,8 @@ func SpecFromDefinition(def Definition, origin string) core.ToolSpec {
 			Description: def.Description(),
 			InputSchema: schema,
 		},
-		Origin: origin,
+		Origin:   origin,
+		ReadOnly: IsReadOnly(def),
 		Execute: func(ctx context.Context, call core.ToolCall) core.ToolResult {
 			res, err := def.Execute(ctx, ExecutionContext{Arguments: []string{call.Input}})
 			if err != nil {

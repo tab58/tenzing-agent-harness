@@ -32,29 +32,49 @@ var New = harness.New
 
 // Harness options.
 var (
-	WithAgentBuilder          = harness.WithAgentBuilder
-	WithLLMFactory            = harness.WithLLMFactory
-	WithProviderBaseURL       = harness.WithProviderBaseURL
-	WithSubagentModel         = harness.WithSubagentModel
-	WithSubagentDepth         = harness.WithSubagentDepth
-	WithSubagentMaxIterations = harness.WithSubagentMaxIterations
-	WithBlackboardModel       = harness.WithBlackboardModel
-	WithAdvisorModel          = harness.WithAdvisorModel
-	WithDisabledTool          = harness.WithDisabledTool
-	WithSkillsDir             = harness.WithSkillsDir
-	WithTool                  = harness.WithTool
-	WithHooks                 = harness.WithHooks
-	WithSystemPrompt          = harness.WithSystemPrompt
-	WithConversationID        = harness.WithConversationID
-	WithEventBus              = harness.WithEventBus
-	WithTextDeltaHandler      = harness.WithTextDeltaHandler
-	WithThinkingDeltaHandler  = harness.WithThinkingDeltaHandler
-	WithBlackboardDisabled    = harness.WithBlackboardDisabled
-	WithExtension             = harness.WithExtension
-	WithPermissionPolicy      = harness.WithPermissionPolicy
-	WithPermissionsDisabled   = harness.WithPermissionsDisabled
-	WithApprovalTimeout       = harness.WithApprovalTimeout
+	WithAgentBuilder            = harness.WithAgentBuilder
+	WithLLMFactory              = harness.WithLLMFactory
+	WithProviderBaseURL         = harness.WithProviderBaseURL
+	WithSubagentModel           = harness.WithSubagentModel
+	WithSubagentDepth           = harness.WithSubagentDepth
+	WithSubagentMaxIterations   = harness.WithSubagentMaxIterations
+	WithBlackboardModel         = harness.WithBlackboardModel
+	WithAdvisorModel            = harness.WithAdvisorModel
+	WithDisabledTool            = harness.WithDisabledTool
+	WithSkillsDir               = harness.WithSkillsDir
+	WithTool                    = harness.WithTool
+	WithHooks                   = harness.WithHooks
+	WithSystemPrompt            = harness.WithSystemPrompt
+	WithConversationID          = harness.WithConversationID
+	WithEventBus                = harness.WithEventBus
+	WithTextDeltaHandler        = harness.WithTextDeltaHandler
+	WithThinkingDeltaHandler    = harness.WithThinkingDeltaHandler
+	WithExtension               = harness.WithExtension
+	WithPermissionPolicy        = harness.WithPermissionPolicy
+	WithPermissionsDisabled     = harness.WithPermissionsDisabled
+	WithApprovalTimeout         = harness.WithApprovalTimeout
+	WithSessionDir              = harness.WithSessionDir
+	WithSessionDisabled         = harness.WithSessionDisabled
+	WithPromptTemplatesDir      = harness.WithPromptTemplatesDir
+	WithContextFilesDisabled    = harness.WithContextFilesDisabled
+	WithToolCallGate            = harness.WithToolCallGate
+	WithThinking                = harness.WithThinking
+	WithLLMRetry                = harness.WithLLMRetry
+	WithCompressionThreshold    = harness.WithCompressionThreshold
+	WithCompressionKeepMessages = harness.WithCompressionKeepMessages
 )
+
+// ToolCallGate is the pre-execution veto installed via WithToolCallGate.
+type ToolCallGate = harness.ToolCallGate
+
+// ReadOnlyReporter is the optional marker interface a custom tool
+// implements (ReadOnly() bool → true) to run concurrently with adjacent
+// read-only calls in a tool batch; unmarked tools act as barriers.
+type ReadOnlyReporter = tooldef.ReadOnlyReporter
+
+// ErrVisionUnsupported is returned by Harness.RunTurnWithImages when the
+// current model does not accept image input (checked before any API call).
+var ErrVisionUnsupported = harness.ErrVisionUnsupported
 
 // Tool permission policy (default-on: code-executing/file-writing tools ask
 // for approval; opt out with WithPermissionsDisabled).
@@ -174,4 +194,10 @@ type (
 	TaskCreatedEvent           = core.TaskCreatedEvent
 	TaskCompletedEvent         = core.TaskCompletedEvent
 	ApprovalRequestedEvent     = core.ApprovalRequestedEvent
+	SteeringInjectedEvent      = core.SteeringInjectedEvent
+	LLMRetryEvent              = core.LLMRetryEvent
+	ModelChangedEvent          = core.ModelChangedEvent
+	ThinkingChangedEvent       = core.ThinkingChangedEvent
+	ImagesAttachedEvent        = core.ImagesAttachedEvent
+	ImageData                  = core.ImageData
 )

@@ -45,19 +45,23 @@ type SubAgentFactoryConfig struct {
 	// SkillsExt is the shared skills extension instance (read-only registry;
 	// sharing across parent and children is safe). Nil means no skills.
 	SkillsExt core.Extension
+	// ExtraExtensions are shared extension instances every child (and
+	// grandchild) loop registers — e.g. the harness's tool-call gate.
+	ExtraExtensions []core.Extension
 }
 
 type SubAgentFactory struct {
-	agentLLM      common.LLM
-	agentBuilder  runner.AgentBuilder
-	maxDepth      int
-	currentDepth  int
-	maxIterations int
-	cwd           string
-	emitter       core.Emitter
-	blackboard    *blackboard.Blackboard
-	parentID      string
-	skillsExt     core.Extension
+	agentLLM        common.LLM
+	agentBuilder    runner.AgentBuilder
+	maxDepth        int
+	currentDepth    int
+	maxIterations   int
+	cwd             string
+	emitter         core.Emitter
+	blackboard      *blackboard.Blackboard
+	parentID        string
+	skillsExt       core.Extension
+	extraExtensions []core.Extension
 }
 
 // childID derives a hierarchical agent ID from the parent's:
@@ -82,16 +86,17 @@ func NewSubAgentFactory(cfg SubAgentFactoryConfig) *SubAgentFactory {
 		maxIter = defaultSubAgentMaxIterations
 	}
 	return &SubAgentFactory{
-		agentLLM:      cfg.AgentLLM,
-		agentBuilder:  cfg.AgentBuilder,
-		maxDepth:      maxDepth,
-		currentDepth:  0,
-		maxIterations: maxIter,
-		cwd:           cfg.Cwd,
-		emitter:       cfg.Emitter,
-		blackboard:    cfg.Blackboard,
-		parentID:      cfg.ParentID,
-		skillsExt:     cfg.SkillsExt,
+		agentLLM:        cfg.AgentLLM,
+		agentBuilder:    cfg.AgentBuilder,
+		maxDepth:        maxDepth,
+		currentDepth:    0,
+		maxIterations:   maxIter,
+		cwd:             cfg.Cwd,
+		emitter:         cfg.Emitter,
+		blackboard:      cfg.Blackboard,
+		parentID:        cfg.ParentID,
+		skillsExt:       cfg.SkillsExt,
+		extraExtensions: cfg.ExtraExtensions,
 	}
 }
 
@@ -236,21 +241,23 @@ func (f *SubAgentFactory) childExtensions(agentID string, todoFile *todo.TodoFil
 	if f.skillsExt != nil {
 		exts = append(exts, f.skillsExt)
 	}
+	exts = append(exts, f.extraExtensions...)
 	if f.blackboard != nil {
 		exts = append(exts, blackboard.NewExt(f.blackboard, agentID))
 	}
 	if childDepth < f.maxDepth {
 		childFactory := &SubAgentFactory{
-			agentLLM:      f.agentLLM,
-			agentBuilder:  f.agentBuilder,
-			maxDepth:      f.maxDepth,
-			currentDepth:  childDepth,
-			maxIterations: f.maxIterations,
-			cwd:           f.cwd,
-			emitter:       f.emitter,
-			blackboard:    f.blackboard,
-			parentID:      agentID,
-			skillsExt:     f.skillsExt,
+			agentLLM:        f.agentLLM,
+			agentBuilder:    f.agentBuilder,
+			maxDepth:        f.maxDepth,
+			currentDepth:    childDepth,
+			maxIterations:   f.maxIterations,
+			cwd:             f.cwd,
+			emitter:         f.emitter,
+			blackboard:      f.blackboard,
+			parentID:        agentID,
+			skillsExt:       f.skillsExt,
+			extraExtensions: f.extraExtensions,
 		}
 		exts = append(exts, NewSpawnExt(childFactory))
 	}

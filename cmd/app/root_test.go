@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/tab58/tenzing-agent-harness/internal/harness"
+	"github.com/tab58/tenzing-agent-harness/pkg/tenzing"
 )
 
 func TestMergeEnv(t *testing.T) {
@@ -244,6 +247,65 @@ func TestRootCmdRejectsBadFlags(t *testing.T) {
 			cmd.SetArgs(tt.args)
 			if err := cmd.Execute(); err == nil {
 				t.Error("want error, got nil")
+			}
+		})
+	}
+}
+
+// TestRootCmdModelPrecedence proves the effective model order:
+// --model flag > TENZING_MODEL env > models.yaml default > compiled default.
+func TestRootCmdModelPrecedence(t *testing.T) {
+	glm := modelKey(tenzing.Ollama_GLM5_2_Cloud.Provider, tenzing.Ollama_GLM5_2_Cloud.Name)
+	qwen := modelKey(tenzing.Ollama_Qwen3_5_9B.Provider, tenzing.Ollama_Qwen3_5_9B.Name)
+	qwenBig := modelKey(tenzing.Ollama_Qwen3_5_35B.Provider, tenzing.Ollama_Qwen3_5_35B.Name)
+
+	yamlPath := filepath.Join(t.TempDir(), "models.yaml")
+	if err := os.WriteFile(yamlPath, []byte("default: "+qwenBig+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		args      []string
+		env       string // TENZING_MODEL; "" = unset
+		models    string // TENZING_MODELS_CONFIG; "" = absent file
+		wantModel string
+	}{
+		{"flag beats env and yaml", []string{"-p", "hi", "--model", glm}, qwen, yamlPath, glm},
+		{"env beats yaml default", []string{"-p", "hi"}, qwen, yamlPath, qwen},
+		{"yaml default beats compiled", []string{"-p", "hi"}, "", yamlPath, qwenBig},
+		{"compiled default", []string{"-p", "hi"}, "", "", glm},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("TENZING_MODEL", tt.env)
+			modelsPath := tt.models
+			if modelsPath == "" {
+				modelsPath = filepath.Join(t.TempDir(), "absent.yaml")
+			}
+			t.Setenv("TENZING_MODELS_CONFIG", modelsPath)
+			t.Cleanup(func() { models = emptyRegistry() })
+
+			orig := runPrintFn
+			t.Cleanup(func() { runPrintFn = orig })
+			var got *cliConfig
+			runPrintFn = func(_ context.Context, cfg *cliConfig, _, _ io.Writer, _ ...harness.HarnessOption) error {
+				got = cfg
+				return nil
+			}
+
+			cmd := newRootCmd()
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(tt.args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if got == nil {
+				t.Fatal("runPrintFn was never called")
+			}
+			if got.Model != tt.wantModel {
+				t.Errorf("Model = %q, want %q", got.Model, tt.wantModel)
 			}
 		})
 	}

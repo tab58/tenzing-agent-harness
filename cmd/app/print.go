@@ -2,14 +2,18 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/tab58/llm-providers/common"
 
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/app/wire"
@@ -52,6 +56,44 @@ func (j *jsonlWriter) write(v any) {
 	}
 }
 
+// imageExts maps the file extensions accepted for @-image arguments to
+// their MIME types.
+var imageExts = map[string]string{
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+}
+
+// extractImageArgs splits "@screenshot.png"-style arguments from the query
+// args. An @-arg with an image extension must be readable — a typo'd path
+// errors rather than silently becoming query text. Other args (including
+// @-args without an image extension) pass through.
+func extractImageArgs(args []string) ([]string, []common.ImageSource, error) {
+	var rest []string
+	var images []common.ImageSource
+	for _, a := range args {
+		var mediaType string
+		if strings.HasPrefix(a, "@") {
+			mediaType = imageExts[strings.ToLower(filepath.Ext(a))]
+		}
+		if mediaType == "" {
+			rest = append(rest, a)
+			continue
+		}
+		data, err := os.ReadFile(strings.TrimPrefix(a, "@"))
+		if err != nil {
+			return nil, nil, fmt.Errorf("image argument %s: %w", a, err)
+		}
+		images = append(images, common.ImageSource{
+			MediaType: mediaType,
+			Data:      base64.StdEncoding.EncodeToString(data),
+		})
+	}
+	return rest, images, nil
+}
+
 // runPrint runs one headless agent turn. stdout carries only the answer
 // (text mode) or JSONL events (json mode); a denied-tool summary goes to
 // stderr; logs go to the log file. extraOpts is the test seam for stub
@@ -62,20 +104,58 @@ func runPrint(ctx context.Context, cfg *cliConfig, stdout, stderr io.Writer, ext
 		return err
 	}
 
+	// "@path.png"-style tokens in the prompt attach image files to the turn.
+	promptArgs, images, err := extractImageArgs(strings.Fields(cfg.Prompt))
+	if err != nil {
+		return err
+	}
+	query := strings.Join(promptArgs, " ")
+
 	logFile, err := setupLogging(printLogDir(), cfg.Debug, io.Discard)
 	if err != nil {
 		return err
 	}
 	defer logFile.Close()
 
-	opts, err := harnessOptions(cfg)
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get working directory: %w", err)
+	}
+
+	// Drop-in project/global config (F24/F22), gated by trust (F26). The
+	// --trust flag grants for this run only; otherwise the persisted decision
+	// or TENZING_PROJECT_TRUST applies. Project-config options come first so
+	// an explicit --system (applied inside harnessOptions) wins over
+	// override files.
+	trusted := cfg.Trust
+	if !trusted {
+		if trustPath, err := trustFilePath(); err == nil {
+			trusted, _ = resolveProjectTrust(trustPath, cwd, cfg.ProjectTrust)
+		}
+	}
+	cfgDir, _ := os.UserConfigDir()
+	pc := loadProjectConfig(cwd, cfgDir, trusted)
+	pc.logDecisions()
+
+	opts := pc.harnessOpts()
+	for p, url := range models.baseURLs {
+		opts = append(opts, harness.WithProviderBaseURL(p, url))
+	}
+	cliOpts, err := harnessOptions(cfg)
 	if err != nil {
 		return err
 	}
+	opts = append(opts, cliOpts...)
 	// Headless permission default: deny mutating tools instantly unless the
 	// user explicitly set a timeout or disabled permissions.
 	if !cfg.ApprovalTimeoutSet && !cfg.NoPermissions {
 		opts = append(opts, harness.WithApprovalTimeout(0))
+	}
+
+	if cfg.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cfg.Timeout)
+		defer cancel()
 	}
 
 	var jw *jsonlWriter
@@ -145,7 +225,7 @@ func runPrint(ctx context.Context, cfg *cliConfig, stdout, stderr io.Writer, ext
 		return fmt.Errorf("harness init: %w", err)
 	}
 
-	answer, turnErr := h.RunTurn(ctx, cfg.Prompt)
+	answer, turnErr := h.RunTurnWithImages(ctx, query, images)
 
 	h.Shutdown()
 	bus.Close()    // closes evCh, signals forward goroutine to finish

@@ -30,7 +30,7 @@ type Policy struct {
 // by default.
 func DefaultPolicy() Policy {
 	return Policy{
-		Ask:        []string{"bash", "write", "edit", "revert", "repl", "spawn_agent", "advisor"},
+		Ask:        []string{"bash", "write", "edit", "repl", "spawn_agent", "advisor"},
 		AskOrigins: []string{"mcp:"},
 		Default:    core.Allow,
 	}

@@ -8,7 +8,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/spf13/cobra v1.10.2
 	github.com/tab58/huma-http-server v0.3.0
-	github.com/tab58/llm-providers v0.3.2
+	github.com/tab58/llm-providers v0.5.0
 	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/sync v0.21.0
 )

@@ -43,7 +43,7 @@ flowchart TB
         TP["toolport (ToolPort: Registry + Composite)"]
     end
     subgraph FEATURES["Features — internal/features (import core only)"]
-        F1["advisor · blackboard · budgets · builtins · mcp ·<br/>permissions · prompts · reminders · skills · snapshot · todo"]
+        F1["advisor · blackboard · budgets · builtins · mcp ·<br/>permissions · prompts · reminders · skills · todo"]
     end
     CORE["Core — internal/core (+ core/tooldef)<br/>ports · loop · FSM · events · extension contracts · tool contracts"]
 
@@ -73,7 +73,7 @@ flowchart TB
 
 **Provider agnosticism.** All LLM interaction flows through canonical types (`Message`, `ContentBlock`, `CompletionRequest/Response`). Provider implementations convert to/from SDK-specific types. Swapping providers requires zero changes above the provider layer.
 
-**Risk changes the process.** The permissions extension (`internal/features/permissions`, a `core.ToolCallHook` registered FIRST in the default extension order) classifies each tool call: `Deny` > `Ask` > `Allow` > policy default, matched case-insensitively by tool name plus origin prefixes. The default policy asks for anything that executes code or writes files (`bash`, `write`, `edit`, `revert`, `repl`, `spawn_agent`, `advisor`) and for every MCP-origin tool (`AskOrigins: ["mcp:"]`); everything else is allowed. `AskUser` makes the core loop emit `ApprovalRequestedEvent` and block (up to `ApprovalTimeout`, harness default 120s; timeout/cancel = deny) for a `Respond(bool)` — cmd/app forwards it over SSE as `approval.requested` and resolves it via `POST /approve {call_id, approved}` with approve/deny buttons in the embedded UI. Configure with `harness.WithPermissionPolicy`, opt out with `harness.WithPermissionsDisabled` (headless/trusted drivers), tune waiting with `harness.WithApprovalTimeout`. The check happens in the core loop before tool execution — not in the tool itself, not in the Agent.
+**Risk changes the process.** The permissions extension (`internal/features/permissions`, a `core.ToolCallHook` registered FIRST in the default extension order) classifies each tool call: `Deny` > `Ask` > `Allow` > policy default, matched case-insensitively by tool name plus origin prefixes. The default policy asks for anything that executes code or writes files (`bash`, `write`, `edit`, `repl`, `spawn_agent`, `advisor`) and for every MCP-origin tool (`AskOrigins: ["mcp:"]`); everything else is allowed. `AskUser` makes the core loop emit `ApprovalRequestedEvent` and block (up to `ApprovalTimeout`, harness default 120s; timeout/cancel = deny) for a `Respond(bool)` — cmd/app forwards it over SSE as `approval.requested` and resolves it via `POST /approve {call_id, approved}` with approve/deny buttons in the embedded UI. Configure with `harness.WithPermissionPolicy`, opt out with `harness.WithPermissionsDisabled` (headless/trusted drivers), tune waiting with `harness.WithApprovalTimeout`. The check happens in the core loop before tool execution — not in the tool itself, not in the Agent.
 
 **Long tasks have budgets.** The budgets extension (`internal/features/budgets`, a `core.BeforeIterationHook`) enforces per-turn limits — `MaxIterations`, `MaxWallClock`, `MaxTokens` (input+output cumulative); zero = unlimited. The loop populates `TurnContext.Elapsed/InputTokens/OutputTokens` before each iteration's hooks; when a limit trips the extension sets `Terminate` and the turn ends gracefully with `TurnResult{Terminated: reason}` — a result, not a crash. Wire via `harness.WithBudgets(limits)`; subagents get `MaxIterations` from `WithSubagentMaxIterations` (default 100) through the same extension. Cost budget (USD) is deferred — llm-providers exposes no pricing tables.
 
@@ -101,13 +101,17 @@ harness.New(...)
 
 ```
 cmd/app/main.go                         Entry point — signal handling, banner, exit codes
-cmd/app/root.go                         cobra root command `tenzing` — flags, dispatches to print or serve mode
+cmd/app/root.go                         cobra root command `tenzing` — flags, registry load, model precedence, dispatches to print or serve mode
 cmd/app/options.go                      cliConfig struct + harnessOptions(cfg) — flags → HarnessOptions
-cmd/app/container.go                    AppContainer — config, logging, agent server + HTTP server wiring
-cmd/app/print.go                        Print mode — one-shot RunTurn, text/JSONL output, exit codes
-cmd/app/models.go                       --model resolution (resolveModel, modelKey, modelList, --list-models)
-cmd/app/server.go                       agentServer — routes (/query, /cancel, /info, /debug, /ingest/{name}), SSE broadcast, event forwarding
-cmd/app/index.go                        Embedded chat UI (single-page HTML served at /)
+cmd/app/container.go                    AppContainer — config, logging, trust + project config, agent server + HTTP server wiring
+cmd/app/print.go                        Print mode — one-shot turn (with @path.png image args), text/JSONL output, exit codes
+cmd/app/models.go                       Model registry — models.yaml loading + resolution (loadModelRegistry, resolveModel, modelKey, modelList, --list-models)
+cmd/app/costs.go                        costTracker — token + USD accounting from LLMResponseEvents (pricing from models.yaml)
+cmd/app/trust.go                        Project trust gate — trust.json persistence, resolveProjectTrust/setProjectTrust
+cmd/app/projectconfig.go                Drop-in config — SYSTEM.md/APPEND_SYSTEM.md overrides + prompt-template dirs, trust-gated
+cmd/app/server.go                       agentServer — routes (/query, /cancel, /steer, /state, /approve, /sessions, /messages, /compact,
+                                        /thinking, /model, /models, /stats, /trust, /info, /debug, /ingest/{name}), turn queue, SSE broadcast, event forwarding
+cmd/app/index.go                        Embedded chat UI (single-page HTML served at /; image attachments, live cost display)
 
 pkg/tenzing/                             Public facade — pure alias/re-export, no logic
 ├── tenzing.go                          Harness, options, core/tooldef/eventbus type re-exports
@@ -165,14 +169,17 @@ internal/
 │   ├── budgets/                        BeforeIterationHook — iteration/wall-clock/token limits → graceful
 │   │                                    Terminate
 │   ├── builtins/                       Native built-in tools + Defaults() seed set
-│   │   ├── defaults.go                 Defaults() — bash, Read, Edit, Grep, Glob
-│   │   ├── file_tracker.go             Read-before-edit enforcement (content hashing) — NOT yet wired
-│   │   ├── fsutil.go                   Atomic file writes, per-path locks
+│   │   ├── defaults.go                 Defaults() — bash, Read, Edit, Write, Grep, Glob, ls; one FileTracker
+│   │   │                                per call shared by Read/Edit/Write
+│   │   ├── file_tracker.go             Read-before-edit enforcement (content hashing)
+│   │   ├── fsutil.go                   resolvePath, atomic file writes, per-path locks
 │   │   ├── tool_bash.go                Shell command execution (120s timeout)
-│   │   ├── tool_edit.go                String replacement in file
+│   │   ├── tool_edit.go                String replacement in file (tracker-verified, atomic write)
 │   │   ├── tool_glob.go                File pattern matching
 │   │   ├── tool_grep.go                Regex search across files (cap 500)
-│   │   └── tool_read.go                File read with line numbers
+│   │   ├── tool_ls.go                  Directory listing (cap 500 entries)
+│   │   ├── tool_read.go                File read with line numbers (stamps tracker)
+│   │   └── tool_write.go               File create/overwrite (tracker-verified, atomic write, mkdir -p)
 │   ├── mcp/                            DynamicToolSource + session hooks — external MCP servers over stdio
 │   │   └── ext.go                      Ext, ServerConfig, New — package mcp (harness.WithMCPServer(mcp.ServerConfig{...}))
 │   ├── permissions/                    ToolCallHook — name/origin policy gating (default-on, runs first)
@@ -186,11 +193,6 @@ internal/
 │   │   ├── registry.go                 Discover frontmatter at startup, Load on demand
 │   │   ├── tool_list_skills.go         List available skills (interface: SkillLister)
 │   │   └── tool_load_skill.go          Load skill content (interface: SkillContentLoader)
-│   ├── snapshot/                       Pre-write file snapshots + Write/Revert tools — NOT wired into the
-│   │   │                                harness (only an integration test uses it; see Known Design Issues)
-│   │   ├── snapshot_store.go           In-memory file snapshot store
-│   │   ├── tool_snapshot_write.go      File write with pre-write snapshot
-│   │   └── tool_snapshot_revert.go     Restore file from snapshot
 │   └── todo/                           In-memory planning system
 │       ├── todo_file.go                TodoFile — per-instance in-memory store with IDs, deps, priorities,
 │       │                                topo sort; SetEmitter(core.Emitter)
@@ -208,6 +210,13 @@ internal/
     │                                    caching
     ├── memory.go                       memoryStore — persists ContextCompressedEvent summaries per
     │                                    conversation to disk; loaded back on WithConversationID resume
+    ├── context_files.go                AGENTS.md context-file discovery (global + root-to-cwd), appended to
+    │                                    the main system prompt (default-on; WithContextFilesDisabled)
+    ├── gate.go                         ToolCallGate — pre-execution veto wired via WithToolCallGate
+    ├── prompttmpl/                     Slash-command prompt templates (*.md dirs via WithPromptTemplatesDir,
+    │                                    bash-style argument substitution)
+    ├── session/                        Message-level JSONL session persistence (Store/persister, List/Load/
+    │                                    Delete/Rename, DefaultDir; image sidecar blobs)
     ├── runner/                         AgentRunner facade over core.Loop
     │   ├── agent.go                    AgentBuilder func(common.LLM, string) (core.Agent, error)
     │   └── agent_runner.go             AgentRunner, AgentRunnerOption, NewAgentRunner — one-time agent
@@ -328,12 +337,17 @@ Loop.RunTurn(ctx, input string) → (TurnResult, error)
         de-escalate; a hook error itself also blocks execution with a synthetic
         result, distinct from an explicit Deny). AskUser calls emit their
         ApprovalRequestedEvent immediately (non-blocking).
-      - EXECUTION PHASE, concurrent (errgroup.WithContext): one goroutine per
-        call writes results[i] — Allow executes; Deny/hook-error produce
-        synthetic error results; AskUser waits out its approval channel in its
-        own goroutine (others don't wait on the straggler). Per-call events
-        (ToolExecutionStarted/Finished, succeeded/failed) fire inside the
-        goroutines — EventBus.Emit is goroutine-safe.
+      - EXECUTION PHASE, segmented: runs of consecutive read-only calls (per
+        ToolPort.ReadOnly) execute concurrently — one goroutine per call,
+        bounded by maxParallelReadOnlyTools (8) — while mutating (unmarked)
+        calls act as barriers and run alone. Results land by index so feedback
+        keeps issue order. Allow executes; Deny/hook-error produce synthetic
+        error results; AskUser waits out its approval channel inside its own
+        execution slot (read-only neighbors in the same segment don't wait on
+        the straggler; a mutating AskUser call blocks later segments until
+        resolved). Per-call events (ToolExecutionStarted/Finished,
+        succeeded/failed) fire inside the goroutines — EventBus.Emit is
+        goroutine-safe.
       - after the barrier: extensions.RunToolResult(ctx, trc) sequentially in
         issue order (degrading transform)
       - FinishToolExecution
@@ -341,6 +355,10 @@ Loop.RunTurn(ctx, input string) → (TurnResult, error)
         one context.AppendToolResults(ctx, outputs) in issue order — results
         carry ToolUseID so the store pairs them to the assistant's tool_use
         blocks; the context store is only touched after the barrier
+      - STEERING: messages queued via Loop.Steer are drained here (the tool
+        boundary) — each is context.AppendUser'd after the tool results and
+        emits SteeringInjectedEvent, so tool_use/tool_result pairing is never
+        split by an interleaved user message
       - loop to 4a
 5. On any error: Reset FSM, emit ErrorEvent, return the error
 ```
@@ -393,10 +411,13 @@ Constructor: `New(cfg)`. The agent builds a `CompletionRequest` from the passed-
 type ContextPort interface {
     Messages(ctx context.Context) ([]common.Message, error)
     AppendUser(ctx context.Context, text string) error
+    AppendUserContent(ctx context.Context, blocks []common.ContentBlock) error
     AppendAssistant(ctx context.Context, msg common.Message) error
     AppendToolResults(ctx context.Context, results []ToolResult) error
 }
 ```
+
+`AppendUserContent` carries mixed-block user messages (text + images) — `Loop.RunTurnWithImages` uses it; `Harness.RunTurnWithImages` fails fast with `ErrVisionUnsupported` when the current model lacks vision (`Harness.SupportsVision`, tracking `SetModel` switches) and emits `ImagesAttachedEvent` (full base64 payloads; the wire envelope reports only count + media types). The compressor charges each image block a flat ~1600-token estimate rather than its base64 length.
 
 Declared in `internal/core/ports.go`; owns the conversation — user/assistant messages, `tool_use`/`tool_result` pairing (a `tool_use` unanswered in the immediately following message is rejected by the Anthropic API), and compression. The `AgentRunner` holds one `ContextPort` per runner (`runner.WithContextStore`, required) and rebuilds `messages` from it every iteration.
 
@@ -438,7 +459,12 @@ Constructor: `New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Har
 - `WithSubagentDepth` (default 1, 0 disables `spawn_agent`) / `WithSubagentMaxIterations` (default 100 per child).
 - `WithLLMFactory` — replaces the default env-var-based LLM factory (`provider.LLMFromEnv`) entirely; the test seam for injecting fakes.
 - `WithProviderBaseURL(provider, url)` — per-provider base URL override, consumed by the default factory only.
-- `WithBlackboardDisabled` — the shared blackboard REPL (`repl` tool) is on by default; this disables it.
+- The shared blackboard REPL (`repl` tool) is always on; the Python process boots lazily on first use.
+- `WithSessionDir` / `WithSessionDisabled` — message-level JSONL session persistence knobs (default on, `<UserConfigDir>/tenzing/sessions`).
+- `WithPromptTemplatesDir` — `*.md` slash-command templates expanded in `RunTurn` queries.
+- `WithContextFilesDisabled` — turns off the default AGENTS.md ancestor-chain prompt append (main agent only, 32KB cap).
+- `WithToolCallGate` — shared pre-execution veto for every tool call (main + subagents), run as an extension ToolCallHook after permissions.
+- `WithThinking` / `WithLLMRetry` / `WithCompressionThreshold` / `WithCompressionKeepMessages` — reasoning toggle, transient-error retry policy, and compression tuning for the default brain/context store.
 - `WithDisabledTool`, `WithSkillsDir`, `WithTool`, `WithHooks(eventbus.Hooks)`, `WithSystemPrompt`, `WithEventBus`, `WithTextDeltaHandler`/`WithThinkingDeltaHandler` (`func(runnerID, text string)` — deltas are tagged with the emitting runner's id), `WithBudgets`, `WithMCPServer`, `WithPermissionPolicy`, `WithPermissionsDisabled`, `WithApprovalTimeout`, `WithConversationID`, `WithExtension` — remaining registry/observability/extension knobs.
 
 LLM clients are cached per (provider, model, base URL) via an internal `llmCache` (`internal/harness/llm.go`), so roles sharing a model definition share one client and its rate limiter.
@@ -452,6 +478,8 @@ The brain defaults to the built-in agent implementation: when no `WithAgentBuild
 ### Turns
 
 `RunTurn(ctx, query)` — runs one agent turn via `RunLoop` and returns the answer. `cmd/app` drives turns over HTTP (`POST /query`) and streams progress via SSE in serve mode (default), or via a single headless `RunTurn` call in print mode (`-p`).
+
+`Steer(msg)` — queues a user message (buffer of 16; full buffer errors) for injection into the running main-agent loop at the next tool-execution boundary, after that batch's tool results are appended (so tool_use/tool_result pairing is never split). Each injection emits `SteeringInjectedEvent`. Messages queued while idle inject at the first boundary of the next turn. `LoopState()` reports the main loop FSM's current state (`started`, `stopped`, `reasoning_started`, …) so drivers can tell idle from mid-turn.
 
 ## 9. AgentRunner (Facade)
 
@@ -510,15 +538,17 @@ Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn
 
 ### Tool Inventory
 
-14 tools in a default harness; the rest are conditional.
+16 tools in a default harness; the rest are conditional.
 
 | Tool | Registered when | Description | Key behavior |
 |------|-----------------|-------------|--------------|
 | `bash` | always | Shell command | 120s timeout, exit code in output |
-| `Read` | always | File contents | Line-numbered output, default 2000 lines |
-| `Edit` | always | String replace | Unique match required unless `replace_all` |
+| `Read` | always | File contents | Line-numbered output, default 2000 lines; stamps the FileTracker |
+| `Edit` | always | String replace | Unique match required unless `replace_all`; rejects unread/stale files (tracker), atomic write under per-path lock |
+| `Write` | always | Create/overwrite file | mkdir -p parents; overwriting requires a prior Read (tracker); atomic write under per-path lock |
 | `Grep` | always | Regex search | Caps at 500 matches |
 | `Glob` | always | File patterns | Supports `**` wildcard |
+| `ls` | always | Directory listing | Sorted; dirs end with `/`, files show size; caps at 500 entries |
 | `TodoWrite` | always | Write plan | Bulk-write tasks with deps-by-index, assigns IDs, replaces the store's plan |
 | `TodoCreate` | always | Add task | Append single task mid-execution with deps-by-ID |
 | `TodoUpdate` | always | Update status | By ID or prefix: `pending`, `in_progress`, `done` |
@@ -526,19 +556,15 @@ Tools never throw — errors returned as `ToolResult{IsError: true}`. Loop doesn
 | `TodoRead` | always | Show plan | Topologically sorted task list with statuses and deps |
 | `list_skills` | always | List skills | Returns name→description map from skill registry |
 | `load_skill` | always | Load skill | Lazy-loads full `SKILL.md` content by name |
-| `repl` | default on (`WithBlackboardDisabled` removes) | Shared persistent REPL (blackboard) | Slot `main` for the main agent, a hierarchical hex ID per subagent; single mutex serializes all access; output truncated at 2000 chars |
+| `repl` | always | Shared persistent REPL (blackboard) | Slot `main` for the main agent, a hierarchical hex ID per subagent; single mutex serializes all access; output truncated at 2000 chars |
 | `spawn_agent` | default on (`WithSubagentDepth(0)` removes) | Delegate operational task | Spawns child AgentRunner with full tools, blocks until complete, returns final answer |
 | `advisor` | only with `WithAdvisorModel` | Plan review by stronger model | One-shot call to the advisor model (plan + optional context); returns critique. Not given to subagents |
 | `list_channels` / `read_channel` / `search_channel` | only when nexus channels configured (`cmd/app` wires via `WithTool`) | Nexus channel access | See "Nexus" below |
 | MCP tools | only with `WithMCPServer` | Dynamic per-turn snapshots | Re-read each `BeginTurn`; origin `mcp:<server>` |
 
-There are **no `Write`/`Revert` tools in the current wiring** — `internal/features/snapshot` implements them but nothing registers them (see Known Design Issues). File writes happen through `Edit` and `bash`.
-
 ### Shared Infrastructure
 
-**SnapshotStore** (`features/snapshot`) — in-memory `map[string][]byte` behind mutex. `Write` saves before overwriting; `Revert` pops (clears entry). Currently exercised only by `internal/harness/integration_test.go` — not part of the composed tool surface.
-
-**FileTracker** (`features/builtins/file_tracker.go`) — SHA-256 content stamps per file path. Enforces read-before-edit; returns `ErrNotRead` or `ErrChangedSinceRead`. Built but not yet wired into the Edit tool.
+**FileTracker** (`features/builtins/file_tracker.go`) — SHA-256 content stamps per file path, one instance per `builtins.Defaults()` call (so one per registry; subagents get fresh registries, isolating their stamps). `Read` records stamps; `Edit` and overwriting `Write` verify them, rejecting with `ErrNotRead` or `ErrChangedSinceRead` as tool errors the model can act on. The former snapshot Write/Revert pair was unwired dead code and has been removed in favor of this plain Write + read-before-edit design.
 
 **fsutil** — per-path mutex locks (`sync.Map`) for concurrent file access. `writeFileAtomic` uses temp-file + rename for crash safety. `pathLocks` is package-level, so it serializes file writes across all agents in-process (parent and subagents alike).
 
@@ -645,9 +671,9 @@ Typed event bus providing full observability of the agent loop. Events fire at F
 
 Layers emit via the narrow `Emitter` interface (`Emit(Event)`), never importing `EventBus` directly. The Harness creates the bus and passes it down.
 
-### Event Types (23)
+### Event Types (28)
 
-Session: `session.started`, `session.ended`. Turn: `turn.started`, `turn.completed`. FSM: `loop.started`, `loop.stopped`, `reasoning.started`, `reasoning.finished`, `tool_execution.started`, `tool_execution.finished`. Business: `llm.response`, `tool.succeeded`, `tool.failed`, `tool.denied` (`ToolDeniedEvent` — typed signal that a call was blocked by the permission system: policy Deny or an unapproved AskUser escalation; fires alongside the `tool.failed` its error result produces), `tool.progress`, `context.compressing` (reserved), `context.compressed`, `error`. Subagent: `subagent.started`, `subagent.stopped`. Task: `task.created`, `task.completed`. Approval: `approval.requested` (`ApprovalRequestedEvent` — carries `CallID`/`ToolName`/`Input`/`Reason` plus a non-serialized `Respond(approved bool)` callback; idempotent, safe from any goroutine; the loop blocks on it until response, context cancel, or `LoopConfig.ApprovalTimeout`, where timeout/cancel = deny and 0 denies immediately without emitting).
+Session: `session.started`, `session.ended`. Turn: `turn.started`, `turn.completed`. FSM: `loop.started`, `loop.stopped`, `reasoning.started`, `reasoning.finished`, `tool_execution.started`, `tool_execution.finished`. Business: `llm.response`, `tool.succeeded`, `tool.failed`, `tool.denied` (`ToolDeniedEvent` — typed signal that a call was blocked by the permission system: policy Deny or an unapproved AskUser escalation; fires alongside the `tool.failed` its error result produces), `tool.progress`, `context.compressing` (reserved), `context.compressed`, `error`. Subagent: `subagent.started`, `subagent.stopped`. Task: `task.created`, `task.completed`. Approval: `approval.requested` (`ApprovalRequestedEvent` — carries `CallID`/`ToolName`/`Input`/`Reason` plus a non-serialized `Respond(approved bool)` callback; idempotent, safe from any goroutine; the loop blocks on it until response, context cancel, or `LoopConfig.ApprovalTimeout`, where timeout/cancel = deny and 0 denies immediately without emitting). Runtime: `steering.injected` (a `Harness.Steer` message consumed at a tool boundary), `llm.retry` (`LLMRetryEvent` — attempt/max/error/delay per transient-LLM retry), `model.changed` (`ModelChangedEvent{From, To}` on `SetModel`), `thinking.changed` (`ThinkingChangedEvent{Enabled}` on `SetThinking`), `images.attached` (`ImagesAttachedEvent` — emitted before an image-bearing turn; the wire mapping reports count + media types only, never the base64 payloads).
 
 All events embed `BaseEvent` (type, timestamp, runner ID) and are JSON-serializable.
 
@@ -678,18 +704,27 @@ Core loop (`core/loop.go`): turn, loop, reasoning, tool execution, LLM response,
 All flags parse into a single `cliConfig` struct (`cmd/app/options.go`); `harnessOptions(cfg)` then maps it to the `harness.HarnessOption`s shared by both modes:
 
 - **Mode:** `-p/--prompt`, `--output-format` (`text` default, or `json` for JSONL events), `--list-models`
-- **Models:** `--model` (default `ollama/glm-5.2:cloud`), `--subagent-model`, `--blackboard-model`, `--advisor-model` — resolved via `cmd/app/models.go`'s `resolveModel`/`modelKey` against `tenzing.StandardModels()` (`pkg/tenzing/models.go`) — the CLI registry is derived, so adding a model to `StandardModels` is the only step
+- **Models:** `--model` (default `ollama/glm-5.2:cloud`), `--subagent-model`, `--blackboard-model`, `--advisor-model` — resolved via `cmd/app/models.go`'s registry (see "Model registry" below)
 - **Budgets:** `--max-tokens`, `--max-iterations`, `--max-wall-clock`
-- **Toggles:** `--subagent-depth` (default 1), `--no-blackboard`, `--approval-timeout`, `--no-permissions`
+- **Toggles:** `--subagent-depth` (default 1), `--approval-timeout`, `--no-permissions`, `--thinking` (tri-state: only applied when explicitly passed), `--no-session`, `--no-context-files`
+- **Prompt / sessions / trust:** `--system <file>` (file contents replace the system prompt; wins over SYSTEM.md overrides), `--resume <id>`, `-c/--continue` (latest session for cwd; mutually exclusive with `--resume`, requires persistence), `--trust` (treat cwd as trusted this run, not persisted), `--timeout` (print-mode turn deadline; warned-and-ignored in serve mode)
 - **Wiring:** `--mcp-server` (repeatable, `name=command arg1 arg2`), `--conversation-id`
 - **Serve-only:** `--port` (default 8080, env `SERVER_PORT`), `--nexus-config` (default `nexus.yaml`, env `NEXUS_CONFIG`) — unused by print mode; passing them with `-p` prints a stderr warning
 - **Shared, not serve-only:** `--debug` (env `LOG_DEBUG`) — same effect in both modes: raises the log file (never stdout) to trace level and switches it to a fresh timestamped filename (`setupLogging`, called by both `runPrint` and `NewAppContainer`). Log location differs by mode: serve logs to the cwd; print logs to `os.UserCacheDir()/tenzing/` (`printLogDir`, temp-dir fallback) so headless runs don't sprinkle log files wherever they run
 
-`--subagent-depth` and `--approval-timeout` have "unset vs. zero" semantics (0 is a valid explicit value), so `markSetFlags` records cobra's `Changed()` into `cfg.SubagentDepthSet`/`ApprovalTimeoutSet`; `harnessOptions` only applies them when set.
+`--subagent-depth`, `--approval-timeout`, and `--thinking` have "unset vs. zero" semantics (0/false are valid explicit values), so `markSetFlags` records cobra's `Changed()` into `cfg.SubagentDepthSet`/`ApprovalTimeoutSet`/`ThinkingSet`; `harnessOptions` only applies them when set.
+
+### Model registry (`cmd/app/models.go`)
+
+`loadModelRegistry` parses `models.yaml` (path from `TENZING_MODELS_CONFIG`, default `models.yaml`; a missing file is an empty registry, an invalid one is a startup error) into the process-wide registry `root.go` installs before any resolution. Entries add custom models per provider (`context_window`/`max_tokens` default 128k/32k, `vision` marks image support, `base_url` becomes a `WithProviderBaseURL` for that provider, `cost` is USD per MTok with cache read/write defaulting to the Anthropic 0.1×/1.25× convention) and an optional `default:` ref. Resolution of a `provider/name` ref checks custom entries first, then the compiled-in set derived from `tenzing.StandardModels()` (`pkg/tenzing/models.go`) — adding a standard model there is still the only step. Effective main-model precedence: explicit `--model` > `TENZING_MODEL` env > `models.yaml` `default:` > compiled default.
 
 ### Env precedence
 
-`mergeEnv` applies the three pre-existing env vars (`SERVER_PORT`, `LOG_DEBUG`, `NEXUS_CONFIG`) as a fallback layer: an explicitly-passed flag always wins, otherwise the env var overrides the flag default. No other flags read the environment — there is no `MODEL` env var.
+`mergeEnv` applies the three pre-existing env vars (`SERVER_PORT`, `LOG_DEBUG`, `NEXUS_CONFIG`) as a fallback layer: an explicitly-passed flag always wins, otherwise the env var overrides the flag default. Three further env-only settings load via the same `Config` struct: `TENZING_MODELS_CONFIG` (models.yaml path), `TENZING_MODEL` (main-model fallback, see precedence above), and `TENZING_PROJECT_TRUST` (default trust decision, see "Project config & trust" below).
+
+### Project config & trust
+
+Project-local drop-in config — `./SYSTEM.md` (replaces the system prompt), `./APPEND_SYSTEM.md` (appends to the rendered default), `./.tenzing/prompts/` (slash-command templates) — is consumed only for trusted directories (`cmd/app/trust.go`, `projectconfig.go`). Decisions persist per directory in `<UserConfigDir>/tenzing/trust.json`; absent a persisted decision, `TENZING_PROJECT_TRUST` decides (`trust` grants, anything else — the default `skip` — denies). `--trust` grants for one run without persisting; serve mode also exposes `GET /trust` (decision + source: `persisted`/`env`/`default`/`error`) and `POST /trust` (persist; applies on restart since config is read at startup). Global equivalents under `<UserConfigDir>/tenzing/` (`SYSTEM.md`, `APPEND_SYSTEM.md`, `prompts/`) always load. Precedence: project beats global, replace (SYSTEM.md) beats append (APPEND_SYSTEM.md), and an explicit `--system` beats both (project-config options are applied before `harnessOptions`, so the later option wins). Template dirs register global-first so project names win on collision. AGENTS.md context files are exempt from trust.
 
 ### Wire schema (`internal/app/wire`)
 
@@ -697,7 +732,7 @@ Both print-mode JSONL and serve-mode SSE serialize events through one versioned 
 
 ### Print mode
 
-`runPrint` (`cmd/app/print.go`) builds a harness from the same `harnessOptions(cfg)` as serve mode, runs one `RunTurn`, and exits. Headless permission default: `WithApprovalTimeout(0)` (deny mutating tools instantly) unless `--approval-timeout` was explicitly set or `--no-permissions` is passed. Denials are not silent: `runPrint` subscribes an event bus in both output modes and counts `tool.denied` events; a non-zero count prints a stderr summary (`N tool call(s) denied by permission policy — pass --no-permissions or --approval-timeout to allow`) and, in json mode, lands as `denied_tools` on the final result line. Exit code stays 0 for denials — automation should check `denied_tools`/stderr.
+`runPrint` (`cmd/app/print.go`) builds a harness from the project-config options plus the same `harnessOptions(cfg)` as serve mode, runs one turn via `RunTurnWithImages`, and exits. `@path.png`-style tokens in the `-p` prompt (extensions: png/jpg/jpeg/gif/webp) are extracted as image attachments (`extractImageArgs`) — a typo'd image path errors instead of silently becoming query text; `--timeout > 0` wraps the turn in a context deadline. Headless permission default: `WithApprovalTimeout(0)` (deny mutating tools instantly) unless `--approval-timeout` was explicitly set or `--no-permissions` is passed. Denials are not silent: `runPrint` subscribes an event bus in both output modes and counts `tool.denied` events; a non-zero count prints a stderr summary (`N tool call(s) denied by permission policy — pass --no-permissions or --approval-timeout to allow`) and, in json mode, lands as `denied_tools` on the final result line. Exit code stays 0 for denials — automation should check `denied_tools`/stderr.
 
 `--output-format json` subscribes a private `EventBus` and forwards every event plus text/thinking deltas as JSON lines via a mutex-serialized `jsonlWriter`; the bus is closed and drained before the final `{"type":"result",...}` line is written, so that line is always last. Delivery is lossless under stdout backpressure: an unbounded in-memory queue (`eventQueue`) decouples the 256-slot bus subscription from stdout writes — a drain goroutine moves events bus→queue without ever blocking on stdout (so the bus's drop-on-full `Emit` can't fire), and a writer goroutine consumes the queue at the consumer's speed. Memory is bounded by one turn's event backlog. A failed stdout write (consumer closed the pipe) cancels the in-flight turn via the `jsonlWriter`'s `onErr` hook.
 
@@ -705,11 +740,40 @@ Exit codes: `0` success, `1` config/startup error, `2` turn failure (`exitCodeEr
 
 ### Serve-mode SSE stream
 
-`agentServer.forwardEvents` (`cmd/app/server.go`) forwards a subset of bus events to `/events` SSE clients: `translateSSE` maps each forwarded event to `wire.ToWire`'s envelope wrapped in an `sseEnvelope` that adds a server-side `agent` label (subagent runner-id → blackboard slot name) — the SSE event name is the wire type (`tool_execution.started`, `tool.succeeded`, `tool.failed`, `llm.response`, `tool.progress`, `approval.requested`, `subagent.started`, `subagent.stopped`, `nexus.channel_error`, `nexus.channel_status`, `nexus.trigger`). Event types outside that set are not forwarded. `forwardEvents` keeps the side effects the pure translation can't own: the subagent label map and approval-responder capture. Server-lifecycle SSE events (`status`, `answer`, `error`, and raw-text `text_delta`/`thinking_delta`) are emitted directly by the server, not via wire. The embedded chat UI (`cmd/app/index.go`) parses the wire envelope shapes (`.data` fields plus top-level `.agent`).
+`agentServer.forwardEvents` (`cmd/app/server.go`) forwards a subset of bus events to `/events` SSE clients: `translateSSE` maps each forwarded event to `wire.ToWire`'s envelope wrapped in an `sseEnvelope` that adds a server-side `agent` label (subagent runner-id → blackboard slot name) — the SSE event name is the wire type (`tool_execution.started`, `tool.succeeded`, `tool.failed`, `llm.response`, `tool.progress`, `approval.requested`, `subagent.started`, `subagent.stopped`, `steering.injected`, `llm.retry`, `model.changed`, `thinking.changed`, `images.attached`, `nexus.channel_error`, `nexus.channel_status`, `nexus.trigger`). Event types outside that set are not forwarded. `forwardEvents` keeps the side effects the pure translation can't own: the subagent label map, approval-responder capture, and cost accounting — every `llm.response` is tracked by the `costTracker` and followed by a `cost` SSE event carrying the running `costStats`. Server-lifecycle SSE events (`status`, `answer`, `error`, `queued`, `cost`, and raw-text `text_delta`/`thinking_delta`) are emitted directly by the server, not via wire. The embedded chat UI (`cmd/app/index.go`) parses the wire envelope shapes (`.data` fields plus top-level `.agent`) and adds image attachments (paste/drag-drop, gated on `/state`'s `vision`) and a live cost display.
+
+### Turn queue
+
+`/query` never 409s on a busy agent: `startTurnOrQueue` starts the turn when idle or appends a `turnRequest{query, images}` to an in-memory FIFO and returns `queued` (broadcasting a `queued` SSE event with the position). `finishTurn` releases the busy slot or chains directly into the next queued request — new submissions keep queueing behind it, and nexus wakes (which use the non-queueing `startTurn` and simply retry after `TurnEnded`) stay deferred until the queue drains. `POST /cancel` cancels the in-flight turn AND drops all queued follow-ups (reporting the dropped count); shutdown (`cancelActiveTurn`) does the same. The only 409 on `/query` is `server shutting down`.
+
+### Serve-mode endpoints
+
+Beyond `/` (chat UI), `GET /events` (SSE), `GET /debug` (log SSE), and `POST /ingest/{name}` (nexus webhook):
+
+| Endpoint | Behavior |
+|----------|----------|
+| `POST /query` | `{query, images[]?}` → `started`/`queued`; images validated (MIME + base64) and pre-flighted against `SupportsVision` (400 before any turn starts) |
+| `POST /cancel` | Cancel + drop queue |
+| `POST /steer` | `{message}` → `Harness.Steer` (400 when nothing is running) |
+| `POST /approve` | `{call_id, approved}` → pending approval responder |
+| `GET /state` | `{state (running/idle), loop_state (FSM), queued, conversation_id, model, vision, tools}` |
+| `GET /sessions` | Sessions for the server's cwd, newest first (`conversation_id`, `name`, `model`, timestamps, `entries`, `active`) |
+| `DELETE /sessions/{id}` | Delete a session (409 for the active conversation — the live store holds its handle) |
+| `PATCH /sessions/{id}` | `{name}` → rename (session label entry) |
+| `GET /messages` | Active conversation's history reconstructed from the session log |
+| `POST /compact` | `{instructions?}` → `Harness.Compact` (409 mid-turn) |
+| `POST /thinking` | `{enabled}` → `Harness.SetThinking` |
+| `POST /model` | `{model}` (provider/name ref, resolved via the registry) → `Harness.SetModel` |
+| `GET /models` | Current model + every resolvable ref (custom + builtin) |
+| `GET /stats` | `costStats`: per-model calls/tokens (incl. cache read/creation) and USD cost — `cost_usd` is null for unpriced models, and the total goes null if any used model is unpriced |
+| `GET /trust`, `POST /trust` | Read / persist the trust decision for the server's cwd |
+| `GET /info` | Registered tool count |
+
+Session endpoints 400 when persistence is disabled (`WithSessionDisabled`).
 
 ### Container
 
-`NewAppContainer(cfg *cliConfig)` (`cmd/app/container.go`) resolves the model, loads nexus config, and wires `harnessOptions(cfg)` the same way print mode does. `runServe` calls `signal.Reset(os.Interrupt)` after the server stops, so a second Ctrl+C during shutdown force-kills the process instead of being swallowed by the `NotifyContext` registered in `main`.
+`NewAppContainer(cfg *cliConfig)` (`cmd/app/container.go`) resolves the model (registry already loaded by `root.go`), resolves project trust (`--trust` short-circuits; else trust.json / `TENZING_PROJECT_TRUST`), loads the drop-in project config, then wires options in winning order — project config, registry base URLs, `harnessOptions(cfg)`, nexus tools — and passes the registry's pricing into `newAgentServer` (the cost tracker must exist before event forwarding starts). `runServe` calls `signal.Reset(os.Interrupt)` after the server stops, so a second Ctrl+C during shutdown force-kills the process instead of being swallowed by the `NotifyContext` registered in `main`.
 
 ## 17. Nexus
 
@@ -861,8 +925,6 @@ A pure alias/re-export facade over harness, core, adapter, and provider types �
 - FSM: don't add states or transitions without updating this document (see `AGENTS.md`).
 
 **Known design issues:**
-- **`features/snapshot` is unwired.** The Write/Revert tools and `SnapshotStore` exist and are tested (`internal/harness/integration_test.go`) but nothing registers them in `harness.New` — the composed agent has no `Write` tool and writes files via `Edit`/`bash`. Either wire it or delete it; the default permission policy already lists `write`/`revert` in anticipation.
-- **`FileTracker` is unwired.** Read-before-edit enforcement exists in `features/builtins/file_tracker.go` but isn't hooked into the Edit tool.
 - **`adapters/toolport` tests import `features/builtins`** (test binary only; a local fake `Definition` set would remove it).
 - **`features/mcp` carries provider SDK types**; it's the one feature whose "state" is a network connection — cancellation/reconnect behavior lives entirely inside the package.
 - **`core.Agent` / `core.ModelPort` relationship is structural, not declared** — identical `DoReasoning` shape, no compile-time assertion tying them together; worth adding one if it ever drifts.
@@ -870,5 +932,4 @@ A pure alias/re-export facade over harness, core, adapter, and provider types �
 **Not built yet:**
 - Cache-aware system-prompt ordering and trust labels on untrusted content (the "Context is assembled" goal is only partially implemented).
 - Cost budgets in USD (llm-providers exposes no pricing tables).
-- Cross-process session persistence beyond compression-summary memory (`memory.go` persists summaries and `WithConversationID` resumes them; full transcript persistence does not exist).
 - Mid-turn steering / follow-up queueing (see `docs/PI_FEATURES_TO_IMPLEMENT.md`).

@@ -29,12 +29,17 @@ Provider-agnostic via canonical types (`Message`, `ContentBlock`, `CompletionReq
 
 ## Features
 
-- **Tool system** — bash, read, write, edit, grep, glob, revert (file snapshots)
+- **Tool system** — bash, Read, Write, Edit, Grep, Glob, ls; Edit and overwriting Write enforce read-before-edit via per-registry FileTracker stamps, with atomic per-path-locked writes
 - **Skill system** — lazy-loaded domain knowledge via YAML-frontmatter Markdown files
 - **Subagents** — spawn isolated agent loops with fresh context; only the final summary returns to the parent
 - **Context compression** — three-layer system: recent messages kept verbatim, older messages summarized via LLM, summaries persisted per conversation to `<UserConfigDir>/tenzing/.agent_memory-<date>-<agent-id>.md` (resume with `WithConversationID`)
 - **Shared blackboard REPL** — one persistent, sandboxed Python REPL shared by the main agent and subagents, for processing inputs beyond the context window (`llm_query`/`llm_batch` sub-LLM calls in loops over shared state)
 - **Todo planning** — model commits a plan before acting (dependency-aware, in-memory task board, one plan per harness or subagent), progress re-injected as reminders after every tool call
+- **Session persistence** — conversations recorded as JSONL per working directory; resume with `--resume <id>` or `-c` (latest), manage over HTTP (`GET/DELETE/PATCH /sessions`, `GET /messages`)
+- **Model registry** — `models.yaml` adds custom models (per-provider `base_url`, `vision`, per-MTok `cost`) and a default model ref on top of the compiled-in set; env `TENZING_MODELS_CONFIG` picks the file, `TENZING_MODEL` overrides the default
+- **Project config & trust** — `./SYSTEM.md` replaces / `./APPEND_SYSTEM.md` appends to the system prompt, `./.tenzing/prompts` adds slash-command templates; project-local files load only for trusted directories (`--trust`, `POST /trust`, or `TENZING_PROJECT_TRUST=trust`), global `<UserConfigDir>/tenzing/` equivalents always load
+- **Cost tracking** — token usage (incl. prompt-cache tokens) and USD cost per model, priced from `models.yaml`; `GET /stats` + a `cost` SSE event
+- **Vision** — image input on vision-capable models: `@path.png` args in `-p` prompts, `images[]` on `POST /query`, paste/drag-drop in the chat UI
 
 ## Prerequisites
 
@@ -55,6 +60,7 @@ go run ./cmd/app
 
 # One-shot programmatic run
 go run ./cmd/app -p "summarize README.md"
+task ask -- "summarize README.md"
 
 # JSONL event stream
 go run ./cmd/app -p "..." --output-format json
@@ -62,9 +68,43 @@ go run ./cmd/app -p "..." --output-format json
 # Pick a model / set budgets
 go run ./cmd/app -p "..." --model anthropic/claude-sonnet-4-6 --max-tokens 50000
 go run ./cmd/app --list-models
+
+# Sessions: continue the latest conversation for this directory, or a specific one
+go run ./cmd/app -p "and now?" -c
+go run ./cmd/app -p "and now?" --resume <conversation-id>
+go run ./cmd/app -p "ephemeral" --no-session
+
+# Prompt/behavior controls
+go run ./cmd/app -p "..." --system prompt.md      # file replaces the system prompt
+go run ./cmd/app -p "..." --thinking=false        # toggle model reasoning
+go run ./cmd/app -p "..." --no-context-files      # skip AGENTS.md loading
+go run ./cmd/app -p "..." --trust                 # load ./SYSTEM.md etc. this run
+go run ./cmd/app -p "..." --timeout 5m            # abort the turn after 5m
+
+# Attach images (vision-capable models): @path tokens in the prompt
+go run ./cmd/app -p "describe @screenshot.png"
 ```
 
-Set your provider API key in the environment (e.g. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`).
+Set your provider API key in the environment (e.g. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`). Optional env: `TENZING_MODELS_CONFIG` (models.yaml path, default `models.yaml`), `TENZING_MODEL` (default model as `provider/name`), `TENZING_PROJECT_TRUST` (`trust` to load project-local config by default).
+
+## HTTP API (serve mode)
+
+`/` chat UI · `GET /events` SSE stream · `GET /debug` log SSE. JSON endpoints:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /query` | Start a turn (`query` + optional `images[]`); returns `started` or, when busy, `queued` — follow-ups run in order |
+| `POST /cancel` | Cancel the running turn and drop queued follow-ups |
+| `POST /steer` | Inject a user message into the running turn at the next tool boundary |
+| `POST /approve` | Answer a pending tool-approval request |
+| `GET /state` | `state`/`loop_state`/`queued`/`conversation_id`/`model`/`vision`/`tools` |
+| `GET /sessions`, `DELETE /sessions/{id}`, `PATCH /sessions/{id}` | List / delete / rename recorded sessions |
+| `GET /messages` | Conversation history of the active session |
+| `POST /compact` | Force context compression (optional `instructions`) |
+| `POST /thinking`, `POST /model`, `GET /models` | Toggle reasoning, switch model, list resolvable refs |
+| `GET /stats` | Token/cost totals per model |
+| `GET /trust`, `POST /trust` | Read / persist the trust decision for the server's cwd |
+| `GET /info` | Registered tool count |
 
 ## Testing
 
@@ -92,7 +132,7 @@ internal/
     toolport/           ToolPort: Composite/Wrap + the native tool Registry
   features/             core.Extension implementations (import core only), each with an
                         ext.go registration: advisor, blackboard, budgets, builtins,
-                        mcp, permissions, prompts, reminders, skills, snapshot, todo
+                        mcp, permissions, prompts, reminders, skills, todo
   harness/              Composition root: wiring, config, memory persistence
     runner/             AgentRunner facade over core.Loop
     subagent/           Subagent spawning — a child composition root

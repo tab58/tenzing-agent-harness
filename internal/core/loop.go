@@ -6,14 +6,21 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
-
-	"golang.org/x/sync/errgroup"
 
 	"github.com/tab58/llm-providers/common"
 )
 
 const logOutputMaxLen = 2000
+
+// steeringBufferSize bounds how many steering messages can wait for the next
+// tool-execution boundary before Steer starts rejecting.
+const steeringBufferSize = 16
+
+// maxParallelReadOnlyTools bounds how many read-only tool calls from one
+// batch execute concurrently.
+const maxParallelReadOnlyTools = 8
 
 // maxInvalidFinalRetries bounds how many times an invalid final answer (empty,
 // a tool call written as plain text, or a response truncated at the output
@@ -74,6 +81,7 @@ type Loop struct {
 	sysPrompt       string
 	fsm             *LoopFSM
 	approvalTimeout time.Duration
+	steerCh         chan string
 }
 
 // NewLoop creates a Loop from the given config.
@@ -106,11 +114,42 @@ func NewLoop(cfg LoopConfig) (*Loop, error) {
 		sysPrompt:       cfg.SystemPrompt,
 		fsm:             cfg.FSM,
 		approvalTimeout: cfg.ApprovalTimeout,
+		steerCh:         make(chan string, steeringBufferSize),
 	}, nil
 }
 
 // ID returns the loop's identifier.
 func (l *Loop) ID() string { return l.id }
+
+// State reports the FSM's current state (e.g. "started", "stopped",
+// "reasoning_started"). Safe for concurrent use.
+func (l *Loop) State() string { return l.fsm.Current() }
+
+// Steer queues a user message for injection into the running loop at the
+// next tool-execution boundary. Messages queued while no loop is running are
+// injected at the first boundary of the next turn. Returns an error when the
+// steering buffer is full.
+func (l *Loop) Steer(msg string) error {
+	select {
+	case l.steerCh <- msg:
+		return nil
+	default:
+		return fmt.Errorf("steering buffer full (%d pending)", steeringBufferSize)
+	}
+}
+
+// drainSteering empties the steering buffer without blocking.
+func (l *Loop) drainSteering() []string {
+	var msgs []string
+	for {
+		select {
+		case m := <-l.steerCh:
+			msgs = append(msgs, m)
+		default:
+			return msgs
+		}
+	}
+}
 
 // batchCall is one tool call after the sequential decision phase, ready for
 // concurrent execution.
@@ -120,6 +159,44 @@ type batchCall struct {
 	reason   string
 	hookErr  error
 	approval <-chan bool // non-nil when AskUser with an approver configured
+}
+
+// executeSegmented runs one response's decided calls, returning outputs in
+// call order. Runs of consecutive read-only calls (per ToolPort.ReadOnly)
+// execute concurrently, bounded by maxParallelReadOnlyTools; mutating calls
+// act as barriers and run alone. Calls with a Deny decision or a hook error
+// never execute, so their read-only classification is irrelevant to safety.
+func (l *Loop) executeSegmented(ctx context.Context, iteration int, pending []batchCall) []ToolResult {
+	outputs := make([]ToolResult, len(pending))
+	i := 0
+	for i < len(pending) {
+		j := i
+		for j < len(pending) && l.tools.ReadOnly(pending[j].call.Name) {
+			j++
+		}
+		if j == i {
+			// mutating call: run alone
+			j = i + 1
+		}
+		if j-i == 1 {
+			outputs[i] = l.executeBatched(ctx, iteration, pending[i])
+		} else {
+			sem := make(chan struct{}, maxParallelReadOnlyTools)
+			var wg sync.WaitGroup
+			for k := i; k < j; k++ {
+				wg.Add(1)
+				go func(idx int) {
+					defer wg.Done()
+					sem <- struct{}{}
+					defer func() { <-sem }()
+					outputs[idx] = l.executeBatched(ctx, iteration, pending[idx])
+				}(k)
+			}
+			wg.Wait()
+		}
+		i = j
+	}
+	return outputs
 }
 
 // executeBatched runs one decided call: per-call events, decision handling
@@ -203,13 +280,39 @@ func (l *Loop) emitToolDenied(call ToolCall, reason string) {
 
 // RunTurn executes a single turn: user input -> agent plan/execute loop -> agent result
 func (l *Loop) RunTurn(ctx context.Context, input string) (TurnResult, error) {
+	return l.run(ctx, input, func(ctx context.Context) error {
+		return l.context.AppendUser(ctx, input)
+	})
+}
+
+// RunTurnWithImages executes a single turn whose user message carries image
+// content blocks alongside the query text. Data is raw base64. The caller
+// owns the vision-capability check — this layer sends whatever it is given.
+func (l *Loop) RunTurnWithImages(ctx context.Context, input string, images []common.ImageSource) (TurnResult, error) {
+	if len(images) == 0 {
+		return l.RunTurn(ctx, input)
+	}
+	return l.run(ctx, input, func(ctx context.Context) error {
+		// Text first, then image blocks, one message — the shape vision
+		// APIs expect.
+		blocks := common.NewUserMessage(input).Content
+		for _, img := range images {
+			blocks = append(blocks, common.NewImageContent(img.MediaType, img.Data))
+		}
+		return l.context.AppendUserContent(ctx, blocks)
+	})
+}
+
+// run is the shared turn body; appendInput seeds the user message into the
+// context store before the loop starts.
+func (l *Loop) run(ctx context.Context, input string, appendInput func(context.Context) error) (TurnResult, error) {
 	var loopErr error
 	iteration := 0
 	invalidFinalRetries := 0
 	loopStart := time.Now()
 	var cumInputTokens, cumOutputTokens int64
 
-	if err := l.context.AppendUser(ctx, input); err != nil {
+	if err := appendInput(ctx); err != nil {
 		return TurnResult{}, fmt.Errorf("append input: %w", err)
 	}
 
@@ -290,13 +393,15 @@ func (l *Loop) RunTurn(ctx context.Context, input string) (TurnResult, error) {
 			HasToolCall:  len(reasoningResult.ToolCalls) > 0,
 		})
 		l.emit(LLMResponseEvent{
-			BaseEvent:    NewBaseEvent(EventLLMResponse, l.id),
-			Model:        reasoningResult.Meta.Model,
-			ResponseID:   reasoningResult.Meta.ResponseID,
-			InputTokens:  reasoningResult.Meta.InputTokens,
-			OutputTokens: reasoningResult.Meta.OutputTokens,
-			StopReason:   reasoningResult.Meta.StopReason,
-			Text:         reasoningResult.Meta.AssistantText,
+			BaseEvent:                NewBaseEvent(EventLLMResponse, l.id),
+			Model:                    reasoningResult.Meta.Model,
+			ResponseID:               reasoningResult.Meta.ResponseID,
+			InputTokens:              reasoningResult.Meta.InputTokens,
+			OutputTokens:             reasoningResult.Meta.OutputTokens,
+			CacheReadInputTokens:     reasoningResult.Meta.CacheReadInputTokens,
+			CacheCreationInputTokens: reasoningResult.Meta.CacheCreationInputTokens,
+			StopReason:               reasoningResult.Meta.StopReason,
+			Text:                     reasoningResult.Meta.AssistantText,
 		})
 		if len(reasoningResult.ToolCalls) > 0 {
 			for _, tc := range reasoningResult.ToolCalls {
@@ -381,10 +486,13 @@ func (l *Loop) RunTurn(ctx context.Context, input string) (TurnResult, error) {
 		}
 		// Batch semantics: decisions run sequentially in issue order (hooks
 		// and approval requests fire immediately, non-blocking); execution
-		// runs concurrently; results land by index so feedback keeps issue
-		// order — skipping any would poison the history with "not executed"
-		// results. Post-hooks run sequentially in issue order after the
-		// barrier, and the context store is only touched after it.
+		// runs in segments — consecutive read-only calls (per
+		// ToolPort.ReadOnly) concurrently, bounded by
+		// maxParallelReadOnlyTools, while mutating calls act as barriers and
+		// run alone. Results land by index so feedback keeps issue order —
+		// skipping any would poison the history with "not executed" results.
+		// Post-hooks run sequentially in issue order after the barrier, and
+		// the context store is only touched after it.
 		pending := make([]batchCall, len(reasoningResult.ToolCalls))
 		for i, toolCall := range reasoningResult.ToolCalls {
 			tcc := &ToolCallContext{RunnerID: l.id, Call: &toolCall, Origin: l.tools.Origin(toolCall.Name)}
@@ -396,15 +504,7 @@ func (l *Loop) RunTurn(ctx context.Context, input string) (TurnResult, error) {
 			pending[i] = bc
 		}
 
-		outputs := make([]ToolResult, len(pending))
-		g, gctx := errgroup.WithContext(ctx)
-		for i, bc := range pending {
-			g.Go(func() error {
-				outputs[i] = l.executeBatched(gctx, iteration, bc)
-				return nil
-			})
-		}
-		_ = g.Wait() // goroutines never return errors; tool failures are data
+		outputs := l.executeSegmented(ctx, iteration, pending)
 
 		for i := range outputs {
 			l.extensions.RunToolResult(ctx, &ToolResultContext{RunnerID: l.id, Call: pending[i].call, Result: &outputs[i]})
@@ -422,6 +522,24 @@ func (l *Loop) RunTurn(ctx context.Context, input string) (TurnResult, error) {
 		}
 		if err := l.context.AppendToolResults(ctx, outputs); err != nil {
 			loopErr = fmt.Errorf("append tool results: %w", err)
+			break
+		}
+
+		// Steering: user messages submitted mid-turn are appended after the
+		// tool results, so tool_use/tool_result pairing in the context store
+		// is never split by an interleaved user message.
+		for _, msg := range l.drainSteering() {
+			slog.Info("steering injected", "runner", l.id, "iter", iteration, "message_len", len(msg))
+			if err := l.context.AppendUser(ctx, msg); err != nil {
+				loopErr = fmt.Errorf("append steering message: %w", err)
+				break
+			}
+			l.emit(SteeringInjectedEvent{
+				BaseEvent: NewBaseEvent(EventSteeringInjected, l.id),
+				Message:   msg,
+			})
+		}
+		if loopErr != nil {
 			break
 		}
 	}

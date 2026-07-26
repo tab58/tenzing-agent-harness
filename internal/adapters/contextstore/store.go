@@ -26,8 +26,15 @@ type Config struct {
 	// InitialMemory is a prior session's summary, injected as the first
 	// exchange. Empty means a fresh conversation.
 	InitialMemory string
-	Emitter       core.Emitter // ContextCompressedEvent on compaction; nil = no events
-	RunnerID      string
+	// InitialHistory seeds the store with a full reconstructed message
+	// history (session resume); takes precedence over InitialMemory.
+	InitialHistory []common.Message
+	Emitter        core.Emitter // ContextCompressedEvent on compaction; nil = no events
+	RunnerID       string
+	// CompressionThreshold / CompressionKeepMessages tune auto-compression;
+	// zero keeps the defaults (0.75 of context window / 6 messages).
+	CompressionThreshold    float64
+	CompressionKeepMessages int
 }
 
 // Store is an in-memory, mutex-guarded core.ContextPort implementation.
@@ -52,9 +59,18 @@ func New(cfg Config) *Store {
 
 	if cfg.LLM != nil {
 		s.comp = compressor.NewCompressor(cfg.LLM, cfg.LLM.GetContextWindowSize())
+		if cfg.CompressionThreshold > 0 {
+			s.comp.SetThresholdFraction(cfg.CompressionThreshold)
+		}
+		if cfg.CompressionKeepMessages > 0 {
+			s.comp.SetKeepRecent(cfg.CompressionKeepMessages)
+		}
 	}
 
-	if cfg.InitialMemory != "" {
+	switch {
+	case len(cfg.InitialHistory) > 0:
+		s.msgs = append(s.msgs, cfg.InitialHistory...)
+	case cfg.InitialMemory != "":
 		s.msgs = append(s.msgs,
 			common.NewUserMessage("[Context summary from previous conversation]\n\n"+cfg.InitialMemory),
 			common.NewAssistantMessage("Understood. I have the full context from our previous work."),
@@ -78,6 +94,17 @@ func (s *Store) Messages(ctx context.Context) ([]common.Message, error) {
 func (s *Store) AppendUser(ctx context.Context, text string) error {
 	s.mu.Lock()
 	s.msgs = append(s.msgs, common.NewUserMessage(text))
+	s.mu.Unlock()
+
+	s.maybeCompress(ctx)
+	return nil
+}
+
+// AppendUserContent appends one user message with arbitrary content blocks
+// (text + images) and runs the compression check.
+func (s *Store) AppendUserContent(ctx context.Context, blocks []common.ContentBlock) error {
+	s.mu.Lock()
+	s.msgs = append(s.msgs, common.Message{Role: common.RoleUser, Content: blocks})
 	s.mu.Unlock()
 
 	s.maybeCompress(ctx)
@@ -139,6 +166,46 @@ func (s *Store) AppendToolResults(ctx context.Context, results []core.ToolResult
 
 	s.maybeCompress(ctx)
 	return nil
+}
+
+// SetLLM swaps the compression-summary client (mid-session model
+// switching). Only call between turns. No-op when compression is disabled.
+func (s *Store) SetLLM(llm common.LLM) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.comp != nil {
+		s.comp.SetLLM(llm)
+	}
+}
+
+// Compact forces context compression regardless of thresholds, optionally
+// steering the summary. Returns false when there was nothing to compact
+// (short history or compression disabled). Only call between turns.
+func (s *Store) Compact(ctx context.Context, instructions string) (bool, error) {
+	if s.comp == nil {
+		return false, nil
+	}
+
+	s.mu.Lock()
+	before := len(s.msgs)
+	compressed, summary, did, err := s.comp.Compress(ctx, s.msgs, instructions)
+	if err != nil || !did {
+		s.mu.Unlock()
+		return false, err
+	}
+	s.msgs = compressed
+	after := len(s.msgs)
+	s.mu.Unlock()
+
+	if s.emitter != nil {
+		s.emitter.Emit(core.ContextCompressedEvent{
+			BaseEvent:      core.NewBaseEvent(core.EventContextCompressed, s.id),
+			MessagesBefore: before,
+			MessagesAfter:  after,
+			Summary:        summary,
+		})
+	}
+	return true, nil
 }
 
 // maybeCompress runs the compressor's threshold check and, if compaction

@@ -137,6 +137,7 @@ func finalStep(answer string) core.ReasoningResult {
 	return core.ReasoningResult{
 		FinalAnswer: answer,
 		Meta: core.ResponseMeta{
+			AssistantText:    answer,
 			AssistantMessage: common.NewAssistantMessage(answer),
 		},
 	}

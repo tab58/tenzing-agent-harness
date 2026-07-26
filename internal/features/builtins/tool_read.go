@@ -18,9 +18,20 @@ const (
 
 var _ tooldef.Definition = (*ReadTool)(nil)
 
-type ReadTool struct{}
+type ReadTool struct {
+	tracker *FileTracker
+}
+
+// NewReadTool returns a ReadTool that stamps read content into tracker so
+// Edit/Write can verify freshness. A nil tracker disables stamping.
+func NewReadTool(tracker *FileTracker) *ReadTool {
+	return &ReadTool{tracker: tracker}
+}
 
 func (t *ReadTool) Name() string { return "Read" }
+
+// ReadOnly marks Read as safe for concurrent execution within a tool batch.
+func (t *ReadTool) ReadOnly() bool { return true }
 
 func (t *ReadTool) Description() string {
 	return "Read a file and return its contents with line numbers."
@@ -70,9 +81,15 @@ func (t *ReadTool) Execute(ctx context.Context, exctx tooldef.ExecutionContext) 
 		offset = *input.Offset
 	}
 
-	data, err := os.ReadFile(filePath)
+	resolved := resolvePath(exctx.WorkingDir, filePath)
+	data, err := os.ReadFile(resolved)
 	if err != nil {
 		return tooldef.NewToolResult(fmt.Sprintf("cannot read file: %v", err), tooldef.WithError()), nil
+	}
+	// Stamp the whole file even for offset/limit reads: the tracker is a
+	// freshness guarantee, not a full-knowledge one (see FileTracker docs).
+	if t.tracker != nil {
+		t.tracker.Record(resolved, data)
 	}
 
 	lines := strings.Split(string(data), "\n")

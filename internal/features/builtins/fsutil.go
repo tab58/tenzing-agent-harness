@@ -7,6 +7,20 @@ import (
 	"sync"
 )
 
+// resolvePath makes a tool-supplied path absolute: relative paths resolve
+// against workingDir (when set), and the result is cleaned/absolutized so
+// the same file always yields the same key for pathLocks and FileTracker.
+func resolvePath(workingDir, path string) string {
+	if !filepath.IsAbs(path) && workingDir != "" {
+		path = filepath.Join(workingDir, path)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return abs
+}
+
 // pathLocks serializes read-modify-write cycles per resolved path so
 // concurrent Edit/Write calls (e.g. from parallel subagents) cannot lose
 // updates. Grows with the number of distinct paths touched in-process;

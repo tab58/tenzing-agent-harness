@@ -26,9 +26,18 @@ import (
 var defaultModel = ollama.Model_GLM5_2_Cloud.(common.ModelDefinition)
 
 type Config struct {
-	ServerPort  int    `mapstructure:"SERVER_PORT" default:"8080"`
-	LogDebug    bool   `mapstructure:"LOG_DEBUG"`
-	NexusConfig string `mapstructure:"NEXUS_CONFIG" default:"nexus.yaml"`
+	ServerPort   int    `mapstructure:"SERVER_PORT" default:"8080"`
+	LogDebug     bool   `mapstructure:"LOG_DEBUG"`
+	NexusConfig  string `mapstructure:"NEXUS_CONFIG" default:"nexus.yaml"`
+	ModelsConfig string `mapstructure:"TENZING_MODELS_CONFIG" default:"models.yaml"`
+	// Model overrides the default model as "provider/model-name"
+	// (e.g. "ollama/qwen3.5-9b"); resolved against models.yaml entries and
+	// the built-in model set.
+	Model string `mapstructure:"TENZING_MODEL"`
+	// ProjectTrust is the default trust decision for directories without a
+	// persisted trust.json entry: "trust" loads project-local config,
+	// anything else skips it.
+	ProjectTrust string `mapstructure:"TENZING_PROJECT_TRUST" default:"skip"`
 }
 
 // AppContainer wires all app-level dependencies for cmd/app: config,
@@ -92,11 +101,39 @@ func NewAppContainer(cfg *cliConfig) (*AppContainer, error) {
 		}
 	}
 
-	extraOpts, err := harnessOptions(cfg)
+	// Project trust (F26) gates the project-local drop-in config below.
+	// --trust grants for this run only; otherwise the persisted decision or
+	// TENZING_PROJECT_TRUST applies.
+	trusted := cfg.Trust
+	trustSource := "flag"
+	if !trusted {
+		trustSource = "error"
+		trustPath, err := trustFilePath()
+		if err != nil {
+			slog.Warn("trust file path unavailable, treating project as untrusted", "error", err)
+		} else {
+			trusted, trustSource = resolveProjectTrust(trustPath, cwd, cfg.ProjectTrust)
+		}
+	}
+	slog.Info("project trust resolved", "cwd", cwd, "trusted", trusted, "source", trustSource)
+
+	// Drop-in config files: SYSTEM.md / APPEND_SYSTEM.md overrides (F24) and
+	// prompt-template dirs (F22). Applied before harnessOptions so an
+	// explicit --system wins over override files.
+	cfgDir, _ := os.UserConfigDir()
+	pc := loadProjectConfig(cwd, cfgDir, trusted)
+	pc.logDecisions()
+
+	extraOpts := pc.harnessOpts()
+	for p, url := range models.baseURLs {
+		extraOpts = append(extraOpts, harness.WithProviderBaseURL(p, url))
+	}
+	cliOpts, err := harnessOptions(cfg)
 	if err != nil {
 		logFile.Close()
 		return nil, err
 	}
+	extraOpts = append(extraOpts, cliOpts...)
 	if nx != nil {
 		extraOpts = append(extraOpts,
 			harness.WithTool(nexustools.NewListChannelsTool(nx)),
@@ -105,11 +142,14 @@ func NewAppContainer(cfg *cliConfig) (*AppContainer, error) {
 		)
 	}
 
-	api, err = newAgentServer(model, bus, nx, logB, trig.TurnEnded, extraOpts...)
+	api, err = newAgentServer(model, bus, nx, logB, trig.TurnEnded, models.pricing, extraOpts...)
 	if err != nil {
 		logFile.Close()
 		return nil, err
 	}
+	api.models = models
+	api.cwd = cwd
+	api.trustEnvDefault = cfg.ProjectTrust
 
 	if nx != nil {
 		nx.Start(context.Background())

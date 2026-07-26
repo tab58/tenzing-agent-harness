@@ -19,6 +19,9 @@ type GlobTool struct{}
 
 func (t *GlobTool) Name() string { return "Glob" }
 
+// ReadOnly marks Glob as safe for concurrent execution within a tool batch.
+func (t *GlobTool) ReadOnly() bool { return true }
+
 func (t *GlobTool) Description() string {
 	return "Find files matching a glob pattern relative to the working directory."
 }
