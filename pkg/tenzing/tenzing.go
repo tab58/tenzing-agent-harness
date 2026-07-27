@@ -52,6 +52,7 @@ var (
 	WithExtension               = harness.WithExtension
 	WithPermissionPolicy        = harness.WithPermissionPolicy
 	WithPermissionsDisabled     = harness.WithPermissionsDisabled
+	WithReadOnly                = harness.WithReadOnly
 	WithApprovalTimeout         = harness.WithApprovalTimeout
 	WithSessionDir              = harness.WithSessionDir
 	WithSessionDisabled         = harness.WithSessionDisabled

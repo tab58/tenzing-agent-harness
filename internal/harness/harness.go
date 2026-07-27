@@ -164,7 +164,19 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 	// Permissions come FIRST so later hooks observe (and may escalate, never
 	// lower) its decision.
 	var defaultExts []core.Extension
-	if !o.permissionsDisabled {
+	// Read-only mode REPLACES the permissions extension: one rule — tools
+	// marked read-only (plus spawn_agent, whose children are gated by the
+	// same hook) run, everything else is denied outright. No AskUser
+	// escalation survives to shadow that rule, and the approval timeout is
+	// forced to 0 so nothing can block. The classifier is late-bound to the
+	// composite ToolPort below. Shared with subagent loops.
+	var roExt *readOnlyExt
+	switch {
+	case o.readOnly:
+		o.approvalTimeout = 0
+		roExt = &readOnlyExt{}
+		defaultExts = append(defaultExts, roExt)
+	case !o.permissionsDisabled:
 		policy := permissions.DefaultPolicy()
 		if o.permissionPolicy != nil {
 			policy = *o.permissionPolicy
@@ -195,6 +207,9 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 			return nil, fmt.Errorf("build subagent LLM: %w", err)
 		}
 		var childExtras []core.Extension
+		if roExt != nil {
+			childExtras = append(childExtras, roExt)
+		}
 		if gateExt != nil {
 			childExtras = append(childExtras, gateExt)
 		}
@@ -346,6 +361,9 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 	composite, err := toolport.NewComposite(toolRegistry, allExts)
 	if err != nil {
 		return nil, fmt.Errorf("build tool port: %w", err)
+	}
+	if roExt != nil {
+		roExt.classify = composite.ReadOnly
 	}
 
 	// The runner owns conversation history via a ContextPort; the store

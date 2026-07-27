@@ -43,6 +43,10 @@ func (t *AdvisorTool) Description() string {
 		"and simpler alternatives. Provide the plan and any relevant task context."
 }
 
+// ReadOnly marks advisor as mutation-free (a one-shot LLM consultation):
+// safe for concurrent batch execution and allowed in read-only mode.
+func (t *AdvisorTool) ReadOnly() bool { return true }
+
 func (t *AdvisorTool) Schema() tooldef.Schema {
 	return tooldef.Schema{
 		Properties: map[string]tooldef.SchemaProperty{

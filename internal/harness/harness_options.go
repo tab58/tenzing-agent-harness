@@ -137,6 +137,10 @@ type harnessOptions struct {
 	// toolGate, when set, is consulted before every tool call (main agent
 	// and all subagents).
 	toolGate ToolCallGate
+
+	// readOnly denies every tool call whose tool is not marked read-only and
+	// forces approvalTimeout to 0 (no approval prompts ever fire).
+	readOnly bool
 }
 
 func defaultHarnessOptions() *harnessOptions {
@@ -350,6 +354,20 @@ func WithToolCallGate(gate ToolCallGate) HarnessOption {
 	return func(o *harnessOptions) {
 		o.toolGate = gate
 	}
+}
+
+// WithReadOnly denies every tool call whose tool is not marked read-only
+// (tooldef.ReadOnlyReporter / ToolSpec.ReadOnly; unmarked and unknown tools
+// count as mutating) — main agent and all subagents. spawn_agent is exempt:
+// child loops carry the same gate, so spawned agents cannot mutate the
+// filesystem (shared in-memory blackboard state may still change). Denials
+// are instant error results ("read-only mode"), never approval prompts.
+//
+// This mode REPLACES the permissions extension (WithPermissionPolicy is
+// ignored) so no AskUser escalation can shadow the marker rule — which also
+// means an MCP-origin tool's own read-only claim is trusted here.
+func WithReadOnly() HarnessOption {
+	return func(o *harnessOptions) { o.readOnly = true }
 }
 
 // WithSessionDir relocates message-level session persistence (default

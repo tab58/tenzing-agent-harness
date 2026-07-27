@@ -4,15 +4,13 @@ An AI agent harness built in Go. The harness is the environment around the model
 
 ## Architecture
 
-Three layers, strict dependency direction:
+Hexagonal (ports & adapters), five layers with strict dependency direction — **core imports nothing, adapters import core, features import core, harness imports everything**:
 
-```
-Harness → AgentRunner → Agent
-```
-
-- **Harness** — CLI/TUI, process lifecycle, session management, user I/O
-- **AgentRunner** — reusable loop primitive with FSM, tool dispatch, reminder injection
-- **Agent** — reasoning engine that talks to the LLM and decides what to do
+- **Core** (`internal/core/`) — domain vocabulary, all port interfaces, the reasoning loop and FSM
+- **Adapters** (`internal/adapters/`) — one package per port implementation (agent, contextstore, eventbus, toolport)
+- **Features** (`internal/features/`) — self-contained capabilities, each registering itself via a colocated `ext.go`
+- **Composition root** (`internal/harness/`) — builds adapters + features, wires the loop
+- **App** (`cmd/app`, `internal/app/`, `pkg/tenzing/`) — entrypoints and the public facade
 
 See `SYSTEM_ARCHITECTURE.md` for the full design.
 
@@ -34,6 +32,7 @@ Provider-agnostic via canonical types (`Message`, `ContentBlock`, `CompletionReq
 - **Subagents** — spawn isolated agent loops with fresh context; only the final summary returns to the parent
 - **Context compression** — three-layer system: recent messages kept verbatim, older messages summarized via LLM, summaries persisted per conversation to `<UserConfigDir>/tenzing/.agent_memory-<date>-<agent-id>.md` (resume with `WithConversationID`)
 - **Shared blackboard REPL** — one persistent, sandboxed Python REPL shared by the main agent and subagents, for processing inputs beyond the context window (`llm_query`/`llm_batch` sub-LLM calls in loops over shared state)
+- **Permissions & read-only mode** — code-executing/file-writing tools require approval by default (`ApprovalRequestedEvent`, `POST /approve`, 120s timeout); `--read-only` / `WithReadOnly()` instead denies every tool not marked read-only with no prompts ever — reads, `advisor`, and `spawn_agent` (children equally gated) still run; `--no-permissions` / `WithPermissionsDisabled()` disables gating entirely
 - **Todo planning** — model commits a plan before acting (dependency-aware, in-memory task board, one plan per harness or subagent), progress re-injected as reminders after every tool call
 - **Session persistence** — conversations recorded as JSONL per working directory; resume with `--resume <id>` or `-c` (latest), manage over HTTP (`GET/DELETE/PATCH /sessions`, `GET /messages`)
 - **Model registry** — `models.yaml` adds custom models (per-provider `base_url`, `vision`, per-MTok `cost`) and a default model ref on top of the compiled-in set; env `TENZING_MODELS_CONFIG` picks the file, `TENZING_MODEL` overrides the default
@@ -80,6 +79,7 @@ go run ./cmd/app -p "..." --thinking=false        # toggle model reasoning
 go run ./cmd/app -p "..." --no-context-files      # skip AGENTS.md loading
 go run ./cmd/app -p "..." --trust                 # load ./SYSTEM.md etc. this run
 go run ./cmd/app -p "..." --timeout 5m            # abort the turn after 5m
+go run ./cmd/app --read-only                      # deny mutating tools, no approval prompts
 
 # Attach images (vision-capable models): @path tokens in the prompt
 go run ./cmd/app -p "describe @screenshot.png"
@@ -136,12 +136,14 @@ internal/
   harness/              Composition root: wiring, config, memory persistence
     runner/             AgentRunner facade over core.Loop
     subagent/           Subagent spawning — a child composition root
+    prompttmpl/         Slash-command prompt templates ($1-style expansion)
+    session/            Session persistence (JSONL store, persister, list/load)
   app/
+    wire/               Versioned JSONL wire contract (event envelopes for json output / SSE)
     nexus/              Input channel monitoring (file-tail/command/webhook → agent wake-ups)
       tools/            Channel tools (list_channels, read_channel, search_channel)
 
-skills/                 Skill definitions (SKILL.md files)
-docs/                   Forward-looking design docs and reference papers
+docs/                   Reference summaries and API docs
 pkg/tenzing/            Public API facade (aliases over internal/harness)
 ```
 
@@ -150,5 +152,4 @@ pkg/tenzing/            Public API facade (aliases over internal/harness)
 - `SYSTEM_ARCHITECTURE.md` — full system design
 - `AGENTS.md` — conventions for contributing (tools, providers, skills, testing)
 - `CLAUDE.md` — AI agent working guidelines
-- `docs/PHASE_3_IMPL.md` — async execution and multi-agent team design (not yet implemented)
-- `docs/superpowers/specs/2025-06-25-permission-gates-design.md` — permission gates design (not yet implemented)
+- `docs/http-api.md` — HTTP API reference

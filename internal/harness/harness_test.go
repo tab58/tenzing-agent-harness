@@ -408,6 +408,155 @@ func TestHarnessDefaultPermissionsAskAndDeny(t *testing.T) {
 	}
 }
 
+// WithReadOnly: mutating tools (bash, repl) are denied instantly with a
+// "read-only mode" error result — no approval event ever fires — while
+// read-only-marked tools (Read, advisor) and spawn_agent (children carry
+// the same gate) execute normally.
+func TestHarnessReadOnlyMode(t *testing.T) {
+	redirectHome(t)
+	dir := t.TempDir()
+	file := filepath.Join(dir, "in.txt")
+	if err := os.WriteFile(file, []byte("readable-content"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	agent := newScriptedAgent(
+		toolStep("bash", jsonInput(map[string]any{"command": "ls"})),
+		toolStep("repl", jsonInput(map[string]any{"code": "1"})),
+		toolStep("Read", jsonInput(map[string]any{"file_path": file})),
+		toolStep("advisor", jsonInput(map[string]any{"plan": "a plan"})),
+		toolStep("spawn_agent", jsonInput(map[string]any{"task": "child task"})),
+		finalStep("done"),
+	)
+
+	// First build is the main agent; each spawn builds a child that answers
+	// immediately.
+	builds := 0
+	builder := func(_ common.LLM, _ string) (core.Agent, error) {
+		builds++
+		if builds == 1 {
+			return agent, nil
+		}
+		return newScriptedAgent(finalStep("child-done")), nil
+	}
+
+	approvals := 0
+	h, err := New(testModel,
+		WithAgentBuilder(builder),
+		WithLLMFactory(stubFactory),
+		WithSystemPrompt("test"),
+		WithContextFilesDisabled(),
+		WithAdvisorModel(testModel),
+		WithReadOnly(),
+		WithHooks(eventbus.Hooks{
+			OnApprovalRequested: func(e core.ApprovalRequestedEvent) {
+				approvals++
+				e.Respond(true)
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer h.Shutdown()
+
+	answer, err := h.RunTurn(context.Background(), "do things")
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if answer != "done" {
+		t.Errorf("answer = %q", answer)
+	}
+	if approvals != 0 {
+		t.Errorf("approval events fired = %d, want 0", approvals)
+	}
+
+	// Each call's tool result lands in the next call's last message.
+	calls := agent.capturedCalls()
+	if len(calls) != 6 {
+		t.Fatalf("agent calls = %d, want 6", len(calls))
+	}
+	lastOutput := func(c capturedCall) string {
+		msg := c.Messages[len(c.Messages)-1]
+		var out strings.Builder
+		for _, block := range msg.Content {
+			out.WriteString(block.ToolOutput)
+		}
+		return out.String()
+	}
+	for i, tool := range []string{"bash", "repl"} {
+		if got := lastOutput(calls[i+1]); !strings.Contains(got, "read-only mode") {
+			t.Errorf("%s result = %q, want read-only mode denial", tool, got)
+		}
+	}
+	if got := lastOutput(calls[3]); !strings.Contains(got, "readable-content") {
+		t.Errorf("Read result = %q, want file content", got)
+	}
+	if got := lastOutput(calls[4]); strings.Contains(got, "read-only mode") {
+		t.Errorf("advisor result = %q, want execution, not denial", got)
+	}
+	if got := lastOutput(calls[5]); !strings.Contains(got, "child-done") {
+		t.Errorf("spawn_agent result = %q, want child answer", got)
+	}
+}
+
+// In read-only mode a spawned child loop carries the same gate: its
+// mutating tool calls are denied even though the parent's spawn ran.
+func TestHarnessReadOnlyModeGatesSubagentTools(t *testing.T) {
+	redirectHome(t)
+	dir := t.TempDir()
+
+	parent := newScriptedAgent(
+		toolStep("spawn_agent", jsonInput(map[string]any{"task": "write a file"})),
+		finalStep("done"),
+	)
+	child := newScriptedAgent(
+		toolStep("write", jsonInput(map[string]any{"file_path": dir + "/out.txt", "content": "x"})),
+		finalStep("child-done"),
+	)
+
+	builds := 0
+	builder := func(_ common.LLM, _ string) (core.Agent, error) {
+		builds++
+		if builds == 1 {
+			return parent, nil
+		}
+		return child, nil
+	}
+
+	h, err := New(testModel,
+		WithAgentBuilder(builder),
+		WithLLMFactory(stubFactory),
+		WithSystemPrompt("test"),
+		WithContextFilesDisabled(),
+		WithReadOnly(),
+	)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer h.Shutdown()
+
+	if _, err := h.RunTurn(context.Background(), "delegate"); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	if _, err := os.Stat(dir + "/out.txt"); !os.IsNotExist(err) {
+		t.Errorf("child wrote the file despite read-only mode (stat err = %v)", err)
+	}
+	childCalls := child.capturedCalls()
+	if len(childCalls) != 2 {
+		t.Fatalf("child agent calls = %d, want 2", len(childCalls))
+	}
+	msg := childCalls[1].Messages[len(childCalls[1].Messages)-1]
+	var out strings.Builder
+	for _, block := range msg.Content {
+		out.WriteString(block.ToolOutput)
+	}
+	if !strings.Contains(out.String(), "read-only mode") {
+		t.Errorf("child write result = %q, want read-only mode denial", out.String())
+	}
+}
+
 // WithPermissionsDisabled: bash runs unquestioned.
 func TestHarnessPermissionsDisabledRunsToolsDirectly(t *testing.T) {
 	redirectHome(t)
