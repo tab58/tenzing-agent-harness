@@ -9,7 +9,10 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
 )
 
-var _ tooldef.Definition = (*REPLTool)(nil)
+var (
+	_ tooldef.Definition       = (*REPLTool)(nil)
+	_ tooldef.ReadOnlyReporter = (*REPLTool)(nil)
+)
 
 // REPLTool exposes the shared blackboard to one agent. Each agent gets its
 // own instance bound to its slot ID, since ExecutionContext carries no
@@ -25,6 +28,13 @@ func NewREPLTool(bb *Blackboard, agentID string) *REPLTool {
 }
 
 func (t *REPLTool) Name() string { return "repl" }
+
+// ReadOnly reports true: the sandbox blocks open and non-allowlisted
+// imports, its file callbacks (read_file, grep_file, list_files) only
+// read, and Landlock enforces read-only filesystem access on Linux. Only
+// shared in-memory blackboard state mutates, which read-only mode
+// explicitly tolerates (see WithReadOnly).
+func (t *REPLTool) ReadOnly() bool { return true }
 
 func (t *REPLTool) Description() string {
 	return fmt.Sprintf(
