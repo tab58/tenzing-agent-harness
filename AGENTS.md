@@ -47,6 +47,8 @@ Two deliberate exceptions to "never import upward":
 
 ### Blackboard REPL
 
+The blackboard is strictly an agent→subagent communication mechanism: one-shot subagents deposit their findings before disconnecting, and the parent inspects them. It is not designed for long-lived agents to share results — contents are in-memory only and lost on any reset.
+
 `internal/features/blackboard/` hosts the sandboxed Python REPL subprocess machinery (`repl.go`, `bootstrap.py`) plus the `Querier` interface and its LLM-backed implementation (`querier.go`) — the model-facing `rlm` tool and its offload path have been removed — alongside the `Blackboard` that builds on it: one persistent REPL per harness, shared by the main agent and all subagents through the `repl` tool. A single mutex serializes all access; write-own-slot is enforced in code — `bb` is a guard dict and creating/replacing a top-level key other than the executing agent's slot raises `PermissionError` (reads are unrestricted; the trusted Go `Deposit` path bypasses the guard). The blackboard's namespace (`bb` guard dict, `peek`, `bb_grep`) is injected via a setup exec (no blackboard-specific logic in `bootstrap.py`); `bootstrap.py`'s only related feature is a transport-level stdout cap (100k chars).
 
 Known limit: `llm_query` inside the blackboard holds the REPL lock for all agents while it runs; keep individual calls small and prefer `llm_batch` for fan-out work. If this hurts, the upgrade path is an async callback queue — don't reach for it speculatively.

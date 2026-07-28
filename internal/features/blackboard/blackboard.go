@@ -79,9 +79,13 @@ type Config struct {
 	TailChars int
 }
 
-// Blackboard is a persistent shared Python REPL. All access is serialized
-// by mu — that single mutex is the entire concurrency contract. The Python
-// process starts lazily on first use.
+// Blackboard is a persistent shared Python REPL. It is strictly an
+// agent→subagent communication mechanism: one-shot subagents deposit their
+// findings here before disconnecting, and the parent inspects them. It is
+// not designed for long-lived agents to share results — contents are
+// in-memory only and lost on any transport failure or reset. All access is
+// serialized by mu — that single mutex is the entire concurrency contract.
+// The Python process starts lazily on first use.
 type Blackboard struct {
 	cfg Config
 
