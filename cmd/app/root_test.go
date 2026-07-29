@@ -10,7 +10,8 @@ import (
 	"testing"
 
 	"github.com/tab58/tenzing-agent-harness/internal/harness"
-	"github.com/tab58/tenzing-agent-harness/pkg/tenzing"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	pkgmodels "github.com/tab58/tenzing-agent-harness/pkg/models"
 )
 
 func TestMergeEnv(t *testing.T) {
@@ -255,9 +256,9 @@ func TestRootCmdRejectsBadFlags(t *testing.T) {
 // TestRootCmdModelPrecedence proves the effective model order:
 // --model flag > TENZING_MODEL env > models.yaml default > compiled default.
 func TestRootCmdModelPrecedence(t *testing.T) {
-	glm := modelKey(tenzing.Ollama_GLM5_2_Cloud.Provider, tenzing.Ollama_GLM5_2_Cloud.Name)
-	qwen := modelKey(tenzing.Ollama_Qwen3_5_9B.Provider, tenzing.Ollama_Qwen3_5_9B.Name)
-	qwenBig := modelKey(tenzing.Ollama_Qwen3_5_35B.Provider, tenzing.Ollama_Qwen3_5_35B.Name)
+	glm := modelKey(pkgmodels.Ollama_GLM5_2_Cloud.(common.ModelDefinition).Provider, pkgmodels.Ollama_GLM5_2_Cloud.GetName())
+	qwen := modelKey(pkgmodels.Ollama_Qwen3_5_9B.(common.ModelDefinition).Provider, pkgmodels.Ollama_Qwen3_5_9B.GetName())
+	qwenBig := modelKey(pkgmodels.Ollama_Qwen3_5_35B.(common.ModelDefinition).Provider, pkgmodels.Ollama_Qwen3_5_35B.GetName())
 
 	yamlPath := filepath.Join(t.TempDir(), "models.yaml")
 	if err := os.WriteFile(yamlPath, []byte("default: "+qwenBig+"\n"), 0o644); err != nil {

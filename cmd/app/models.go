@@ -6,10 +6,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 	"go.yaml.in/yaml/v3"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/tenzing"
+	pkgmodels "github.com/tab58/tenzing-agent-harness/pkg/models"
 )
 
 // Custom model entries default to a 128k context window and 32k max output
@@ -61,7 +61,7 @@ type costEntry struct {
 type modelRegistry struct {
 	defaultModel common.ModelDefinition // zero when the file sets no default
 	custom       map[string]common.ModelDefinition
-	baseURLs     map[common.Provider]string
+	baseURLs     map[string]string
 	// pricing is keyed by lowercase model name (matching the model field of
 	// LLMResponseEvent); only models.yaml entries with a cost block appear.
 	pricing map[string]costEntry
@@ -76,7 +76,7 @@ var models = emptyRegistry()
 func emptyRegistry() *modelRegistry {
 	return &modelRegistry{
 		custom:   map[string]common.ModelDefinition{},
-		baseURLs: map[common.Provider]string{},
+		baseURLs: map[string]string{},
 		pricing:  map[string]costEntry{},
 	}
 }
@@ -99,19 +99,19 @@ func (r *modelRegistry) availableRefs() []string {
 	return refs
 }
 
-var knownProviders = map[string]common.Provider{
-	string(common.ProviderAnthropic):  common.ProviderAnthropic,
-	string(common.ProviderCerebras):   common.ProviderCerebras,
-	string(common.ProviderLightning):  common.ProviderLightning,
-	string(common.ProviderOllama):     common.ProviderOllama,
-	string(common.ProviderOpenAI):     common.ProviderOpenAI,
-	string(common.ProviderOpenRouter): common.ProviderOpenRouter,
+var knownProviders = map[string]string{
+	"anthropic":  "anthropic",
+	"cerebras":   "cerebras",
+	"lightning":  "lightning",
+	"ollama":     "ollama",
+	"openai":     "openai",
+	"openrouter": "openrouter",
 }
 
 // builtinModels is the compiled-in standard model set from
-// tenzing.StandardModels, keyed provider/name.
+// pkg/models, keyed provider/name.
 func builtinModels() map[string]common.ModelDefinition {
-	defs := tenzing.StandardModels()
+	defs := pkgmodels.Standard()
 	m := make(map[string]common.ModelDefinition, len(defs))
 	for _, def := range defs {
 		m[modelKey(def.Provider, def.Name)] = def
@@ -119,8 +119,8 @@ func builtinModels() map[string]common.ModelDefinition {
 	return m
 }
 
-func modelKey(p common.Provider, name string) string {
-	return strings.ToLower(string(p)) + "/" + strings.ToLower(name)
+func modelKey(p string, name string) string {
+	return strings.ToLower(p) + "/" + strings.ToLower(name)
 }
 
 // loadModelRegistry parses path. A missing file is not an error — it

@@ -12,7 +12,7 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/features/blackboard"
 	"github.com/tab58/tenzing-agent-harness/internal/features/todo"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 )
 
 type stubLLM struct{}
@@ -32,9 +32,12 @@ func (s *stubLLM) CountTokens(_ context.Context, _ common.CompletionRequest) (co
 func (s *stubLLM) ListModels(_ context.Context) ([]common.ModelInfo, error) {
 	return nil, nil
 }
-func (s *stubLLM) GetCurrentModel() string       { return "stub" }
-func (s *stubLLM) GetContextWindowSize() int     { return 4096 }
-func (s *stubLLM) ProviderName() common.Provider { return common.ProviderOllama }
+func (s *stubLLM) GetCurrentModel() string   { return "stub" }
+func (s *stubLLM) GetContextWindowSize() int { return 4096 }
+
+func (s *stubLLM) GetModel() common.Model {
+	return common.ModelDefinition{Name: "stub-model", ContextWindowSize: 128000, SupportsVision: true}
+}
 
 type stubAgent struct{}
 

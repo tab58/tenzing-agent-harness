@@ -24,7 +24,7 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/harness"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/session"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 )
 
 // agentServer exposes the harness over HTTP: an index page, an SSE event
@@ -81,7 +81,11 @@ func newAgentServer(model common.ModelDefinition, bus *eventbus.EventBus, nx *ne
 		harness.WithThinkingDeltaHandler(func(_, text string) { s.broadcastSSE("thinking_delta", text) }),
 	}, extraOpts...)
 
-	h, err := harness.New(model, opts...)
+	mainLLM, err := llms.get(model)
+	if err != nil {
+		return nil, err
+	}
+	h, err := harness.New(mainLLM, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("harness init: %w", err)
 	}
@@ -869,7 +873,11 @@ func (s *agentServer) handleModelSet(_ context.Context, _ router.MapAuthInfo, in
 	if err != nil {
 		return nil, srverrors.Wrap(srverrors.ErrBadRequest, err.Error())
 	}
-	if err := s.harness.SetModel(def); err != nil {
+	llm, err := llms.get(def)
+	if err != nil {
+		return nil, srverrors.Wrap(srverrors.ErrBadRequest, err.Error())
+	}
+	if err := s.harness.SetLLM(llm); err != nil {
 		return nil, srverrors.Wrap(srverrors.ErrConflict, err.Error())
 	}
 	out := &statusOutput{}

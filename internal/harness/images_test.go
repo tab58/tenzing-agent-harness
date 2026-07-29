@@ -5,13 +5,13 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 )
 
-var visionModel = common.ModelDefinition{Name: "vision-model", Provider: common.ProviderOllama, SupportsVision: true}
+var visionModel = common.ModelDefinition{Name: "vision-model", Provider: "ollama", SupportsVision: true}
 
 func testImages() []common.ImageSource {
 	return []common.ImageSource{{MediaType: "image/png", Data: "aGVsbG8="}}
@@ -37,9 +37,8 @@ func TestRunTurnWithImagesRunsAndEmits(t *testing.T) {
 	scripted := newScriptedAgent(finalStep("a cat"))
 	bus := eventbus.NewEventBus()
 	ch := bus.Subscribe(64)
-	h, err := New(visionModel,
+	h, err := New(&stubLLM{model: visionModel},
 		WithAgentBuilder(func(common.LLM, string) (core.Agent, error) { return scripted, nil }),
-		WithLLMFactory(stubFactory),
 		WithSystemPrompt("test"),
 		WithEventBus(bus),
 		WithContextFilesDisabled(),
@@ -78,13 +77,13 @@ func TestRunTurnWithImagesRunsAndEmits(t *testing.T) {
 	}
 }
 
-// switchableAgent is a ScriptedAgent that accepts SetLLM, so SetModel works.
+// switchableAgent is a ScriptedAgent that accepts SetLLM, so harness SetLLM works.
 type switchableAgent struct{ *ScriptedAgent }
 
 func (a *switchableAgent) SetLLM(_ common.LLM) {}
 
-// SetModel updates the capability check.
-func TestSetModelUpdatesVisionCapability(t *testing.T) {
+// SetLLM updates the capability check.
+func TestSetLLMUpdatesVisionCapability(t *testing.T) {
 	agent := &switchableAgent{ScriptedAgent: newScriptedAgent(finalStep("ok"))}
 	h := newTestHarness(t, WithAgentBuilder(func(common.LLM, string) (core.Agent, error) { return agent, nil })) // testModel: no vision
 	t.Cleanup(h.Shutdown)
@@ -92,8 +91,8 @@ func TestSetModelUpdatesVisionCapability(t *testing.T) {
 	if h.SupportsVision() {
 		t.Fatal("unexpected vision support")
 	}
-	if err := h.SetModel(visionModel); err != nil {
-		t.Fatalf("SetModel: %v", err)
+	if err := h.SetLLM(&stubLLM{model: visionModel}); err != nil {
+		t.Fatalf("SetLLM: %v", err)
 	}
 	if !h.SupportsVision() {
 		t.Error("SupportsVision() = false after switching to vision model")

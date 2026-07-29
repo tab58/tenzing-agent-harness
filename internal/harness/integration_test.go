@@ -15,7 +15,7 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/features/todo"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 )
 
 // ---------------------------------------------------------------------------
@@ -635,7 +635,10 @@ func (f *resumeFakeLLM) CountTokens(_ context.Context, _ common.CompletionReques
 func (f *resumeFakeLLM) ListModels(_ context.Context) ([]common.ModelInfo, error) { return nil, nil }
 func (f *resumeFakeLLM) GetCurrentModel() string                                  { return "resume-fake-model" }
 func (f *resumeFakeLLM) GetContextWindowSize() int                                { return f.contextWindow }
-func (f *resumeFakeLLM) ProviderName() common.Provider                            { return common.ProviderOllama }
+
+func (f *resumeFakeLLM) GetModel() common.Model {
+	return common.ModelDefinition{Name: "resume-model", ContextWindowSize: 128000, SupportsVision: true}
+}
 
 func TestIntegration_ResumeSeedsContextStoreFromPersistedMemory(t *testing.T) {
 	redirectHome(t)
@@ -657,9 +660,8 @@ func TestIntegration_ResumeSeedsContextStoreFromPersistedMemory(t *testing.T) {
 		finalStep("session one done"),
 	)
 
-	h1, err := New(testModel,
+	h1, err := New(compressionLLM,
 		WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return agent1, nil }),
-		WithLLMFactory(func(_ common.ModelDefinition) (common.LLM, error) { return compressionLLM, nil }),
 		WithSystemPrompt("test"),
 		WithContextFilesDisabled(),
 		// Session persistence would resume the full JSONL transcript; this
@@ -708,9 +710,8 @@ func TestIntegration_ResumeSeedsContextStoreFromPersistedMemory(t *testing.T) {
 	// the synthetic summary/ack exchange as the first two messages, which
 	// the agent must see on its very first DoReasoning call.
 	agent2 := newScriptedAgent(finalStep("session two done"))
-	h2, err := New(testModel,
+	h2, err := New(&stubLLM{},
 		WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return agent2, nil }),
-		WithLLMFactory(stubFactory),
 		WithSystemPrompt("test"),
 		WithConversationID(convID),
 		WithContextFilesDisabled(),

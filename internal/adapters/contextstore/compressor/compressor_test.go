@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 )
 
 const testContextWindow = 10_000 // yields threshold of 30_000 chars (10000 * compressAtFraction)
@@ -45,9 +45,12 @@ func (f *fakeLLM) ListModels(context.Context) ([]common.ModelInfo, error) {
 	return nil, common.ErrNotSupported
 }
 
-func (f *fakeLLM) GetCurrentModel() string       { return "fake-model" }
-func (f *fakeLLM) GetContextWindowSize() int     { return 128_000 }
-func (f *fakeLLM) ProviderName() common.Provider { return common.ProviderOllama }
+func (f *fakeLLM) GetCurrentModel() string   { return "fake-model" }
+func (f *fakeLLM) GetContextWindowSize() int { return 128_000 }
+
+func (f *fakeLLM) GetModel() common.Model {
+	return common.ModelDefinition{Name: "fake-model", ContextWindowSize: 128000, SupportsVision: true}
+}
 
 func newTestCompressor(t *testing.T, llm common.LLM, contextWindow int) *Compressor {
 	t.Helper()

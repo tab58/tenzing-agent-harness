@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/tab58/llm-providers/common"
 	"github.com/tab58/tenzing-agent-harness/internal/features/todo"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 )
 
 // keepRecentOnCompaction mirrors the compressor's keep-last-verbatim count:

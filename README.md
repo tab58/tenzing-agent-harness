@@ -16,14 +16,83 @@ See `SYSTEM_ARCHITECTURE.md` for the full design.
 
 ## Providers
 
-Provider-agnostic via canonical types (`Message`, `ContentBlock`, `CompletionRequest/Response`). Supported:
+Provider-agnostic via canonical types in `pkg/common` (`LLM`, `Model`, `Message`, `ContentBlock`, `CompletionRequest/Response`). The harness never constructs clients — you build a `common.LLM` from a protocol package and inject it (`tenzing.New(llm)`), so any backend that speaks one of the protocols works.
 
-- Anthropic
-- OpenAI
-- Cerebras
-- Lightning
-- OpenRouter
-- Ollama
+Protocol clients (`pkg/providers/protocols/`), each `NewClient(model, opts...) (common.LLM, error)`:
+
+- `anthropic` — native Anthropic SDK
+- `ollama` — native Ollama `/api/*` endpoints (local or Ollama Cloud)
+- `openai_compat` — any OpenAI-compatible API: OpenAI, Cerebras, Lightning, OpenRouter, ... (point it with `WithBaseURL`)
+
+Models are values implementing `common.Model`, not strings. `pkg/models` ships a catalog of standard definitions for convenience (`models.Anthropic_ClaudeSonnet4_6`, `models.OpenRouter_KimiK3`, ...), but any `common.Model` implementation — including an inline `common.ModelDefinition` — works the same. API keys and base URLs are yours to supply via client options; the library reads no env vars.
+
+## Library Usage — OpenRouter example
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/models"
+	"github.com/tab58/tenzing-agent-harness/pkg/providers/protocols/openai_compat"
+	"github.com/tab58/tenzing-agent-harness/pkg/tenzing"
+)
+
+func main() {
+	key := os.Getenv("OPENROUTER_API_KEY")
+	if key == "" {
+		log.Fatal("OPENROUTER_API_KEY not set")
+	}
+
+	// A standard model from the catalog (pkg/models)...
+	llm, err := openai_compat.NewClient(models.OpenRouter_KimiK3,
+		openai_compat.WithName("openrouter"),
+		openai_compat.WithBaseURL("https://openrouter.ai/api/v1"),
+		openai_compat.WithAPIKey(key),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// ...or any model OpenRouter serves, defined inline.
+	deepseek := common.ModelDefinition{
+		Name:              "deepseek/deepseek-chat-v3.1",
+		Provider:          "openrouter",
+		ContextWindowSize: 131072,
+		MaxTokens:         32768,
+	}
+	fast, err := openai_compat.NewClient(deepseek,
+		openai_compat.WithName("openrouter"),
+		openai_compat.WithBaseURL("https://openrouter.ai/api/v1"),
+		openai_compat.WithAPIKey(key),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	h, err := tenzing.New(llm,
+		tenzing.WithSubagentLLM(fast), // cheaper model for spawned subagents
+		tenzing.WithPermissionsDisabled(),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer h.Shutdown()
+
+	answer, err := h.RunTurn(context.Background(), "summarize README.md")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(answer)
+}
+```
+
+The same pattern serves every role: `WithSubagentLLM`, `WithBlackboardLLM`, and `WithAdvisorLLM` take any `common.LLM`; unset roles fall back to the main client. Switch the main model between turns with `Harness.SetLLM(otherLLM)`.
 
 ## Features
 
@@ -85,7 +154,7 @@ go run ./cmd/app --read-only                      # deny mutating tools, no appr
 go run ./cmd/app -p "describe @screenshot.png"
 ```
 
-Set your provider API key in the environment (e.g. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`). Optional env: `TENZING_MODELS_CONFIG` (models.yaml path, default `models.yaml`), `TENZING_MODEL` (default model as `provider/name`), `TENZING_PROJECT_TRUST` (`trust` to load project-local config by default).
+The CLI resolves provider API keys from the conventional env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CEREBRAS_API_KEY`, `LIGHTNING_API_KEY`, `OPENROUTER_API_KEY`; Ollama is keyless, `OLLAMA_API_KEY` optional). Optional env: `TENZING_MODELS_CONFIG` (models.yaml path, default `models.yaml`), `TENZING_MODEL` (default model as `provider/name`), `TENZING_PROJECT_TRUST` (`trust` to load project-local config by default).
 
 ## HTTP API (serve mode)
 
@@ -144,7 +213,13 @@ internal/
       tools/            Channel tools (list_channels, read_channel, search_channel)
 
 docs/                   Reference summaries and API docs
-pkg/tenzing/            Public API facade (aliases over internal/harness)
+pkg/
+  common/               Canonical types: LLM, Model, ModelDefinition, chat types, errors
+  models/               Standard model catalog (convenience; any common.Model works)
+  providers/
+    protocols/          Protocol clients: anthropic, ollama, openai_compat
+    ratelimit/          Client-side rate limiting (TokenBucket, Semaphore, Wrap)
+  tenzing/              Public API facade (aliases over internal/harness)
 ```
 
 ## Docs

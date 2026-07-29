@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 )
 
 // flakyLLM fails the first failN SendMessageWithTools calls with err, then
@@ -41,7 +41,10 @@ func (f *flakyLLM) CountTokens(_ context.Context, _ common.CompletionRequest) (c
 func (f *flakyLLM) ListModels(_ context.Context) ([]common.ModelInfo, error) { return nil, nil }
 func (f *flakyLLM) GetCurrentModel() string                                  { return "flaky" }
 func (f *flakyLLM) GetContextWindowSize() int                                { return 4096 }
-func (f *flakyLLM) ProviderName() common.Provider                            { return common.ProviderOllama }
+
+func (f *flakyLLM) GetModel() common.Model {
+	return common.ModelDefinition{Name: "flaky-model", ContextWindowSize: 128000, SupportsVision: true}
+}
 
 func newRetryAgent(t *testing.T, llm common.LLM, onRetry func(int, int, error, time.Duration)) *Agent {
 	t.Helper()

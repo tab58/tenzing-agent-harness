@@ -11,7 +11,7 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/features/prompts"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 )
 
 // AgentRunner is a thin facade over core.Loop. It owns construction-time

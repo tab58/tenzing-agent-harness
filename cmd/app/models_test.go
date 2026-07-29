@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 
-	"github.com/tab58/tenzing-agent-harness/pkg/tenzing"
+	pkgmodels "github.com/tab58/tenzing-agent-harness/pkg/models"
 )
 
 func writeModelsFile(t *testing.T, content string) string {
@@ -47,7 +47,7 @@ func TestLoadModelRegistry(t *testing.T) {
 				if def.ContextWindowSize != defaultCustomContextWindow || def.MaxTokens != defaultCustomMaxTokens {
 					t.Errorf("defaults not applied: %+v", def)
 				}
-				if def.Provider != common.ProviderOllama {
+				if def.Provider != "ollama" {
 					t.Errorf("provider = %q", def.Provider)
 				}
 			},
@@ -60,8 +60,8 @@ func TestLoadModelRegistry(t *testing.T) {
 				if def.ContextWindowSize != 200000 || def.MaxTokens != 4096 {
 					t.Errorf("sizes not honored: %+v", def)
 				}
-				if reg.baseURLs[common.ProviderOllama] != "http://box:11434" {
-					t.Errorf("base url = %q", reg.baseURLs[common.ProviderOllama])
+				if reg.baseURLs["ollama"] != "http://box:11434" {
+					t.Errorf("base url = %q", reg.baseURLs["ollama"])
 				}
 			},
 		},
@@ -160,7 +160,7 @@ func TestResolveRefs(t *testing.T) {
 		ref     string
 		wantErr string
 	}{
-		{ref: "anthropic/" + tenzing.Anthropic_ClaudeHaiku4_5.Name},
+		{ref: "anthropic/" + pkgmodels.Anthropic_ClaudeHaiku4_5.GetName()},
 		{ref: "no-slash", wantErr: "provider/model-name"},
 		{ref: "bogus/model", wantErr: "unknown provider"},
 		{ref: "ollama/never-heard-of-it", wantErr: "not found"},
@@ -182,7 +182,7 @@ func TestResolveRefs(t *testing.T) {
 }
 
 func TestResolveModel(t *testing.T) {
-	known := tenzing.Ollama_GLM5_2_Cloud
+	known := pkgmodels.Ollama_GLM5_2_Cloud.(common.ModelDefinition)
 	knownKey := modelKey(known.Provider, known.Name)
 	tests := []struct {
 		name    string
@@ -220,14 +220,14 @@ func TestResolveModelErrorListsValidNames(t *testing.T) {
 	if err == nil {
 		t.Fatal("want error")
 	}
-	if !strings.Contains(err.Error(), modelKey(tenzing.Ollama_GLM5_2_Cloud.Provider, tenzing.Ollama_GLM5_2_Cloud.Name)) {
+	if !strings.Contains(err.Error(), modelKey(pkgmodels.Ollama_GLM5_2_Cloud.(common.ModelDefinition).Provider, pkgmodels.Ollama_GLM5_2_Cloud.GetName())) {
 		t.Errorf("error should list valid models, got: %v", err)
 	}
 }
 
 func TestModelList(t *testing.T) {
 	out := modelList()
-	if !strings.Contains(out, modelKey(tenzing.Anthropic_ClaudeOpus4_6.Provider, tenzing.Anthropic_ClaudeOpus4_6.Name)) {
+	if !strings.Contains(out, modelKey(pkgmodels.Anthropic_ClaudeOpus4_6.(common.ModelDefinition).Provider, pkgmodels.Anthropic_ClaudeOpus4_6.GetName())) {
 		t.Errorf("modelList missing anthropic entry:\n%s", out)
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")

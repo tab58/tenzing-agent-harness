@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/app"
@@ -189,7 +189,6 @@ func newTestServer(t *testing.T, agent core.Agent, extraOpts ...harness.HarnessO
 		defaultModel,
 		bus, nil, app.NewLogBroadcaster(), nil, nil,
 		append([]harness.HarnessOption{
-			harness.WithLLMFactory(func(_ common.ModelDefinition) (common.LLM, error) { return &stubLLM{}, nil }),
 			harness.WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return agent, nil }),
 			harness.WithSubagentDepth(0),
 			// keep session files out of the real user config dir

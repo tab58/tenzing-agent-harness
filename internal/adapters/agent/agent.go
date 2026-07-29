@@ -14,7 +14,7 @@ import (
 
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 )
 
 // maxTokensStdResponse caps output tokens per LLM request.

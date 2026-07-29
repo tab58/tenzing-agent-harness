@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 )
 
 type fakeQuerierLLM struct {
@@ -34,9 +34,12 @@ func (f *fakeQuerierLLM) ListModels(context.Context) ([]common.ModelInfo, error)
 	return nil, common.ErrNotSupported
 }
 
-func (f *fakeQuerierLLM) GetCurrentModel() string       { return "fake-model" }
-func (f *fakeQuerierLLM) GetContextWindowSize() int     { return 128_000 }
-func (f *fakeQuerierLLM) ProviderName() common.Provider { return common.ProviderOllama }
+func (f *fakeQuerierLLM) GetCurrentModel() string   { return "fake-model" }
+func (f *fakeQuerierLLM) GetContextWindowSize() int { return 128_000 }
+
+func (f *fakeQuerierLLM) GetModel() common.Model {
+	return common.ModelDefinition{Name: "fake-model", ContextWindowSize: 128000, SupportsVision: true}
+}
 
 // llm_query blocks the shared REPL for every agent while it runs, so it must
 // explicitly disable model reasoning rather than inherit a thinking default.

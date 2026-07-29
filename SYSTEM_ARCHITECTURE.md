@@ -8,7 +8,7 @@ The single architecture document for `tenzing-agent-harness`: the conceptual mod
 
 **Runtime model:** a library first (`pkg/tenzing` facade), with an application entrypoint (`cmd/app`) and an app-layer server component (`internal/app/nexus`).
 
-**Core technologies:** Go stdlib, `github.com/tab58/llm-providers` (external module; Anthropic/OpenAI-style model clients under `common.*` types), MCP Go SDK (`internal/features/mcp`), a sandboxed Python subprocess (`internal/features/blackboard/repl.go` + `bootstrap.py`).
+**Core technologies:** Go stdlib, the in-repo provider layer (`pkg/common` canonical types, `pkg/providers/protocols/` protocol clients over the Anthropic/OpenAI SDKs, `pkg/models` catalog), MCP Go SDK (`internal/features/mcp`), a sandboxed Python subprocess (`internal/features/blackboard/repl.go` + `bootstrap.py`).
 
 Go module: `github.com/tab58/tenzing-agent-harness` (go 1.25.9)
 
@@ -18,7 +18,7 @@ The architecture is hexagonal (ports & adapters), organized **package-by-feature
 
 | Layer | Folder | May import | Role |
 |---|---|---|---|
-| **Core** | `internal/core/` (+ `core/tooldef/`) | nothing from `internal/` (external `llm-providers/common` allowed) | Domain vocabulary, all port interfaces, the reasoning loop |
+| **Core** | `internal/core/` (+ `core/tooldef/`) | nothing from `internal/` (`pkg/common` allowed) | Domain vocabulary, all port interfaces, the reasoning loop |
 | **Adapters** | `internal/adapters/{agent, contextstore, eventbus, toolport}` | core | One package per port implementation |
 | **Features** | `internal/features/*` (10 packages) | core only — never each other, never adapters | Self-contained capabilities; each registers itself via a colocated `ext.go` |
 | **Composition root** | `internal/harness/` (+ `runner/`, `subagent/`) | everything below | Builds adapters + features, wires the loop |
@@ -32,7 +32,7 @@ flowchart TB
         CMD["cmd/app"] --- NEXUS["internal/app (nexus, wire, logsse)"] --- PKG["pkg/tenzing (public facade)"]
     end
     subgraph HARNESS["Composition root — internal/harness"]
-        H["harness.go / harness_options.go / llm.go / memory.go"]
+        H["harness.go / harness_options.go / memory.go"]
         RUNNER["runner/ (loop driver)"]
         SUB["subagent/ (child composition root)"]
     end
@@ -59,7 +59,7 @@ flowchart TB
 
 1. `harness.New`'s unexported `defaultAgentBuilder` imports `internal/adapters/agent` so a harness works with no brain injection (`internal/harness/harness.go`); everything else talks to `core.Agent`. Override with `harness.WithAgentBuilder`.
 2. `internal/harness/subagent` is a **child composition root**: it builds a full child runner (registry, context store, extensions) per spawned agent, so it imports features and `runner/` by design (`subagent_factory.go`).
-3. `internal/core` imports the external `llm-providers/common` module (message and tool-definition types, e.g. `core.ProviderToolDefinition = common.ToolDefinition` in `core/turn.go`). The rule is "core imports nothing from `internal/`", not "core imports only stdlib".
+3. `internal/core` imports `pkg/common` (message and tool-definition types, e.g. `core.ProviderToolDefinition = common.ToolDefinition` in `core/turn.go`). The rule is "core imports nothing from `internal/`", not "core imports only stdlib". `internal/` never imports `pkg/providers` or `pkg/models` — client construction is the caller's job.
 
 ## 3. Design Goals
 
@@ -73,7 +73,7 @@ flowchart TB
 
 **Provider agnosticism.** All LLM interaction flows through canonical types (`Message`, `ContentBlock`, `CompletionRequest/Response`). Provider implementations convert to/from SDK-specific types. Swapping providers requires zero changes above the provider layer.
 
-**Risk changes the process.** The permissions extension (`internal/features/permissions`, a `core.ToolCallHook` registered FIRST in the default extension order) classifies each tool call: `Deny` > `Ask` > `Allow` > policy default, matched case-insensitively by tool name plus origin prefixes. The default policy asks for anything that executes code or writes files (`bash`, `write`, `edit`, `repl`, `spawn_agent`, `advisor`) and for every MCP-origin tool (`AskOrigins: ["mcp:"]`); everything else is allowed. `AskUser` makes the core loop emit `ApprovalRequestedEvent` and block (up to `ApprovalTimeout`, harness default 120s; timeout/cancel = deny) for a `Respond(bool)` — cmd/app forwards it over SSE as `approval.requested` and resolves it via `POST /approve {call_id, approved}` with approve/deny buttons in the embedded UI. Configure with `harness.WithPermissionPolicy`, opt out with `harness.WithPermissionsDisabled` (headless/trusted drivers), tune waiting with `harness.WithApprovalTimeout`. `harness.WithReadOnly` (CLI `--read-only`) is the no-approver mode: it REPLACES the permissions extension with a `readOnlyExt` hook (`internal/harness/readonly.go`, shared with subagent loops) that denies every call whose tool is not marked read-only per `Composite.ReadOnly` (unmarked/unknown = mutating) — `WithPermissionPolicy` is ignored, no `AskUser` escalation exists (MCP tools' own read-only claims are trusted), and the approval timeout is forced to 0 so no prompt ever fires. `advisor` is marked read-only (pure LLM call, `internal/features/advisor`); `spawn_agent` is exempt by name because child loops carry the same gate — spawned agents cannot mutate the filesystem, only shared in-memory blackboard state. The check happens in the core loop before tool execution — not in the tool itself, not in the Agent.
+**Risk changes the process.** The permissions extension (`internal/features/permissions`, a `core.ToolCallHook` registered FIRST in the default extension order) classifies each tool call: `Deny` > `Ask` > `Allow` > policy default, matched case-insensitively by tool name plus origin prefixes. The default policy asks for anything that executes code or writes files (`bash`, `write`, `edit`, `repl`, `spawn_agent`, `advisor`) and for every MCP-origin tool (`AskOrigins: ["mcp:"]`); everything else is allowed. `AskUser` makes the core loop emit `ApprovalRequestedEvent` and block (up to `ApprovalTimeout`, harness default 120s; timeout/cancel = deny) for a `Respond(bool)` — cmd/app forwards it over SSE as `approval.requested` and resolves it via `POST /approve {call_id, approved}` with approve/deny buttons in the embedded UI. Configure with `harness.WithPermissionPolicy`, opt out with `harness.WithPermissionsDisabled` (headless/trusted drivers), tune waiting with `harness.WithApprovalTimeout`. `harness.WithReadOnly` (CLI `--read-only`) is the no-approver mode: it REPLACES the permissions extension with a `readOnlyExt` hook (`internal/harness/readonly.go`, shared with subagent loops) that denies every call whose tool is not marked read-only per `Composite.ReadOnly` (unmarked/unknown = mutating) — `WithPermissionPolicy` is ignored, no `AskUser` escalation exists (MCP tools' own read-only claims are trusted), and the approval timeout is forced to 0 so no prompt ever fires. `advisor` is marked read-only (pure LLM call, `internal/features/advisor`); `repl` is marked read-only (its sandbox blocks file writes — only shared in-memory blackboard state mutates); `spawn_agent` is exempt by name because child loops carry the same gate — spawned agents cannot mutate the filesystem, only shared in-memory blackboard state. The check happens in the core loop before tool execution — not in the tool itself, not in the Agent.
 
 **Long tasks have budgets.** The budgets extension (`internal/features/budgets`, a `core.BeforeIterationHook`) enforces per-turn limits — `MaxIterations`, `MaxWallClock`, `MaxTokens` (input+output cumulative); zero = unlimited. The loop populates `TurnContext.Elapsed/InputTokens/OutputTokens` before each iteration's hooks; when a limit trips the extension sets `Terminate` and the turn ends gracefully with `TurnResult{Terminated: reason}` — a result, not a crash. Wire via `harness.WithBudgets(limits)`; subagents get `MaxIterations` from `WithSubagentMaxIterations` (default 100) through the same extension. Cost budget (USD) is deferred at the harness level — pricing now exists in cmd/app (models.yaml per-MTok costs feed the server's `costTracker`, `cmd/app/costs.go`), but `budgets.Limits` has no `MaxCost` field yet.
 
@@ -113,10 +113,15 @@ cmd/app/server.go                       agentServer — routes (/query, /cancel,
                                         /thinking, /model, /models, /stats, /trust, /info, /debug, /ingest/{name}), turn queue, SSE broadcast, event forwarding
 cmd/app/index.go                        Embedded chat UI (single-page HTML served at /; image attachments, live cost display)
 
+pkg/common/                              Canonical types: LLM/Model/ModelDefinition, chat types, errors
+pkg/models/                              Standard model catalog (convenience only; Standard() aggregate)
+pkg/providers/
+├── protocols/                          anthropic, ollama, openai_compat protocol clients (NewClient(model, opts...) → common.LLM)
+├── ratelimit/                          TokenBucket, Semaphore, Wrap decorator
+└── testutils/                          Shared test helpers
+
 pkg/tenzing/                             Public facade — pure alias/re-export, no logic
 ├── tenzing.go                          Harness, options, core/tooldef/eventbus type re-exports
-├── models.go                           StandardModels() — the model registry the CLI derives from
-└── llm.go                              LLM/CompletionRequest/Message etc. re-exports + client constructors
 
 internal/
 ├── core/                                Invariant domain: types, FSM, events, loop, all ports, the Agent
@@ -206,7 +211,6 @@ internal/
     │                                    wires core.Loop via runner.AgentRunner; defaultAgentBuilder falls
     │                                    back to adapters/agent (the one upward import)
     ├── harness_options.go              HarnessOption functional options (no config struct)
-    ├── llm.go                          llmCache, defaultLLMFactory — per-(provider,model,baseURL) client
     │                                    caching
     ├── memory.go                       memoryStore — persists ContextCompressedEvent summaries per
     │                                    conversation to disk; loaded back on WithConversationID resume
@@ -228,13 +232,15 @@ internal/
         │                                an import cycle)
         └── tool_spawn_agent.go         spawn_agent tool + AgentFactory interface
 
-LLM provider layer: external module github.com/tab58/llm-providers
-├── common/                             LLM interface + canonical message types
-├── anthropic/, openai/, cerebras/,     One package per provider (constructors,
-│   lightning/, openrouter/, ollama/    model definitions)
-├── openai_compat/                      Shared OpenAI-compatible base + 429 retry
-├── ratelimit/                          TokenBucket, Semaphore, Wrap decorator
-└── logger/                             Optional diagnostics logger
+LLM provider layer: in-repo (pkg/)
+├── pkg/common/                         LLM interface + canonical message types
+├── pkg/models/                         Standard model definitions per provider
+└── pkg/providers/
+    ├── protocols/anthropic/            Native Anthropic SDK client
+    ├── protocols/ollama/               Native Ollama /api/* client (slog diagnostics)
+    ├── protocols/openai_compat/        Shared OpenAI-compatible base + 429 retry
+    │                                   (OpenAI, Cerebras, Lightning, OpenRouter)
+    └── ratelimit/                      TokenBucket, Semaphore, Wrap decorator
 ```
 
 ## 5. Core Loop (`internal/core/loop.go`)
@@ -417,7 +423,7 @@ type ContextPort interface {
 }
 ```
 
-`AppendUserContent` carries mixed-block user messages (text + images) — `Loop.RunTurnWithImages` uses it; `Harness.RunTurnWithImages` fails fast with `ErrVisionUnsupported` when the current model lacks vision (`Harness.SupportsVision`, tracking `SetModel` switches) and emits `ImagesAttachedEvent` (full base64 payloads; the wire envelope reports only count + media types). The compressor charges each image block a flat ~1600-token estimate rather than its base64 length.
+`AppendUserContent` carries mixed-block user messages (text + images) — `Loop.RunTurnWithImages` uses it; `Harness.RunTurnWithImages` fails fast with `ErrVisionUnsupported` when the current model lacks vision (`Harness.SupportsVision`, tracking `SetLLM` switches) and emits `ImagesAttachedEvent` (full base64 payloads; the wire envelope reports only count + media types). The compressor charges each image block a flat ~1600-token estimate rather than its base64 length.
 
 Declared in `internal/core/ports.go`; owns the conversation — user/assistant messages, `tool_use`/`tool_result` pairing (a `tool_use` unanswered in the immediately following message is rejected by the Anthropic API), and compression. The `AgentRunner` holds one `ContextPort` per runner (`runner.WithContextStore`, required) and rebuilds `messages` from it every iteration.
 
@@ -429,7 +435,7 @@ One package per port implementation. All import core only.
 
 | Package | Implements | Notes |
 |---|---|---|
-| `agent/` | `core.Agent` | The default brain: wraps an `llm-providers` client, translates `DoReasoning` into provider calls (`agent.go`) |
+| `agent/` | `core.Agent` | The default brain: wraps a `common.LLM` client, translates `DoReasoning` into provider calls (`agent.go`) |
 | `contextstore/` | `core.ContextPort` | Conversation history + compression (`store.go`, `compressor/` subpackage) |
 | `eventbus/` | `core.Emitter` | Fan-out pub/sub `EventBus` (`bus.go`) plus `Hooks`/`StartHooks` — a dispatcher turning bus events into app callbacks (`hooks.go`) |
 | `toolport/` | `core.ToolPort` | The native `Registry` (`registry.go` — name-keyed `tooldef.Definition` store; `NewRegistry(cwd)` starts **empty**, seeding is the composition root's job), the `Composite` (`composite.go`) that mounts all tool sources, and `Wrap(reg)` adapting a bare registry to `core.ToolPort` (`toolport.go`) |
@@ -452,13 +458,11 @@ type Harness struct {
 
 The shared `*blackboard.Blackboard` is built locally inside `New()` (not a Harness field) and wrapped in a `blackboard.NewExt(bb, "main")` extension alongside the subagent factory's per-child `NewExt(bb, childID)` — one instance, shared.
 
-Constructor: `New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, error)`. Behavior is configured via flat `HarnessOption` functions (`internal/harness/harness_options.go`) applied over `defaultHarnessOptions()` (defaults: subagent depth 1, subagent max iterations 100, approval timeout 120s, skills dir `~/.claude/skills`, fresh event bus):
+Constructor: `New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error)` — the caller builds the client (protocol package + model) and injects it. Behavior is configured via flat `HarnessOption` functions (`internal/harness/harness_options.go`) applied over `defaultHarnessOptions()` (defaults: subagent depth 1, subagent max iterations 100, approval timeout 120s, skills dir `~/.claude/skills`, fresh event bus):
 
 - `WithAgentBuilder` — replaces the default agent implementation with a custom `runner.AgentBuilder`; the test seam for stub brains.
-- `WithSubagentModel` / `WithBlackboardModel` / `WithAdvisorModel` — per-role `common.ModelDefinition`; an unset role falls back to `mainModel`. The advisor tool is registered only when `WithAdvisorModel` is set (no advisor by default). `WithBlackboardModel` sets the model used for `llm_query`/`llm_batch` sub-LM calls inside the shared blackboard REPL.
+- `WithSubagentLLM` / `WithBlackboardLLM` / `WithAdvisorLLM` — per-role `common.LLM` clients; an unset role falls back to `mainLLM`. The advisor tool is registered only when `WithAdvisorLLM` is set (no advisor by default). `WithBlackboardLLM` sets the client used for `llm_query`/`llm_batch` sub-LM calls inside the shared blackboard REPL.
 - `WithSubagentDepth` (default 1, 0 disables `spawn_agent`) / `WithSubagentMaxIterations` (default 100 per child).
-- `WithLLMFactory` — replaces the default env-var-based LLM factory (`provider.LLMFromEnv`) entirely; the test seam for injecting fakes.
-- `WithProviderBaseURL(provider, url)` — per-provider base URL override, consumed by the default factory only.
 - The shared blackboard REPL (`repl` tool) is always on; the Python process boots lazily on first use.
 - `WithSessionDir` / `WithSessionDisabled` — message-level JSONL session persistence knobs (default on, `<UserConfigDir>/tenzing/sessions`).
 - `WithPromptTemplatesDir` — `*.md` slash-command templates expanded in `RunTurn` queries.
@@ -467,7 +471,7 @@ Constructor: `New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Har
 - `WithThinking` / `WithLLMRetry` / `WithCompressionThreshold` / `WithCompressionKeepMessages` — reasoning toggle, transient-error retry policy, and compression tuning for the default brain/context store.
 - `WithDisabledTool`, `WithSkillsDir`, `WithTool`, `WithHooks(eventbus.Hooks)`, `WithSystemPrompt`, `WithEventBus`, `WithTextDeltaHandler`/`WithThinkingDeltaHandler` (`func(runnerID, text string)` — deltas are tagged with the emitting runner's id), `WithBudgets`, `WithMCPServer`, `WithPermissionPolicy`, `WithPermissionsDisabled`, `WithReadOnly`, `WithApprovalTimeout`, `WithConversationID`, `WithExtension` — remaining registry/observability/extension knobs.
 
-LLM clients are cached per (provider, model, base URL) via an internal `llmCache` (`internal/harness/llm.go`), so roles sharing a model definition share one client and its rate limiter.
+The harness holds no LLM cache — it uses exactly the clients injected via `New`/`With*LLM`/`SetLLM`. cmd/app caches clients per (provider, model, base URL) in `cmd/app/llm.go`.
 
 The brain defaults to the built-in agent implementation: when no `WithAgentBuilder` is set, `harness.New` falls back to an unexported `defaultAgentBuilder` wrapping `agent.New` (`internal/adapters/agent`) — the one place `internal/harness` imports `internal/adapters/agent`.
 
@@ -673,7 +677,7 @@ Layers emit via the narrow `Emitter` interface (`Emit(Event)`), never importing 
 
 ### Event Types (28)
 
-Session: `session.started`, `session.ended`. Turn: `turn.started`, `turn.completed`. FSM: `loop.started`, `loop.stopped`, `reasoning.started`, `reasoning.finished`, `tool_execution.started`, `tool_execution.finished`. Business: `llm.response`, `tool.succeeded`, `tool.failed`, `tool.denied` (`ToolDeniedEvent` — typed signal that a call was blocked by the permission system: policy Deny or an unapproved AskUser escalation; fires alongside the `tool.failed` its error result produces), `tool.progress`, `context.compressing` (reserved), `context.compressed`, `error`. Subagent: `subagent.started`, `subagent.stopped`. Task: `task.created`, `task.completed`. Approval: `approval.requested` (`ApprovalRequestedEvent` — carries `CallID`/`ToolName`/`Input`/`Reason` plus a non-serialized `Respond(approved bool)` callback; idempotent, safe from any goroutine; the loop blocks on it until response, context cancel, or `LoopConfig.ApprovalTimeout`, where timeout/cancel = deny and 0 denies immediately without emitting). Runtime: `steering.injected` (a `Harness.Steer` message consumed at a tool boundary), `llm.retry` (`LLMRetryEvent` — attempt/max/error/delay per transient-LLM retry), `model.changed` (`ModelChangedEvent{From, To}` on `SetModel`), `thinking.changed` (`ThinkingChangedEvent{Enabled}` on `SetThinking`), `images.attached` (`ImagesAttachedEvent` — emitted before an image-bearing turn; the wire mapping reports count + media types only, never the base64 payloads).
+Session: `session.started`, `session.ended`. Turn: `turn.started`, `turn.completed`. FSM: `loop.started`, `loop.stopped`, `reasoning.started`, `reasoning.finished`, `tool_execution.started`, `tool_execution.finished`. Business: `llm.response`, `tool.succeeded`, `tool.failed`, `tool.denied` (`ToolDeniedEvent` — typed signal that a call was blocked by the permission system: policy Deny or an unapproved AskUser escalation; fires alongside the `tool.failed` its error result produces), `tool.progress`, `context.compressing` (reserved), `context.compressed`, `error`. Subagent: `subagent.started`, `subagent.stopped`. Task: `task.created`, `task.completed`. Approval: `approval.requested` (`ApprovalRequestedEvent` — carries `CallID`/`ToolName`/`Input`/`Reason` plus a non-serialized `Respond(approved bool)` callback; idempotent, safe from any goroutine; the loop blocks on it until response, context cancel, or `LoopConfig.ApprovalTimeout`, where timeout/cancel = deny and 0 denies immediately without emitting). Runtime: `steering.injected` (a `Harness.Steer` message consumed at a tool boundary), `llm.retry` (`LLMRetryEvent` — attempt/max/error/delay per transient-LLM retry), `model.changed` (`ModelChangedEvent{From, To}` on `SetLLM`), `thinking.changed` (`ThinkingChangedEvent{Enabled}` on `SetThinking`), `images.attached` (`ImagesAttachedEvent` — emitted before an image-bearing turn; the wire mapping reports count + media types only, never the base64 payloads).
 
 All events embed `BaseEvent` (type, timestamp, runner ID) and are JSON-serializable.
 
@@ -716,7 +720,7 @@ All flags parse into a single `cliConfig` struct (`cmd/app/options.go`); `harnes
 
 ### Model registry (`cmd/app/models.go`)
 
-`loadModelRegistry` parses `models.yaml` (path from `TENZING_MODELS_CONFIG`, default `models.yaml`; a missing file is an empty registry, an invalid one is a startup error) into the process-wide registry `root.go` installs before any resolution. Entries add custom models per provider (`context_window`/`max_tokens` default 128k/32k, `vision` marks image support, `base_url` becomes a `WithProviderBaseURL` for that provider, `cost` is USD per MTok with cache read/write defaulting to the Anthropic 0.1×/1.25× convention) and an optional `default:` ref. Resolution of a `provider/name` ref checks custom entries first, then the compiled-in set derived from `tenzing.StandardModels()` (`pkg/tenzing/models.go`) — adding a standard model there is still the only step. Effective main-model precedence: explicit `--model` > `TENZING_MODEL` env > `models.yaml` `default:` > compiled default.
+`loadModelRegistry` parses `models.yaml` (path from `TENZING_MODELS_CONFIG`, default `models.yaml`; a missing file is an empty registry, an invalid one is a startup error) into the process-wide registry `root.go` installs before any resolution. Entries add custom models per provider (`context_window`/`max_tokens` default 128k/32k, `vision` marks image support, `base_url` becomes the provider's base URL in the app's `llms` client cache (`cmd/app/llm.go`), `cost` is USD per MTok with cache read/write defaulting to the Anthropic 0.1×/1.25× convention) and an optional `default:` ref. Resolution of a `provider/name` ref checks custom entries first, then the compiled-in set derived from `models.Standard()` (`pkg/models`) — adding a standard model there is still the only step. Effective main-model precedence: explicit `--model` > `TENZING_MODEL` env > `models.yaml` `default:` > compiled default.
 
 ### Env precedence
 
@@ -763,7 +767,7 @@ Beyond `/` (chat UI), `GET /events` (SSE), `GET /debug` (log SSE), and `POST /in
 | `GET /messages` | Active conversation's history reconstructed from the session log |
 | `POST /compact` | `{instructions?}` → `Harness.Compact` (409 mid-turn) |
 | `POST /thinking` | `{enabled}` → `Harness.SetThinking` |
-| `POST /model` | `{model}` (provider/name ref, resolved via the registry) → `Harness.SetModel` |
+| `POST /model` | `{model}` (provider/name ref, resolved via the registry) → `llms.get` → `Harness.SetLLM` |
 | `GET /models` | Current model + every resolvable ref (custom + builtin) |
 | `GET /stats` | `costStats`: per-model calls/tokens (incl. cache read/creation) and USD cost — `cost_usd` is null for unpriced models, and the total goes null if any used model is unpriced |
 | `GET /trust`, `POST /trust` | Read / persist the trust decision for the server's cwd |
@@ -811,7 +815,7 @@ Three nexus event types are forwarded over SSE by `agentServer.forwardEvents`, m
 
 ## 18. Provider Layer
 
-Lives in the external module `github.com/tab58/llm-providers`. The harness imports canonical types from its `common` package and, from the module's root package (aliased `provider`), `provider.LLMFromEnv(model, opts...)` — the harness's default LLM factory (`internal/harness/llm.go`). It resolves the API key from the provider's conventional env var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CEREBRAS_API_KEY`, `LIGHTNING_API_KEY`, `OPENROUTER_API_KEY`; Ollama is keyless, `OLLAMA_API_KEY` optional) and dispatches to the matching provider's `NewClient` (`anthropic`, `openai`, `cerebras`, `lightning`, `openrouter`, `ollama`). Constructors take a `common.Model` (a `common.ModelDefinition` value, not a string) and return a `common.LLM` wrapped with default client-side rate limiting; `WithNoRateLimit` options opt out. Callers needing custom key sourcing override the factory with `harness.WithLLMFactory`.
+Lives in-repo under `pkg/`. `pkg/common` holds the canonical types; `pkg/providers/protocols/` holds the protocol clients, each `NewClient(model common.Model, opts...) (common.LLM, error)`: `anthropic` (native SDK), `ollama` (native `/api/*` endpoints), and `openai_compat` (OpenAI, Cerebras, Lightning, OpenRouter via `WithBaseURL`). Models come from `pkg/models` or any `common.Model` implementation. API keys/base URLs are caller-supplied via client options — nothing in `pkg/` reads env vars. The harness never constructs clients; `cmd/app/llm.go` is the app-side factory (`buildLLM` switches on provider, resolves the conventional env vars `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CEREBRAS_API_KEY`, `LIGHTNING_API_KEY`, `OPENROUTER_API_KEY`; Ollama keyless, `OLLAMA_API_KEY` optional) with a process-wide `llms` cache. Optional client-side limiting via `pkg/providers/ratelimit.Wrap`.
 
 ### LLM Interface
 
@@ -823,19 +827,21 @@ type LLM interface {
     CountTokens(ctx, req) → (TokenCount, error)
     ListModels(ctx) → ([]ModelInfo, error)
     GetCurrentModel() → string
+    GetContextWindowSize() → int
+    GetModel() → Model
 }
 ```
 
-Six implementations, compile-time checked:
+Three protocol implementations cover the six standard providers:
 
-| Provider | Type | Notes |
-|----------|------|-------|
-| `Anthropic` | Direct SDK | Native tool use, token counting, rate limiting |
-| `OpenAI` | OpenAI-compat | `useMaxCompletionTokens: true` |
-| `Cerebras` | OpenAI-compat | Fast inference |
-| `Lightning` | OpenAI-compat | Local/edge |
-| `OpenRouter` | OpenAI-compat | Multi-backend routing |
-| `Ollama` | Direct HTTP | Local LLM |
+| Provider | Protocol | Notes |
+|----------|----------|-------|
+| `Anthropic` | `protocols/anthropic` (direct SDK) | Native tool use, token counting, optional rate limiting |
+| `OpenAI` | `protocols/openai_compat` | `WithMaxCompletionTokens()` |
+| `Cerebras` | `protocols/openai_compat` | `WithBaseURL` + `WithRetryRateLimit()` |
+| `Lightning` | `protocols/openai_compat` | `WithBaseURL` + `WithRetryRateLimit()` |
+| `OpenRouter` | `protocols/openai_compat` | `WithBaseURL` |
+| `Ollama` | `protocols/ollama` (direct HTTP) | Local or Ollama Cloud |
 
 ### Message Types (provider-agnostic)
 
@@ -890,7 +896,7 @@ Anthropic streaming reconstructs tool call JSON from partial `input_json_delta` 
 
 ### Rate Limiting
 
-**TokenBucket** (`llm-providers/ratelimit`) — token-bucket algorithm with configurable `Rate` (tokens/second refill), `BurstSize` (max bucket capacity), `MaxConcurrency` (semaphore slots). Anthropic default: 10K input tokens/min, 10 concurrent requests. `Acquire(ctx, cost)` blocks until tokens available or ctx canceled; `Release()` frees the concurrency slot.
+**TokenBucket** (`pkg/providers/ratelimit`) — token-bucket algorithm with configurable `Rate` (tokens/second refill), `BurstSize` (max bucket capacity), `MaxConcurrency` (semaphore slots). Anthropic default: 10K input tokens/min, 10 concurrent requests. `Acquire(ctx, cost)` blocks until tokens available or ctx canceled; `Release()` frees the concurrency slot.
 
 **Retry** (OpenAI-compat only) — exponential backoff on HTTP 429. 2s base, 60s max, 50% jitter, 5 attempts. Streaming retries only if no events emitted yet.
 
@@ -903,7 +909,7 @@ Each provider converts between canonical types and SDK-specific types:
 
 ## 19. Public API — `pkg/tenzing`
 
-A pure alias/re-export facade over harness, core, adapter, and provider types — no logic of its own. `tenzing.go` re-exports the harness surface (`New`, options, event/hook types, tooldef contract); `models.go` owns `StandardModels()` (the registry the CLI's `--model` resolution derives from); `llm.go` re-exports the `common.LLM` client types and constructors for callers building custom factories. New public surface added anywhere below must be re-exported here in the same change.
+A pure alias/re-export facade over harness, core, adapter, and provider types — no logic of its own. `tenzing.go` re-exports the harness surface (`New`, options, event/hook types, tooldef contract); The `pkg/common` type layer and `pkg/models` definitions are not re-exported — consumers import those packages directly. New public surface added anywhere below must be re-exported here in the same change.
 
 ## 20. Extending the System
 

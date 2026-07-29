@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 )
 
 const logOutputMaxLen = 2000

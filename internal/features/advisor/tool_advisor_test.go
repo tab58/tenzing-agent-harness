@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tab58/llm-providers/common"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/core/tooldef"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 )
 
 // stubLLM returns a canned response (or error) and records the last request.
@@ -39,7 +39,10 @@ func (s *stubLLM) CountTokens(_ context.Context, _ common.CompletionRequest) (co
 func (s *stubLLM) ListModels(_ context.Context) ([]common.ModelInfo, error) { return nil, nil }
 func (s *stubLLM) GetCurrentModel() string                                  { return "advisor-model" }
 func (s *stubLLM) GetContextWindowSize() int                                { return 128000 }
-func (s *stubLLM) ProviderName() common.Provider                            { return common.ProviderOllama }
+
+func (s *stubLLM) GetModel() common.Model {
+	return common.ModelDefinition{Name: "stub-model", ContextWindowSize: 128000, SupportsVision: true}
+}
 
 func execute(t *testing.T, llm common.LLM, input string) core.ToolResult {
 	t.Helper()

@@ -13,7 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/app/wire"
@@ -138,9 +138,6 @@ func runPrint(ctx context.Context, cfg *cliConfig, stdout, stderr io.Writer, ext
 	pc.logDecisions()
 
 	opts := pc.harnessOpts()
-	for p, url := range models.baseURLs {
-		opts = append(opts, harness.WithProviderBaseURL(p, url))
-	}
 	cliOpts, err := harnessOptions(cfg)
 	if err != nil {
 		return err
@@ -220,7 +217,11 @@ func runPrint(ctx context.Context, cfg *cliConfig, stdout, stderr io.Writer, ext
 
 	opts = append(opts, extraOpts...)
 
-	h, err := harness.New(model, opts...)
+	mainLLM, err := llms.get(model)
+	if err != nil {
+		return fmt.Errorf("harness init: %w", err)
+	}
+	h, err := harness.New(mainLLM, opts...)
 	if err != nil {
 		return fmt.Errorf("harness init: %w", err)
 	}

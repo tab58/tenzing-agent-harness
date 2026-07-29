@@ -12,7 +12,7 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/features/prompts"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 )
 
 type stubAgent struct{}
@@ -31,7 +31,7 @@ func (s *stubAgent) DoReasoning(_ context.Context, _ []common.Message, _ []strin
 	}, nil
 }
 
-type stubLLM struct{}
+type stubLLM struct{ model common.Model }
 
 func (s *stubLLM) SendSyncMessage(_ context.Context, _ common.CompletionRequest) (common.CompletionResponse, error) {
 	return common.CompletionResponse{}, nil
@@ -48,24 +48,27 @@ func (s *stubLLM) CountTokens(_ context.Context, _ common.CompletionRequest) (co
 func (s *stubLLM) ListModels(_ context.Context) ([]common.ModelInfo, error) {
 	return nil, nil
 }
-func (s *stubLLM) GetCurrentModel() string       { return "stub" }
-func (s *stubLLM) GetContextWindowSize() int     { return 4096 }
-func (s *stubLLM) ProviderName() common.Provider { return common.ProviderOllama }
+func (s *stubLLM) GetCurrentModel() string   { return "stub" }
+func (s *stubLLM) GetContextWindowSize() int { return 4096 }
 
-var testModel = common.ModelDefinition{Name: "stub-model", Provider: common.ProviderOllama}
+func (s *stubLLM) GetModel() common.Model {
+	if s.model != nil {
+		return s.model
+	}
+	return testModel
+}
+
+var testModel = common.ModelDefinition{Name: "stub-model", Provider: "ollama"}
 
 func stubBrain(_ common.LLM, _ string) (core.Agent, error) { return &stubAgent{}, nil }
-
-func stubFactory(_ common.ModelDefinition) (common.LLM, error) { return &stubLLM{}, nil }
 
 // newTestHarness builds a harness with stubbed LLMs and brain. HOME is
 // redirected so the memory sweep and persistence never touch real dirs.
 func newTestHarness(t *testing.T, opts ...HarnessOption) *Harness {
 	t.Helper()
 	redirectHome(t)
-	h, err := New(testModel, append([]HarnessOption{
+	h, err := New(&stubLLM{}, append([]HarnessOption{
 		WithAgentBuilder(stubBrain),
-		WithLLMFactory(stubFactory),
 		WithSystemPrompt("test"),
 		WithContextFilesDisabled(),
 	}, opts...)...)
@@ -104,9 +107,8 @@ func TestMainAgentBuiltWithResolvedSystemPrompt(t *testing.T) {
 				captured = sp
 				return &stubAgent{}, nil
 			}
-			h, err := New(testModel, append([]HarnessOption{
+			h, err := New(&stubLLM{}, append([]HarnessOption{
 				WithAgentBuilder(builder),
-				WithLLMFactory(stubFactory),
 				WithContextFilesDisabled(),
 			}, tt.opts...)...)
 			if err != nil {
@@ -155,7 +157,7 @@ func TestHarnessAdvisorRegistration(t *testing.T) {
 		opts []HarnessOption
 		want bool
 	}{
-		{"advisor model set", []HarnessOption{WithAdvisorModel(testModel)}, true},
+		{"advisor model set", []HarnessOption{WithAdvisorLLM(&stubLLM{})}, true},
 		{"no advisor model", nil, false},
 	}
 
@@ -236,27 +238,9 @@ check:
 	}
 }
 
-func TestHarnessRoleModelsFallBackToMain(t *testing.T) {
-	redirectHome(t)
-	var built []string
-	factory := func(m common.ModelDefinition) (common.LLM, error) {
-		built = append(built, m.Name)
-		return &stubLLM{}, nil
-	}
-	_, err := New(testModel, WithAgentBuilder(stubBrain), WithLLMFactory(factory), WithSystemPrompt("test"), WithContextFilesDisabled())
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
-	for _, name := range built {
-		if name != testModel.Name {
-			t.Errorf("built LLM for model %q, want only %q (fallback to main)", name, testModel.Name)
-		}
-	}
-}
-
 func TestHarnessDefaultAgentBuilder(t *testing.T) {
 	redirectHome(t)
-	h, err := New(testModel, WithLLMFactory(stubFactory), WithSystemPrompt("test"), WithContextFilesDisabled())
+	h, err := New(&stubLLM{}, WithSystemPrompt("test"), WithContextFilesDisabled())
 	if err != nil {
 		t.Fatalf("New() without WithAgentBuilder error: %v", err)
 	}
@@ -292,7 +276,7 @@ func TestWithConversationIDSetsRunnerID(t *testing.T) {
 
 	// Default builder path (no WithAgentBuilder): construction must succeed
 	// with a memory file present and adopt the supplied conversation ID.
-	h, err := New(testModel, WithLLMFactory(stubFactory), WithConversationID("cafe0001"), WithContextFilesDisabled())
+	h, err := New(&stubLLM{}, WithConversationID("cafe0001"), WithContextFilesDisabled())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -362,9 +346,8 @@ func TestHarnessDefaultPermissionsAskAndDeny(t *testing.T) {
 	)
 
 	var requested core.ApprovalRequestedEvent
-	h, err := New(testModel,
+	h, err := New(&stubLLM{},
 		WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return agent, nil }),
-		WithLLMFactory(stubFactory),
 		WithSystemPrompt("test"),
 		WithContextFilesDisabled(),
 		WithHooks(eventbus.Hooks{
@@ -408,10 +391,10 @@ func TestHarnessDefaultPermissionsAskAndDeny(t *testing.T) {
 	}
 }
 
-// WithReadOnly: mutating tools (bash, repl) are denied instantly with a
+// WithReadOnly: mutating tools (bash) are denied instantly with a
 // "read-only mode" error result — no approval event ever fires — while
-// read-only-marked tools (Read, advisor) and spawn_agent (children carry
-// the same gate) execute normally.
+// read-only-marked tools (Read, advisor, repl — its sandbox blocks file
+// writes) and spawn_agent (children carry the same gate) execute normally.
 func TestHarnessReadOnlyMode(t *testing.T) {
 	redirectHome(t)
 	dir := t.TempDir()
@@ -441,12 +424,11 @@ func TestHarnessReadOnlyMode(t *testing.T) {
 	}
 
 	approvals := 0
-	h, err := New(testModel,
+	h, err := New(&stubLLM{},
 		WithAgentBuilder(builder),
-		WithLLMFactory(stubFactory),
 		WithSystemPrompt("test"),
 		WithContextFilesDisabled(),
-		WithAdvisorModel(testModel),
+		WithAdvisorLLM(&stubLLM{}),
 		WithReadOnly(),
 		WithHooks(eventbus.Hooks{
 			OnApprovalRequested: func(e core.ApprovalRequestedEvent) {
@@ -484,10 +466,13 @@ func TestHarnessReadOnlyMode(t *testing.T) {
 		}
 		return out.String()
 	}
-	for i, tool := range []string{"bash", "repl"} {
-		if got := lastOutput(calls[i+1]); !strings.Contains(got, "read-only mode") {
-			t.Errorf("%s result = %q, want read-only mode denial", tool, got)
-		}
+	if got := lastOutput(calls[1]); !strings.Contains(got, "read-only mode") {
+		t.Errorf("bash result = %q, want read-only mode denial", got)
+	}
+	// repl is marked read-only (sandbox blocks file writes; only in-memory
+	// blackboard state mutates), so it executes rather than being denied.
+	if got := lastOutput(calls[2]); strings.Contains(got, "read-only mode") {
+		t.Errorf("repl result = %q, want execution, not denial", got)
 	}
 	if got := lastOutput(calls[3]); !strings.Contains(got, "readable-content") {
 		t.Errorf("Read result = %q, want file content", got)
@@ -524,9 +509,8 @@ func TestHarnessReadOnlyModeGatesSubagentTools(t *testing.T) {
 		return child, nil
 	}
 
-	h, err := New(testModel,
+	h, err := New(&stubLLM{},
 		WithAgentBuilder(builder),
-		WithLLMFactory(stubFactory),
 		WithSystemPrompt("test"),
 		WithContextFilesDisabled(),
 		WithReadOnly(),
@@ -566,9 +550,8 @@ func TestHarnessPermissionsDisabledRunsToolsDirectly(t *testing.T) {
 		finalStep("done"),
 	)
 
-	h, err := New(testModel,
+	h, err := New(&stubLLM{},
 		WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return agent, nil }),
-		WithLLMFactory(stubFactory),
 		WithSystemPrompt("test"),
 		WithContextFilesDisabled(),
 		WithPermissionsDisabled(),

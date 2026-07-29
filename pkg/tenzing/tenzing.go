@@ -1,9 +1,13 @@
 // Package tenzing is the public API for running agents programmatically.
 // It re-exports the harness constructor, options, and the supporting types
-// needed to use them from outside this module. Create a harness with New,
-// then run a single loop with Harness.RunTurn.
+// needed to use them from outside this module. Build an LLM client from a
+// protocol package (pkg/providers/protocols/...) and a model (pkg/models or
+// any Model implementation), create a harness with New, then run a single
+// loop with Harness.RunTurn.
 //
-//	h, err := tenzing.New(model, tenzing.WithSystemPrompt("..."))
+//	llm, err := anthropic.NewClient(models.Anthropic_ClaudeSonnet4_6, anthropic.WithAPIKey(key))
+//	if err != nil { ... }
+//	h, err := tenzing.New(llm, tenzing.WithSystemPrompt("..."))
 //	if err != nil { ... }
 //	defer h.Shutdown()
 //	answer, err := h.RunTurn(ctx, "do the thing")
@@ -26,20 +30,18 @@ type Harness = harness.Harness
 // Option configures a Harness at construction time.
 type Option = harness.HarnessOption
 
-// New constructs a Harness for the given main model. See the With* options
-// for configuration.
+// New constructs a Harness around the given main LLM client. See the With*
+// options for configuration.
 var New = harness.New
 
 // Harness options.
 var (
 	WithAgentBuilder            = harness.WithAgentBuilder
-	WithLLMFactory              = harness.WithLLMFactory
-	WithProviderBaseURL         = harness.WithProviderBaseURL
-	WithSubagentModel           = harness.WithSubagentModel
+	WithSubagentLLM             = harness.WithSubagentLLM
 	WithSubagentDepth           = harness.WithSubagentDepth
 	WithSubagentMaxIterations   = harness.WithSubagentMaxIterations
-	WithBlackboardModel         = harness.WithBlackboardModel
-	WithAdvisorModel            = harness.WithAdvisorModel
+	WithBlackboardLLM           = harness.WithBlackboardLLM
+	WithAdvisorLLM              = harness.WithAdvisorLLM
 	WithDisabledTool            = harness.WithDisabledTool
 	WithSkillsDir               = harness.WithSkillsDir
 	WithTool                    = harness.WithTool

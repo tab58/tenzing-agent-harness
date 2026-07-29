@@ -4,7 +4,7 @@
 // this extension sets Terminate when any limit is exceeded, and the loop
 // returns TurnResult{Terminated: reason} — a result, not an error.
 //
-// Cost budget (USD) is a non-goal for now: llm-providers exposes no pricing
+// Cost budget (USD) is a non-goal for now: the provider layer exposes no pricing
 // tables to convert tokens into dollars.
 package budgets
 

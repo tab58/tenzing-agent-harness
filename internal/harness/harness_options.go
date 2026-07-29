@@ -11,7 +11,7 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/features/permissions"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/runner"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 )
 
 type harnessOptions struct {
@@ -19,18 +19,9 @@ type harnessOptions struct {
 	// subagents. Nil means the default agent implementation.
 	agentBuilder runner.AgentBuilder
 
-	// llmFactory builds LLM clients from model definitions. Nil means the
-	// default env-var-based factory (provider.LLMFromEnv). A custom factory
-	// is responsible for its own base URLs; baseURLs only feeds the default.
-	llmFactory func(common.ModelDefinition) (common.LLM, error)
-
-	// baseURLs holds per-provider base URL overrides consumed by the
-	// default LLM factory (e.g. a remote Ollama host).
-	baseURLs map[common.Provider]string
-
-	// subagentModel is the model for spawned subagents. Zero value falls
-	// back to the harness main model.
-	subagentModel common.ModelDefinition
+	// subagentLLM is the client for spawned subagents. Nil falls back to
+	// the harness main LLM.
+	subagentLLM common.LLM
 
 	// subagentMaxDepth limits subagent nesting; 0 disables the spawn_agent
 	// tool entirely.
@@ -39,12 +30,12 @@ type harnessOptions struct {
 	// subagentMaxIterations caps loop iterations per subagent.
 	subagentMaxIterations int
 
-	// blackboardModel is the model used for llm_query/llm_batch sub-LM calls
-	// inside the shared blackboard REPL; unset falls back to the main model.
-	blackboardModel common.ModelDefinition
+	// blackboardLLM is the client used for llm_query/llm_batch sub-LM calls
+	// inside the shared blackboard REPL; nil falls back to the main LLM.
+	blackboardLLM common.LLM
 
-	// advisorModel enables the advisor tool when set (non-zero Name).
-	advisorModel common.ModelDefinition
+	// advisorLLM enables the advisor tool when non-nil.
+	advisorLLM common.LLM
 
 	// onTextDelta is called with incremental text output from the agent,
 	// tagged with the emitting runner's id. It is called from the agent's
@@ -150,7 +141,6 @@ func defaultHarnessOptions() *harnessOptions {
 			"~/.claude/skills",
 		},
 		extraTools:            make(map[string]tooldef.Definition),
-		baseURLs:              make(map[common.Provider]string),
 		subagentMaxDepth:      1,
 		subagentMaxIterations: 100,
 		approvalTimeout:       120 * time.Second,
@@ -167,27 +157,11 @@ func WithAgentBuilder(builder runner.AgentBuilder) HarnessOption {
 	}
 }
 
-// WithLLMFactory overrides how LLM clients are built from model
-// definitions. The default resolves API keys from provider env vars.
-func WithLLMFactory(factory func(common.ModelDefinition) (common.LLM, error)) HarnessOption {
+// WithSubagentLLM sets the client used for spawned subagents. Unset falls
+// back to the main LLM.
+func WithSubagentLLM(llm common.LLM) HarnessOption {
 	return func(o *harnessOptions) {
-		o.llmFactory = factory
-	}
-}
-
-// WithProviderBaseURL sets the base URL the default LLM factory uses for the
-// given provider. Ignored when WithLLMFactory is set.
-func WithProviderBaseURL(p common.Provider, url string) HarnessOption {
-	return func(o *harnessOptions) {
-		o.baseURLs[p] = url
-	}
-}
-
-// WithSubagentModel sets the model used for spawned subagents. Unset falls
-// back to the main model.
-func WithSubagentModel(model common.ModelDefinition) HarnessOption {
-	return func(o *harnessOptions) {
-		o.subagentModel = model
+		o.subagentLLM = llm
 	}
 }
 
@@ -205,21 +179,21 @@ func WithSubagentMaxIterations(maxIter int) HarnessOption {
 	}
 }
 
-// WithBlackboardModel sets the model used for llm_query/llm_batch calls
-// inside the shared blackboard REPL; unset falls back to the main model.
+// WithBlackboardLLM sets the client used for llm_query/llm_batch calls
+// inside the shared blackboard REPL; unset falls back to the main LLM.
 // These are stateless one-shot completions (no tools, no agent loop) —
 // not subagents — so a small/fast model is often the right choice.
-func WithBlackboardModel(model common.ModelDefinition) HarnessOption {
+func WithBlackboardLLM(llm common.LLM) HarnessOption {
 	return func(o *harnessOptions) {
-		o.blackboardModel = model
+		o.blackboardLLM = llm
 	}
 }
 
-// WithAdvisorModel enables the advisor tool using the given model. Without
+// WithAdvisorLLM enables the advisor tool using the given client. Without
 // this option the advisor tool is not registered.
-func WithAdvisorModel(model common.ModelDefinition) HarnessOption {
+func WithAdvisorLLM(llm common.LLM) HarnessOption {
 	return func(o *harnessOptions) {
-		o.advisorModel = model
+		o.advisorLLM = llm
 	}
 }
 

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 )
 
 // steerTools steers the loop from inside the first tool execution, so the

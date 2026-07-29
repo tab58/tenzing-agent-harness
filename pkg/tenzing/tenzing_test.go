@@ -1,12 +1,12 @@
 // Written as an external test (package tenzing_test) so it proves a
-// consumer can build and run an agent through the facade alone, without
-// importing internal packages.
+// consumer can build and run an agent through the facade alone.
 package tenzing_test
 
 import (
 	"context"
 	"testing"
 
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 	"github.com/tab58/tenzing-agent-harness/pkg/tenzing"
 )
 
@@ -16,30 +16,32 @@ func (s *stubAgent) GetCurrentModel() string               { return "stub-model"
 func (s *stubAgent) UpdateStreamCallback(_ func(string))   {}
 func (s *stubAgent) UpdateThinkingCallback(_ func(string)) {}
 
-func (s *stubAgent) DoReasoning(_ context.Context, _ []tenzing.Message, _ []string, _ []tenzing.LLMToolDefinition) (tenzing.ReasoningResult, error) {
+func (s *stubAgent) DoReasoning(_ context.Context, _ []common.Message, _ []string, _ []common.ToolDefinition) (tenzing.ReasoningResult, error) {
 	return tenzing.ReasoningResult{FinalAnswer: "done"}, nil
 }
 
 type stubLLM struct{}
 
-func (s *stubLLM) SendSyncMessage(_ context.Context, _ tenzing.CompletionRequest) (tenzing.CompletionResponse, error) {
-	return tenzing.CompletionResponse{}, nil
+func (s *stubLLM) SendSyncMessage(_ context.Context, _ common.CompletionRequest) (common.CompletionResponse, error) {
+	return common.CompletionResponse{}, nil
 }
-func (s *stubLLM) SendStreamingMessage(_ context.Context, _ tenzing.CompletionRequest, _ chan<- tenzing.StreamEvent) error {
+func (s *stubLLM) SendStreamingMessage(_ context.Context, _ common.CompletionRequest, _ chan<- common.StreamEvent) error {
 	return nil
 }
-func (s *stubLLM) SendMessageWithTools(_ context.Context, _ tenzing.CompletionRequest, _ []tenzing.LLMToolDefinition) (tenzing.CompletionResponse, error) {
-	return tenzing.CompletionResponse{}, nil
+func (s *stubLLM) SendMessageWithTools(_ context.Context, _ common.CompletionRequest, _ []common.ToolDefinition) (common.CompletionResponse, error) {
+	return common.CompletionResponse{}, nil
 }
-func (s *stubLLM) CountTokens(_ context.Context, _ tenzing.CompletionRequest) (tenzing.TokenCount, error) {
-	return tenzing.TokenCount{}, nil
+func (s *stubLLM) CountTokens(_ context.Context, _ common.CompletionRequest) (common.TokenCount, error) {
+	return common.TokenCount{}, nil
 }
-func (s *stubLLM) ListModels(_ context.Context) ([]tenzing.ModelInfo, error) {
+func (s *stubLLM) ListModels(_ context.Context) ([]common.ModelInfo, error) {
 	return nil, nil
 }
-func (s *stubLLM) GetCurrentModel() string        { return "stub" }
-func (s *stubLLM) GetContextWindowSize() int      { return 4096 }
-func (s *stubLLM) ProviderName() tenzing.Provider { return tenzing.ProviderOllama }
+func (s *stubLLM) GetCurrentModel() string   { return "stub" }
+func (s *stubLLM) GetContextWindowSize() int { return 4096 }
+func (s *stubLLM) GetModel() common.Model {
+	return common.ModelDefinition{Name: "stub-model", Provider: "ollama"}
+}
 
 // customExt proves a consumer can implement the extension surface through
 // the facade alone: an Extension with prompt, tool, and hook capabilities.
@@ -61,15 +63,11 @@ var (
 )
 
 func TestFacadeRegistersCustomExtension(t *testing.T) {
-	model := tenzing.ModelDefinition{Name: "stub-model", Provider: tenzing.ProviderOllama}
 	ext := &customExt{}
 
-	h, err := tenzing.New(model,
-		tenzing.WithAgentBuilder(func(_ tenzing.LLM, _ string) (tenzing.Agent, error) {
+	h, err := tenzing.New(&stubLLM{},
+		tenzing.WithAgentBuilder(func(_ common.LLM, _ string) (tenzing.Agent, error) {
 			return &stubAgent{}, nil
-		}),
-		tenzing.WithLLMFactory(func(_ tenzing.ModelDefinition) (tenzing.LLM, error) {
-			return &stubLLM{}, nil
 		}),
 		tenzing.WithSystemPrompt("test"),
 		tenzing.WithExtension(ext),
@@ -88,14 +86,9 @@ func TestFacadeRegistersCustomExtension(t *testing.T) {
 }
 
 func TestFacadeRunsSingleLoop(t *testing.T) {
-	model := tenzing.ModelDefinition{Name: "stub-model", Provider: tenzing.ProviderOllama}
-
-	h, err := tenzing.New(model,
-		tenzing.WithAgentBuilder(func(_ tenzing.LLM, _ string) (tenzing.Agent, error) {
+	h, err := tenzing.New(&stubLLM{},
+		tenzing.WithAgentBuilder(func(_ common.LLM, _ string) (tenzing.Agent, error) {
 			return &stubAgent{}, nil
-		}),
-		tenzing.WithLLMFactory(func(_ tenzing.ModelDefinition) (tenzing.LLM, error) {
-			return &stubLLM{}, nil
 		}),
 		tenzing.WithSystemPrompt("test"),
 	)

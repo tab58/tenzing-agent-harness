@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness"
@@ -73,18 +73,18 @@ func (s *stubLLM) CountTokens(_ context.Context, _ common.CompletionRequest) (co
 func (s *stubLLM) ListModels(_ context.Context) ([]common.ModelInfo, error) { return nil, nil }
 func (s *stubLLM) GetCurrentModel() string                                  { return "stub" }
 func (s *stubLLM) GetContextWindowSize() int                                { return 4096 }
-func (s *stubLLM) ProviderName() common.Provider                            { return common.ProviderOllama }
+func (s *stubLLM) GetModel() common.Model {
+	return common.ModelDefinition{Name: "stub", Provider: "ollama"}
+}
 
 func stubOpts() []harness.HarnessOption {
 	return []harness.HarnessOption{
-		harness.WithLLMFactory(func(_ common.ModelDefinition) (common.LLM, error) { return &stubLLM{}, nil }),
 		harness.WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return &stubAgent{}, nil }),
 	}
 }
 
 func failingOpts() []harness.HarnessOption {
 	return []harness.HarnessOption{
-		harness.WithLLMFactory(func(_ common.ModelDefinition) (common.LLM, error) { return &stubLLM{}, nil }),
 		harness.WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return &stubFailingAgent{}, nil }),
 	}
 }
@@ -228,7 +228,6 @@ func TestRunPrintDeniedToolSummary(t *testing.T) {
 	cfg := printCfg()
 	cfg.OutputFormat = "json"
 	opts := []harness.HarnessOption{
-		harness.WithLLMFactory(func(_ common.ModelDefinition) (common.LLM, error) { return &stubLLM{}, nil }),
 		harness.WithAgentBuilder(func(_ common.LLM, _ string) (core.Agent, error) { return &stubMutatingAgent{}, nil }),
 	}
 	var out, errBuf bytes.Buffer

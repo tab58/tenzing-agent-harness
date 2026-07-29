@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 )
 
 // captureLLM records every CompletionRequest and answers with fixed text
@@ -35,7 +35,10 @@ func (c *captureLLM) CountTokens(_ context.Context, _ common.CompletionRequest) 
 func (c *captureLLM) ListModels(_ context.Context) ([]common.ModelInfo, error) { return nil, nil }
 func (c *captureLLM) GetCurrentModel() string                                  { return "capture" }
 func (c *captureLLM) GetContextWindowSize() int                                { return 4096 }
-func (c *captureLLM) ProviderName() common.Provider                            { return common.ProviderOllama }
+
+func (c *captureLLM) GetModel() common.Model {
+	return common.ModelDefinition{Name: "capture-model", ContextWindowSize: 128000, SupportsVision: true}
+}
 
 // Every request asks the provider to cache system prompt + tools, and the
 // provider's cache token counts surface in the response meta.

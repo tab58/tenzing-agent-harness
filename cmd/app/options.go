@@ -10,6 +10,7 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/features/mcp"
 	"github.com/tab58/tenzing-agent-harness/internal/harness"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/session"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 )
 
 // cliConfig holds every flag value after cobra parsing and env merging.
@@ -91,26 +92,29 @@ func parseMCPServer(s string) (mcp.ServerConfig, error) {
 func harnessOptions(cfg *cliConfig) ([]harness.HarnessOption, error) {
 	var opts []harness.HarnessOption
 
-	if cfg.SubagentModel != "" {
-		def, err := resolveModel(cfg.SubagentModel)
-		if err != nil {
-			return nil, fmt.Errorf("--subagent-model: %w", err)
+	roleLLM := func(flag, ref string, opt func(common.LLM) harness.HarnessOption) error {
+		if ref == "" {
+			return nil
 		}
-		opts = append(opts, harness.WithSubagentModel(def))
+		def, err := resolveModel(ref)
+		if err != nil {
+			return fmt.Errorf("%s: %w", flag, err)
+		}
+		llm, err := llms.get(def)
+		if err != nil {
+			return fmt.Errorf("%s: %w", flag, err)
+		}
+		opts = append(opts, opt(llm))
+		return nil
 	}
-	if cfg.BlackboardModel != "" {
-		def, err := resolveModel(cfg.BlackboardModel)
-		if err != nil {
-			return nil, fmt.Errorf("--blackboard-model: %w", err)
-		}
-		opts = append(opts, harness.WithBlackboardModel(def))
+	if err := roleLLM("--subagent-model", cfg.SubagentModel, harness.WithSubagentLLM); err != nil {
+		return nil, err
 	}
-	if cfg.AdvisorModel != "" {
-		def, err := resolveModel(cfg.AdvisorModel)
-		if err != nil {
-			return nil, fmt.Errorf("--advisor-model: %w", err)
-		}
-		opts = append(opts, harness.WithAdvisorModel(def))
+	if err := roleLLM("--blackboard-model", cfg.BlackboardModel, harness.WithBlackboardLLM); err != nil {
+		return nil, err
+	}
+	if err := roleLLM("--advisor-model", cfg.AdvisorModel, harness.WithAdvisorLLM); err != nil {
+		return nil, err
 	}
 
 	if cfg.MaxTokens != 0 || cfg.MaxIterations != 0 || cfg.MaxWallClock != 0 {

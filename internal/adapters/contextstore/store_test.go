@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tab58/llm-providers/common"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 )
 
 // recordingLLM is a minimal common.LLM stub that counts SendSyncMessage
@@ -32,7 +32,10 @@ func (r *recordingLLM) CountTokens(context.Context, common.CompletionRequest) (c
 func (r *recordingLLM) ListModels(context.Context) ([]common.ModelInfo, error) { return nil, nil }
 func (r *recordingLLM) GetCurrentModel() string                                { return "stub" }
 func (r *recordingLLM) GetContextWindowSize() int                              { return 1 }
-func (r *recordingLLM) ProviderName() common.Provider                          { return common.ProviderOllama }
+
+func (r *recordingLLM) GetModel() common.Model {
+	return common.ModelDefinition{Name: "recording-model", ContextWindowSize: 128000, SupportsVision: true}
+}
 
 func TestPairsToolResultsWithPendingToolUses(t *testing.T) {
 	s := New(Config{})

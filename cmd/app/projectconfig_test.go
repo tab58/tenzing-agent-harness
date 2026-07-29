@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/features/prompts"
@@ -150,7 +150,6 @@ func TestProjectConfigSystemPromptContent(t *testing.T) {
 
 			var captured string
 			opts := append(pc.harnessOpts(),
-				harness.WithLLMFactory(func(common.ModelDefinition) (common.LLM, error) { return &stubLLM{}, nil }),
 				harness.WithAgentBuilder(func(_ common.LLM, sp string) (core.Agent, error) {
 					captured = sp
 					return &gatedAgent{gate: make(chan struct{})}, nil
@@ -159,7 +158,7 @@ func TestProjectConfigSystemPromptContent(t *testing.T) {
 				harness.WithContextFilesDisabled(),
 				harness.WithSessionDir(t.TempDir()),
 			)
-			h, err := harness.New(defaultModel, opts...)
+			h, err := harness.New(&stubLLM{}, opts...)
 			if err != nil {
 				t.Fatalf("harness.New: %v", err)
 			}

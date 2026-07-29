@@ -12,18 +12,18 @@ import (
 
 	httpserver "github.com/tab58/huma-http-server"
 	"github.com/tab58/huma-http-server/router"
-	"github.com/tab58/llm-providers/common"
-	"github.com/tab58/llm-providers/ollama"
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/app"
 	"github.com/tab58/tenzing-agent-harness/internal/app/nexus"
 	nexustools "github.com/tab58/tenzing-agent-harness/internal/app/nexus/tools"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 	"github.com/tab58/tenzing-agent-harness/internal/harness"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	pkgmodels "github.com/tab58/tenzing-agent-harness/pkg/models"
 )
 
 // defaultModel is the model used when --model is not passed.
-var defaultModel = ollama.Model_GLM5_2_Cloud.(common.ModelDefinition)
+var defaultModel = pkgmodels.Ollama_GLM5_2_Cloud.(common.ModelDefinition)
 
 type Config struct {
 	ServerPort   int    `mapstructure:"SERVER_PORT" default:"8080"`
@@ -125,9 +125,6 @@ func NewAppContainer(cfg *cliConfig) (*AppContainer, error) {
 	pc.logDecisions()
 
 	extraOpts := pc.harnessOpts()
-	for p, url := range models.baseURLs {
-		extraOpts = append(extraOpts, harness.WithProviderBaseURL(p, url))
-	}
 	cliOpts, err := harnessOptions(cfg)
 	if err != nil {
 		logFile.Close()

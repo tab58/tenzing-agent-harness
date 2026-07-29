@@ -30,7 +30,7 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/harness/session"
 	"github.com/tab58/tenzing-agent-harness/internal/harness/subagent"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 )
 
 type Harness struct {
@@ -43,13 +43,11 @@ type Harness struct {
 	extensions      *core.Extensions
 
 	// Runtime-control state: the main brain and context store (for
-	// SetModel/SetThinking/Compact), the shared LLM client cache, and the
-	// currently active main model.
+	// SetLLM/SetThinking/Compact) and the currently active main model.
 	mainAgent    core.Agent
 	mainStore    *contextstore.Store
-	llms         *llmCache
 	modelMu      sync.Mutex
-	currentModel common.ModelDefinition
+	currentModel common.Model
 
 	// Session persistence (nil/empty when WithSessionDisabled).
 	sessionStore *session.Store
@@ -73,7 +71,11 @@ func defaultAgentBuilder(llm common.LLM, systemPrompt string) (core.Agent, error
 	return agent.New(agent.AgentConfig{Model: llm, SystemPrompt: systemPrompt})
 }
 
-func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, error) {
+func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
+	if mainLLM == nil {
+		return nil, fmt.Errorf("main LLM is required")
+	}
+
 	o := defaultHarnessOptions()
 	for _, opt := range opts {
 		opt(o)
@@ -84,32 +86,17 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		brain = defaultAgentBuilder
 	}
 
-	factory := o.llmFactory
-	if factory == nil {
-		factory = defaultLLMFactory(o.baseURLs)
-	}
-	llms := newLLMCache(factory, o.baseURLs)
-
-	// resolve role models: unset roles fall back to the main model
-	subagentModel := o.subagentModel
-	if subagentModel.Name == "" {
-		subagentModel = mainModel
+	// Resolve role clients: unset roles fall back to the main LLM.
+	subagentLLM := o.subagentLLM
+	if subagentLLM == nil {
+		subagentLLM = mainLLM
 	}
 
-	mainLLM, err := llms.get(mainModel)
-	if err != nil {
-		return nil, fmt.Errorf("build main LLM: %w", err)
-	}
-
-	// blackboardModel serves the shared blackboard REPL's llm_query/llm_batch
+	// blackboardLLM serves the shared blackboard REPL's llm_query/llm_batch
 	// sub-LM calls.
-	blackboardModel := o.blackboardModel
-	if blackboardModel.Name == "" {
-		blackboardModel = mainModel
-	}
-	blackboardLLM, err := llms.get(blackboardModel)
-	if err != nil {
-		return nil, fmt.Errorf("build blackboard LLM: %w", err)
+	blackboardLLM := o.blackboardLLM
+	if blackboardLLM == nil {
+		blackboardLLM = mainLLM
 	}
 
 	// get cwd
@@ -202,10 +189,6 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 	}
 	defaultExts = append(defaultExts, blackboard.NewExt(bb, "main"))
 	if o.subagentMaxDepth > 0 {
-		subagentLLM, err := llms.get(subagentModel)
-		if err != nil {
-			return nil, fmt.Errorf("build subagent LLM: %w", err)
-		}
 		var childExtras []core.Extension
 		if roExt != nil {
 			childExtras = append(childExtras, roExt)
@@ -282,19 +265,15 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 				slog.Info("session resumed", "path", res.Path, "messages", len(res.History), "tasks", len(res.Tasks))
 			}
 		}
-		sessionStore = session.NewStore(sessionDir, cwd, mainRunnerID, mainModel.Name, time.Now)
+		sessionStore = session.NewStore(sessionDir, cwd, mainRunnerID, mainLLM.GetModel().GetName(), time.Now)
 		stopSession = session.StartPersister(o.eventBus, sessionStore, mainRunnerID, func() []todo.Task {
 			tasks, _ := todoFile.ReadTasks()
 			return tasks
 		})
 	}
 
-	if o.advisorModel.Name != "" {
-		advisorLLM, err := llms.get(o.advisorModel)
-		if err != nil {
-			return nil, fmt.Errorf("build advisor LLM: %w", err)
-		}
-		toolRegistry.Register(advisor.NewAdvisorTool(advisorLLM))
+	if o.advisorLLM != nil {
+		toolRegistry.Register(advisor.NewAdvisorTool(o.advisorLLM))
 	}
 
 	for _, tool := range o.extraTools {
@@ -420,8 +399,7 @@ func New(mainModel common.ModelDefinition, opts ...HarnessOption) (*Harness, err
 		extensions:      allExts,
 		mainAgent:       mainAgent,
 		mainStore:       mainStore,
-		llms:            llms,
-		currentModel:    mainModel,
+		currentModel:    mainLLM.GetModel(),
 		sessionStore:    sessionStore,
 		stopSession:     stopSession,
 		sessionDir:      sessionDir,
@@ -451,31 +429,30 @@ func (h *Harness) Compact(ctx context.Context, instructions string) error {
 	return nil
 }
 
-// SetModel switches the main agent to a different model between turns.
-// The LLM client comes from the harness cache (per provider/model/baseURL),
-// so switching back is free. Subagent/blackboard roles keep their models.
-func (h *Harness) SetModel(model common.ModelDefinition) error {
+// SetLLM switches the main agent to a different LLM client between turns.
+// The caller owns client construction (and any reuse/caching). Subagent and
+// blackboard roles keep their clients.
+func (h *Harness) SetLLM(llm common.LLM) error {
 	if !h.idle() {
 		return errBusy
+	}
+	if llm == nil {
+		return fmt.Errorf("LLM is required")
 	}
 	setter, ok := h.mainAgent.(interface{ SetLLM(common.LLM) })
 	if !ok {
 		return fmt.Errorf("the configured agent does not support model switching")
 	}
 	from := h.mainAgent.GetCurrentModel()
-	llm, err := h.llms.get(model)
-	if err != nil {
-		return fmt.Errorf("build LLM for %s: %w", model.Name, err)
-	}
 	setter.SetLLM(llm)
 	h.mainStore.SetLLM(llm)
 	h.modelMu.Lock()
-	h.currentModel = model
+	h.currentModel = llm.GetModel()
 	h.modelMu.Unlock()
 	h.eventBus.Emit(core.ModelChangedEvent{
 		BaseEvent: core.NewBaseEvent(core.EventModelChanged, h.mainAgentRunner.ID()),
 		From:      from,
-		To:        model.Name,
+		To:        llm.GetModel().GetName(),
 	})
 	return nil
 }
@@ -497,9 +474,9 @@ func (h *Harness) SetThinking(enabled bool) error {
 	return nil
 }
 
-// CurrentModel returns the main agent's active model definition (tracking
-// SetModel switches).
-func (h *Harness) CurrentModel() common.ModelDefinition {
+// CurrentModel returns the main agent's active model (tracking SetLLM
+// switches).
+func (h *Harness) CurrentModel() common.Model {
 	h.modelMu.Lock()
 	defer h.modelMu.Unlock()
 	return h.currentModel
@@ -574,9 +551,9 @@ func (h *Harness) RunTurn(ctx context.Context, query string) (string, error) {
 var ErrVisionUnsupported = fmt.Errorf("the current model does not support image input")
 
 // SupportsVision reports whether the current main model accepts image
-// content blocks (tracks SetModel switches).
+// content blocks (tracks SetLLM switches).
 func (h *Harness) SupportsVision() bool {
-	return h.CurrentModel().SupportsVision
+	return h.CurrentModel().GetSupportsVision()
 }
 
 // RunTurnWithImages runs one agent turn with images attached to the query

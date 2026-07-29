@@ -7,10 +7,10 @@ import (
 	"github.com/tab58/tenzing-agent-harness/internal/adapters/eventbus"
 	"github.com/tab58/tenzing-agent-harness/internal/core"
 
-	"github.com/tab58/llm-providers/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/common"
 )
 
-// namedStubLLM reports the model name it was built for, so SetModel is
+// namedStubLLM reports the model name it was built for, so SetLLM is
 // observable through GetCurrentModel.
 type namedStubLLM struct {
 	stubLLM
@@ -18,6 +18,9 @@ type namedStubLLM struct {
 }
 
 func (s *namedStubLLM) GetCurrentModel() string { return s.name }
+func (s *namedStubLLM) GetModel() common.Model {
+	return common.ModelDefinition{Name: s.name, Provider: "ollama"}
+}
 
 // newControlHarness builds a harness on the DEFAULT brain (real agent) with
 // stub LLMs, so the SetLLM/SetThinking sub-interfaces exist.
@@ -25,10 +28,7 @@ func newControlHarness(t *testing.T) (*Harness, <-chan core.Event) {
 	t.Helper()
 	redirectHome(t)
 	bus := eventbus.NewEventBus()
-	h, err := New(testModel,
-		WithLLMFactory(func(m common.ModelDefinition) (common.LLM, error) {
-			return &namedStubLLM{name: m.Name}, nil
-		}),
+	h, err := New(&namedStubLLM{name: "stub-model"},
 		WithSystemPrompt("test"),
 		WithEventBus(bus),
 		WithContextFilesDisabled(),
@@ -42,20 +42,20 @@ func newControlHarness(t *testing.T) (*Harness, <-chan core.Event) {
 	return h, bus.Subscribe(16)
 }
 
-func TestSetModelSwitchesBetweenTurns(t *testing.T) {
+func TestSetLLMSwitchesBetweenTurns(t *testing.T) {
 	h, ch := newControlHarness(t)
 
 	if got := h.GetCurrentModel(); got != "stub-model" {
 		t.Fatalf("initial model = %q", got)
 	}
-	other := common.ModelDefinition{Name: "other-model", Provider: common.ProviderOllama}
-	if err := h.SetModel(other); err != nil {
-		t.Fatalf("SetModel: %v", err)
+	other := &namedStubLLM{name: "other-model"}
+	if err := h.SetLLM(other); err != nil {
+		t.Fatalf("SetLLM: %v", err)
 	}
 	if got := h.GetCurrentModel(); got != "other-model" {
 		t.Errorf("model after switch = %q, want other-model", got)
 	}
-	if got := h.CurrentModel().Name; got != "other-model" {
+	if got := h.CurrentModel().GetName(); got != "other-model" {
 		t.Errorf("CurrentModel() = %q, want other-model", got)
 	}
 
@@ -97,8 +97,8 @@ func TestCompactEmptyHistoryIsNoop(t *testing.T) {
 // (Compact works regardless — the context store, not the brain, owns it.)
 func TestControlsUnsupportedByCustomBrain(t *testing.T) {
 	h := newTestHarness(t) // stubAgent brain: no SetLLM/SetThinking
-	if err := h.SetModel(testModel); err == nil {
-		t.Error("SetModel on stub brain should error")
+	if err := h.SetLLM(&stubLLM{}); err == nil {
+		t.Error("SetLLM on stub brain should error")
 	}
 	if err := h.SetThinking(true); err == nil {
 		t.Error("SetThinking on stub brain should error")
