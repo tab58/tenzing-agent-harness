@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"github.com/tab58/tenzing-agent-harness/pkg/common"
-	"github.com/tab58/tenzing-agent-harness/pkg/providers/ratelimit"
+	"github.com/tab58/tenzing-agent-harness/pkg/providers/protocols/ratelimit"
 )
 
 type Model = common.Model
@@ -32,19 +32,15 @@ type Client struct {
 	client      *http.Client
 	model       Model
 	contextSize int64
-	log         *slog.Logger
+	// retryBackoff, when non-nil, retries requests that fail with HTTP 429
+	// using exponential backoff. NewClient always sets it; nil (tests only)
+	// disables 429 retries.
+	retryBackoff *ratelimit.RetryBackoff
 }
 
-// logf writes a diagnostic line when a Logger is configured.
-func (o *Client) logf(format string, args ...any) {
-	logf(o.log, format, args...)
-}
-
-// logf writes a diagnostic line when log is non-nil.
-func logf(log *slog.Logger, format string, args ...any) {
-	if log != nil {
-		log.Debug(fmt.Sprintf(format, args...))
-	}
+// debugf writes a diagnostic line to the default slog logger at Debug level.
+func debugf(format string, args ...any) {
+	slog.Debug(fmt.Sprintf(format, args...))
 }
 
 type ClientOption func(*clientOptions)
@@ -52,19 +48,24 @@ type ClientOption func(*clientOptions)
 type clientOptions struct {
 	model  Model
 	apiKey string
+	// retryBackoff configures client-side 429 retries; defaults to
+	// ratelimit.NewDefaultBackoff.
+	retryBackoff *ratelimit.RetryBackoff
+	// rateLimit enables the client-side limiter; nil means unlimited.
+	rateLimit *ratelimit.TokenBucketConfig
 	// maxConcurrency bounds concurrent requests; 0 means unlimited.
 	maxConcurrency int
 	baseURL        string
 	// Ollama num_ctx: total context window (input+output). 0 uses model default.
 	contextSize int64
-	// Logger receives request/response diagnostics. Nil disables them.
-	logger *slog.Logger
 }
 
 func loadClientOptions(model Model, opts []ClientOption) *clientOptions {
+	backoff := ratelimit.NewDefaultBackoff()
 	o := &clientOptions{
-		model:   model,
-		baseURL: OLLAMA_CLOUD_BASE_URL,
+		model:        model,
+		baseURL:      OLLAMA_CLOUD_BASE_URL,
+		retryBackoff: &backoff,
 	}
 	for _, opt := range opts {
 		opt(o)
@@ -79,11 +80,20 @@ func WithAPIKey(key string) ClientOption {
 	}
 }
 
-// WithConcurrencyLimit bounds concurrent requests. Values <= 0 remove the
+// WithMaxConcurrency bounds concurrent requests. Values <= 0 remove the
 // bound (the default).
-func WithConcurrencyLimit(limit int) ClientOption {
+func WithMaxConcurrency(limit int) ClientOption {
 	return func(o *clientOptions) {
 		o.maxConcurrency = max(limit, 0)
+	}
+}
+
+// WithRateLimit enables a client-side token-bucket rate limiter. Ollama has
+// no token counting, so each request costs one unit. Without it the client
+// is unlimited.
+func WithRateLimit(cfg ratelimit.TokenBucketConfig) ClientOption {
+	return func(o *clientOptions) {
+		o.rateLimit = &cfg
 	}
 }
 
@@ -93,9 +103,13 @@ func WithContextSize(size int64) ClientOption {
 	}
 }
 
-func WithLogger(log *slog.Logger) ClientOption {
+// WithRetryBackoff overrides the 429 retry backoff, which is enabled by
+// default with the ratelimit.NewDefaultBackoff values. Zero cfg fields keep
+// their defaults.
+func WithRetryBackoff(cfg ratelimit.RetryBackoff) ClientOption {
 	return func(o *clientOptions) {
-		o.logger = log
+		cfg = cfg.OrDefaults()
+		o.retryBackoff = &cfg
 	}
 }
 
@@ -125,18 +139,21 @@ func NewClient(model Model, options ...ClientOption) (common.LLM, error) {
 	}
 
 	raw := &Client{
-		baseURL:     strings.TrimSuffix(opts.baseURL, "/"),
-		apiKey:      opts.apiKey,
-		client:      http.DefaultClient,
-		model:       opts.model,
-		contextSize: opts.contextSize,
-		log:         opts.logger,
+		baseURL:      strings.TrimSuffix(opts.baseURL, "/"),
+		apiKey:       opts.apiKey,
+		client:       http.DefaultClient,
+		model:        opts.model,
+		contextSize:  opts.contextSize,
+		retryBackoff: opts.retryBackoff,
 	}
-	if opts.maxConcurrency <= 0 {
-		return raw, nil
+	var llm common.LLM = raw
+	if opts.rateLimit != nil {
+		llm = ratelimit.Wrap(llm, ratelimit.NewTokenBucket(*opts.rateLimit), ratelimit.CostByTokenCount)
 	}
-
-	return ratelimit.Wrap(raw, ratelimit.NewSemaphore(opts.maxConcurrency), ratelimit.CostPerRequest), nil
+	if opts.maxConcurrency > 0 {
+		llm = ratelimit.Wrap(llm, ratelimit.NewSemaphore(opts.maxConcurrency), ratelimit.CostPerRequest)
+	}
+	return llm, nil
 }
 
 // apiError wraps an HTTP-level failure into *common.APIError so callers can
@@ -219,39 +236,44 @@ type ollamaModelEntry struct {
 // -- LLM interface implementation --
 
 func (o *Client) SendSyncMessage(ctx context.Context, req common.CompletionRequest) (common.CompletionResponse, error) {
-	tools, err := toOllamaTools(req.Tools, o.log)
+	tools, err := toOllamaTools(req.Tools)
 	if err != nil {
 		return common.CompletionResponse{}, err
 	}
 
 	chatReq := ollamaChatRequest{
 		Model:    string(req.Model),
-		Messages: toOllamaMessages(req, o.log),
+		Messages: toOllamaMessages(req),
 		Stream:   false,
 		Think:    req.Think,
 		Tools:    tools,
 		Options:  o.ollamaOptions(req),
 	}
 
-	var chatRes ollamaChatResponse
-	if err := o.postJSON(ctx, "/api/chat", chatReq, &chatRes); err != nil {
-		return common.CompletionResponse{}, fmt.Errorf("ollama send message: %w", err)
-	}
-
-	return fromOllamaResponse(chatRes, o.log), nil
+	return ratelimit.RetryOnRateLimit(ctx, "ollama", o.retryBackoff, func() (common.CompletionResponse, error) {
+		var chatRes ollamaChatResponse
+		if err := o.postJSON(ctx, "/api/chat", chatReq, &chatRes); err != nil {
+			return common.CompletionResponse{}, fmt.Errorf("ollama send message: %w", err)
+		}
+		return fromOllamaResponse(chatRes), nil
+	})
 }
 
+// SendStreamingMessage streams a completion. The events channel is always
+// closed before returning, including on error. Rate-limited attempts are
+// retried only if no events have been emitted yet, so consumers never see
+// duplicated deltas.
 func (o *Client) SendStreamingMessage(ctx context.Context, req common.CompletionRequest, events chan<- common.StreamEvent) error {
 	defer close(events)
 
-	tools, err := toOllamaTools(req.Tools, o.log)
+	tools, err := toOllamaTools(req.Tools)
 	if err != nil {
 		return err
 	}
 
 	chatReq := ollamaChatRequest{
 		Model:    string(req.Model),
-		Messages: toOllamaMessages(req, o.log),
+		Messages: toOllamaMessages(req),
 		Stream:   true,
 		Think:    req.Think,
 		Tools:    tools,
@@ -263,33 +285,42 @@ func (o *Client) SendStreamingMessage(ctx context.Context, req common.Completion
 		return fmt.Errorf("ollama marshal request: %w", err)
 	}
 
+	debugf("ollama: POST %s/api/chat stream=true model=%s messages=%d tools=%d",
+		o.baseURL, chatReq.Model, len(chatReq.Messages), len(chatReq.Tools))
+
+	err = ratelimit.RetryStreaming(ctx, "ollama", o.retryBackoff, func() (bool, error) {
+		return o.streamOnce(ctx, body, events)
+	})
+	if err != nil {
+		events <- common.StreamEvent{Type: common.StreamEventError, Err: err}
+		return fmt.Errorf("ollama streaming: %w", err)
+	}
+	return nil
+}
+
+// streamOnce runs a single streaming attempt. It reports whether any events
+// were emitted so the caller knows if a retry is safe.
+func (o *Client) streamOnce(ctx context.Context, body []byte, events chan<- common.StreamEvent) (bool, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, o.baseURL+"/api/chat", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("ollama create request: %w", err)
+		return false, fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if o.apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+o.apiKey)
 	}
 
-	o.logf("ollama: POST %s/api/chat stream=true model=%s messages=%d tools=%d",
-		o.baseURL, chatReq.Model, len(chatReq.Messages), len(chatReq.Tools))
-
 	resp, err := o.client.Do(httpReq)
 	if err != nil {
-		o.logf("ollama: request error: %v", err)
-		wrapped := apiError(0, err.Error(), err)
-		events <- common.StreamEvent{Type: common.StreamEventError, Err: wrapped}
-		return fmt.Errorf("ollama streaming request: %w", wrapped)
+		debugf("ollama: request error: %v", err)
+		return false, apiError(0, err.Error(), err)
 	}
 	defer resp.Body.Close()
 
-	o.logf("ollama: response status=%d", resp.StatusCode)
+	debugf("ollama: response status=%d", resp.StatusCode)
 
 	if resp.StatusCode != http.StatusOK {
-		wrapped := apiError(resp.StatusCode, readErrorBody(resp.Body), nil)
-		events <- common.StreamEvent{Type: common.StreamEventError, Err: wrapped}
-		return fmt.Errorf("ollama streaming: %w", wrapped)
+		return false, apiError(resp.StatusCode, readErrorBody(resp.Body), nil)
 	}
 
 	var started bool
@@ -301,9 +332,7 @@ func (o *Client) SendStreamingMessage(ctx context.Context, req common.Completion
 	for decoder.More() {
 		var chunk ollamaChatResponse
 		if err := decoder.Decode(&chunk); err != nil {
-			wrapped := apiError(0, err.Error(), err)
-			events <- common.StreamEvent{Type: common.StreamEventError, Err: wrapped}
-			return fmt.Errorf("ollama streaming decode: %w", wrapped)
+			return started, apiError(0, err.Error(), err)
 		}
 
 		if !started {
@@ -327,7 +356,7 @@ func (o *Client) SendStreamingMessage(ctx context.Context, req common.Completion
 		}
 
 		if len(chunk.Message.ToolCalls) > 0 {
-			o.logf("ollama: chunk has %d tool_calls", len(chunk.Message.ToolCalls))
+			debugf("ollama: chunk has %d tool_calls", len(chunk.Message.ToolCalls))
 			accumulatedToolCalls = append(accumulatedToolCalls, chunk.Message.ToolCalls...)
 		}
 
@@ -343,9 +372,9 @@ func (o *Client) SendStreamingMessage(ctx context.Context, req common.Completion
 			// inside fromOllamaResponse) or callers see an empty final answer.
 			chunk.Message.Content = accumulatedText.String()
 			chunk.Message.Thinking = accumulatedThinking.String()
-			o.logf("ollama: done chunk content=%q tool_calls=%d done_reason=%s eval_count=%d",
+			debugf("ollama: done chunk content=%q tool_calls=%d done_reason=%s eval_count=%d",
 				chunk.Message.Content, len(chunk.Message.ToolCalls), chunk.DoneReason, chunk.EvalCount)
-			res := fromOllamaResponse(chunk, o.log)
+			res := fromOllamaResponse(chunk)
 			thinkParser.Flush()
 			events <- common.StreamEvent{
 				Type:     common.StreamEventStop,
@@ -355,39 +384,39 @@ func (o *Client) SendStreamingMessage(ctx context.Context, req common.Completion
 	}
 
 	thinkParser.Flush()
-	return nil
+	return started, nil
 }
 
 // SendMessageWithTools sends a completion request with the given tools,
 // overriding any tools already set on the request.
 func (o *Client) SendMessageWithTools(ctx context.Context, req common.CompletionRequest, tools []common.ToolDefinition) (common.CompletionResponse, error) {
-	ollamaTools, err := toOllamaTools(tools, o.log)
+	ollamaTools, err := toOllamaTools(tools)
 	if err != nil {
 		return common.CompletionResponse{}, err
 	}
 
 	chatReq := ollamaChatRequest{
 		Model:    string(req.Model),
-		Messages: toOllamaMessages(req, o.log),
+		Messages: toOllamaMessages(req),
 		Stream:   false,
 		Think:    req.Think,
 		Tools:    ollamaTools,
 		Options:  o.ollamaOptions(req),
 	}
 
-	o.logf("ollama: POST %s/api/chat stream=false model=%s messages=%d tools=%d",
+	debugf("ollama: POST %s/api/chat stream=false model=%s messages=%d tools=%d",
 		o.baseURL, chatReq.Model, len(chatReq.Messages), len(chatReq.Tools))
 
-	var chatRes ollamaChatResponse
-	if err := o.postJSON(ctx, "/api/chat", chatReq, &chatRes); err != nil {
-		o.logf("ollama: SendMessageWithTools error: %v", err)
-		return common.CompletionResponse{}, fmt.Errorf("ollama send message with tools: %w", err)
-	}
-
-	o.logf("ollama: SendMessageWithTools done_reason=%s tool_calls=%d",
-		chatRes.DoneReason, len(chatRes.Message.ToolCalls))
-
-	return fromOllamaResponse(chatRes, o.log), nil
+	return ratelimit.RetryOnRateLimit(ctx, "ollama", o.retryBackoff, func() (common.CompletionResponse, error) {
+		var chatRes ollamaChatResponse
+		if err := o.postJSON(ctx, "/api/chat", chatReq, &chatRes); err != nil {
+			debugf("ollama: SendMessageWithTools error: %v", err)
+			return common.CompletionResponse{}, fmt.Errorf("ollama send message with tools: %w", err)
+		}
+		debugf("ollama: SendMessageWithTools done_reason=%s tool_calls=%d",
+			chatRes.DoneReason, len(chatRes.Message.ToolCalls))
+		return fromOllamaResponse(chatRes), nil
+	})
 }
 
 func (o *Client) GetCurrentModel() string {
@@ -511,7 +540,7 @@ func (o *Client) ollamaOptions(req common.CompletionRequest) map[string]any {
 
 // -- converters --
 
-func toOllamaMessages(req common.CompletionRequest, log *slog.Logger) []ollamaChatMessage {
+func toOllamaMessages(req common.CompletionRequest) []ollamaChatMessage {
 	var msgs []ollamaChatMessage
 
 	if req.System != "" {
@@ -551,7 +580,7 @@ func toOllamaMessages(req common.CompletionRequest, log *slog.Logger) []ollamaCh
 				var args map[string]any
 				if block.ToolInput != nil {
 					if err := json.Unmarshal(block.ToolInput, &args); err != nil {
-						logf(log, "ollama: skip malformed tool input for %s: %v", block.ToolName, err)
+						debugf("ollama: skip malformed tool input for %s: %v", block.ToolName, err)
 						continue
 					}
 				}
@@ -579,7 +608,7 @@ func toOllamaMessages(req common.CompletionRequest, log *slog.Logger) []ollamaCh
 	return msgs
 }
 
-func toOllamaTools(tools []common.ToolDefinition, log *slog.Logger) ([]ollamaTool, error) {
+func toOllamaTools(tools []common.ToolDefinition) ([]ollamaTool, error) {
 	result := make([]ollamaTool, 0, len(tools))
 	for _, tool := range tools {
 		var params map[string]any
@@ -712,7 +741,7 @@ func (p *thinkBlockParser) matchTagPrefix(text, tag string) int {
 	return 0
 }
 
-func fromOllamaResponse(res ollamaChatResponse, log *slog.Logger) common.CompletionResponse {
+func fromOllamaResponse(res ollamaChatResponse) common.CompletionResponse {
 	var content []common.ContentBlock
 
 	// Thinking arrives either in the native field (server separated it) or
@@ -732,7 +761,7 @@ func fromOllamaResponse(res ollamaChatResponse, log *slog.Logger) common.Complet
 	for i, tc := range res.Message.ToolCalls {
 		args, err := json.Marshal(tc.Function.Arguments)
 		if err != nil {
-			logf(log, "ollama: marshal tool arguments for %s: %v", tc.Function.Name, err)
+			debugf("ollama: marshal tool arguments for %s: %v", tc.Function.Name, err)
 			args = json.RawMessage("{}")
 		}
 		// Ollama returns no tool-call IDs, so this ID is synthetic

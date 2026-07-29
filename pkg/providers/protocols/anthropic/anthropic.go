@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/tab58/tenzing-agent-harness/pkg/common"
-	"github.com/tab58/tenzing-agent-harness/pkg/providers/ratelimit"
+	"github.com/tab58/tenzing-agent-harness/pkg/providers/protocols/ratelimit"
 
 	anthropicSDK "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -41,6 +41,10 @@ func maxNonStreamingTokens(model string) int64 {
 type Client struct {
 	client *anthropicSDK.Client
 	model  Model
+	// retryBackoff, when non-nil, retries requests that fail with HTTP 429
+	// using exponential backoff. NewClient always sets it; nil (tests only)
+	// disables 429 retries.
+	retryBackoff *ratelimit.RetryBackoff
 }
 
 type ClientOption func(*clientOptions)
@@ -48,13 +52,20 @@ type ClientOption func(*clientOptions)
 type clientOptions struct {
 	model  Model
 	apiKey string
+	// retryBackoff configures client-side 429 retries; defaults to
+	// ratelimit.NewDefaultBackoff.
+	retryBackoff *ratelimit.RetryBackoff
 	// rateLimit enables the client-side limiter; nil means unlimited.
 	rateLimit *ratelimit.TokenBucketConfig
+	// maxConcurrency bounds concurrent requests; 0 means unlimited.
+	maxConcurrency int
 }
 
 func loadClientOptions(model Model, opts []ClientOption) *clientOptions {
+	backoff := ratelimit.NewDefaultBackoff()
 	o := &clientOptions{
-		model: model,
+		model:        model,
+		retryBackoff: &backoff,
 	}
 	for _, opt := range opts {
 		opt(o)
@@ -69,11 +80,29 @@ func WithAPIKey(key string) ClientOption {
 	}
 }
 
+// WithRetryBackoff overrides the 429 retry backoff, which is enabled by
+// default with the ratelimit.NewDefaultBackoff values. Zero cfg fields keep
+// their defaults.
+func WithRetryBackoff(cfg ratelimit.RetryBackoff) ClientOption {
+	return func(o *clientOptions) {
+		cfg = cfg.OrDefaults()
+		o.retryBackoff = &cfg
+	}
+}
+
 // WithRateLimit enables a client-side token-bucket rate limiter costed by
 // input token count. Without it the client is unlimited.
 func WithRateLimit(cfg ratelimit.TokenBucketConfig) ClientOption {
 	return func(o *clientOptions) {
 		o.rateLimit = &cfg
+	}
+}
+
+// WithMaxConcurrency bounds concurrent requests. Values <= 0 remove the
+// bound (the default).
+func WithMaxConcurrency(limit int) ClientOption {
+	return func(o *clientOptions) {
+		o.maxConcurrency = max(limit, 0)
 	}
 }
 
@@ -92,14 +121,18 @@ func NewClient(model Model, options ...ClientOption) (common.LLM, error) {
 	client := anthropicSDK.NewClient(reqOpts...)
 
 	raw := &Client{
-		client: &client,
-		model:  opts.model,
+		client:       &client,
+		model:        opts.model,
+		retryBackoff: opts.retryBackoff,
 	}
-	if opts.rateLimit == nil {
-		return raw, nil
+	var llm common.LLM = raw
+	if opts.rateLimit != nil {
+		llm = ratelimit.Wrap(llm, ratelimit.NewTokenBucket(*opts.rateLimit), ratelimit.CostByTokenCount)
 	}
-
-	return ratelimit.Wrap(raw, ratelimit.NewTokenBucket(*opts.rateLimit), ratelimit.CostByTokenCount), nil
+	if opts.maxConcurrency > 0 {
+		llm = ratelimit.Wrap(llm, ratelimit.NewSemaphore(opts.maxConcurrency), ratelimit.CostPerRequest)
+	}
+	return llm, nil
 }
 
 // apiError wraps an SDK or transport error into *common.APIError so callers
@@ -125,14 +158,19 @@ func (a *Client) SendSyncMessage(ctx context.Context, req common.CompletionReque
 	}
 	params.MaxTokens = min(params.MaxTokens, maxNonStreamingTokens(req.Model))
 
-	res, err := a.client.Messages.New(ctx, params)
-	if err != nil {
-		return common.CompletionResponse{}, fmt.Errorf("anthropic send message: %w", apiError(err))
-	}
-
-	return fromAnthropicResponse(res), nil
+	return ratelimit.RetryOnRateLimit(ctx, "anthropic", a.retryBackoff, func() (common.CompletionResponse, error) {
+		res, err := a.client.Messages.New(ctx, params)
+		if err != nil {
+			return common.CompletionResponse{}, fmt.Errorf("anthropic send message: %w", apiError(err))
+		}
+		return fromAnthropicResponse(res), nil
+	})
 }
 
+// SendStreamingMessage streams a completion. The events channel is always
+// closed before returning, including on error. Rate-limited attempts are
+// retried only if no events have been emitted yet, so consumers never see
+// duplicated deltas.
 func (a *Client) SendStreamingMessage(ctx context.Context, req common.CompletionRequest, events chan<- common.StreamEvent) error {
 	defer close(events)
 
@@ -141,6 +179,23 @@ func (a *Client) SendStreamingMessage(ctx context.Context, req common.Completion
 		return err
 	}
 
+	err = ratelimit.RetryStreaming(ctx, "anthropic", a.retryBackoff, func() (bool, error) {
+		emitted, err := a.streamOnce(ctx, params, events)
+		if err != nil {
+			return emitted, apiError(err)
+		}
+		return emitted, nil
+	})
+	if err != nil {
+		events <- common.StreamEvent{Type: common.StreamEventError, Err: err}
+		return fmt.Errorf("anthropic streaming: %w", err)
+	}
+	return nil
+}
+
+// streamOnce runs a single streaming attempt. It reports whether any events
+// were emitted so the caller knows if a retry is safe.
+func (a *Client) streamOnce(ctx context.Context, params anthropicSDK.MessageNewParams, events chan<- common.StreamEvent) (bool, error) {
 	stream := a.client.Messages.NewStreaming(ctx, params)
 
 	var accumulated common.CompletionResponse
@@ -149,6 +204,7 @@ func (a *Client) SendStreamingMessage(ctx context.Context, req common.Completion
 	// content_block_stop.
 	blocks := map[int64]*common.ContentBlock{}
 	jsonParts := map[int64][]string{}
+	emitted := false
 
 	for stream.Next() {
 		event := stream.Current()
@@ -160,6 +216,7 @@ func (a *Client) SendStreamingMessage(ctx context.Context, req common.Completion
 			accumulated.Usage.CacheReadInputTokens = event.Message.Usage.CacheReadInputTokens
 			accumulated.Usage.CacheCreationInputTokens = event.Message.Usage.CacheCreationInputTokens
 			events <- common.StreamEvent{Type: common.StreamEventStart}
+			emitted = true
 
 		case "content_block_start":
 			switch event.ContentBlock.Type {
@@ -208,9 +265,7 @@ func (a *Client) SendStreamingMessage(ctx context.Context, req common.Completion
 	}
 
 	if err := stream.Err(); err != nil {
-		wrapped := apiError(err)
-		events <- common.StreamEvent{Type: common.StreamEventError, Err: wrapped}
-		return fmt.Errorf("anthropic streaming: %w", wrapped)
+		return emitted, err
 	}
 
 	// Emitted after the loop rather than on message_stop so consumers always
@@ -220,7 +275,7 @@ func (a *Client) SendStreamingMessage(ctx context.Context, req common.Completion
 		Response: &accumulated,
 	}
 
-	return nil
+	return emitted, nil
 }
 
 // SendMessageWithTools sends a completion request with the given tools,
@@ -233,12 +288,13 @@ func (a *Client) SendMessageWithTools(ctx context.Context, req common.Completion
 	}
 	params.MaxTokens = min(params.MaxTokens, maxNonStreamingTokens(req.Model))
 
-	res, err := a.client.Messages.New(ctx, params)
-	if err != nil {
-		return common.CompletionResponse{}, fmt.Errorf("anthropic send message with tools: %w", apiError(err))
-	}
-
-	return fromAnthropicResponse(res), nil
+	return ratelimit.RetryOnRateLimit(ctx, "anthropic", a.retryBackoff, func() (common.CompletionResponse, error) {
+		res, err := a.client.Messages.New(ctx, params)
+		if err != nil {
+			return common.CompletionResponse{}, fmt.Errorf("anthropic send message with tools: %w", apiError(err))
+		}
+		return fromAnthropicResponse(res), nil
+	})
 }
 
 func (a *Client) GetCurrentModel() string {

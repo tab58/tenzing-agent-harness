@@ -2,7 +2,6 @@ package openai_compat
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +12,7 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/providers/protocols/ratelimit"
 )
 
 const compatCompletionJSON = `{
@@ -24,6 +24,10 @@ const compatCompletionJSON = `{
 // newRetryTestCompat returns a retrying client whose first n requests are
 // rejected with 429, plus a counter of requests received. SDK-internal
 // retries are disabled so the provider's retry loop is what's under test.
+// testMaxRetries mirrors the default MaxRetries so retry-exhaustion tests
+// stay fast with millisecond backoffs.
+const testMaxRetries = 5
+
 func newRetryTestCompat(t *testing.T, reject429 int32, respond http.HandlerFunc) (*Client, *atomic.Int32) {
 	t.Helper()
 	var requests atomic.Int32
@@ -44,12 +48,14 @@ func newRetryTestCompat(t *testing.T, reject429 int32, respond http.HandlerFunc)
 		option.WithMaxRetries(0),
 	)
 	return &Client{
-		Name:           "test",
-		Client:         &client,
-		Model:          common.ModelDefinition{Name: "test-model", MaxTokens: 1024},
-		RetryRateLimit: true,
-		BaseBackoff:    time.Millisecond,
-		MaxBackoff:     5 * time.Millisecond,
+		Name:   "test",
+		Client: &client,
+		Model:  common.ModelDefinition{Name: "test-model", MaxTokens: 1024},
+		RetryBackoff: &ratelimit.RetryBackoff{
+			MaxRetries:  testMaxRetries,
+			BaseBackoff: time.Millisecond,
+			MaxBackoff:  5 * time.Millisecond,
+		},
 	}, &requests
 }
 
@@ -60,29 +66,6 @@ func respondCompletion(t *testing.T) http.HandlerFunc {
 		if _, err := w.Write([]byte(compatCompletionJSON)); err != nil {
 			t.Errorf("write response: %v", err)
 		}
-	}
-}
-
-func TestIsRateLimitError(t *testing.T) {
-	tests := []struct {
-		name     string
-		err      error
-		expected bool
-	}{
-		{"nil", nil, false},
-		{"api error 429", &openai.Error{StatusCode: 429}, true},
-		{"wrapped api error 429", fmt.Errorf("send: %w", &openai.Error{StatusCode: 429}), true},
-		{"api error 500", &openai.Error{StatusCode: 500}, false},
-		{"string fallback", errors.New("unexpected status 429 Too Many Requests"), true},
-		{"unrelated error", errors.New("connection refused"), false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isRateLimitError(tt.err); got != tt.expected {
-				t.Errorf("isRateLimitError() = %v, want %v", got, tt.expected)
-			}
-		})
 	}
 }
 
@@ -106,7 +89,7 @@ func TestOpenAICompat_SyncRetriesOnRateLimit(t *testing.T) {
 }
 
 func TestOpenAICompat_SyncRetryExhausted(t *testing.T) {
-	compat, requests := newRetryTestCompat(t, int32(compatMaxRetries)+1, respondCompletion(t))
+	compat, requests := newRetryTestCompat(t, int32(testMaxRetries)+1, respondCompletion(t))
 
 	_, err := compat.SendSyncMessage(context.Background(), common.CompletionRequest{
 		Model:    "test-model",
@@ -115,14 +98,14 @@ func TestOpenAICompat_SyncRetryExhausted(t *testing.T) {
 	if err == nil {
 		t.Fatal("want error after exhausting retries, got nil")
 	}
-	if got := requests.Load(); got != int32(compatMaxRetries) {
-		t.Errorf("server received %d requests, want %d", got, compatMaxRetries)
+	if got := requests.Load(); got != int32(testMaxRetries) {
+		t.Errorf("server received %d requests, want %d", got, testMaxRetries)
 	}
 }
 
 func TestOpenAICompat_NoRetryWhenDisabled(t *testing.T) {
 	compat, requests := newRetryTestCompat(t, 1, respondCompletion(t))
-	compat.RetryRateLimit = false
+	compat.RetryBackoff = nil
 
 	_, err := compat.SendSyncMessage(context.Background(), common.CompletionRequest{
 		Model:    "test-model",

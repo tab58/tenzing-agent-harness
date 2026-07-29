@@ -62,9 +62,9 @@ func buildLLM(def common.ModelDefinition, baseURL string) (common.LLM, error) {
 	case "openai":
 		return compat("openai", "", openai_compat.WithMaxCompletionTokens())
 	case "cerebras":
-		return compat("cerebras", cerebrasBaseURL, openai_compat.WithRetryRateLimit())
+		return compat("cerebras", cerebrasBaseURL)
 	case "lightning":
-		return compat("lightning", lightningBaseURL, openai_compat.WithRetryRateLimit())
+		return compat("lightning", lightningBaseURL)
 	case "openrouter":
 		return compat("openrouter", openRouterBaseURL)
 	default:

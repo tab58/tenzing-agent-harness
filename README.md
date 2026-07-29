@@ -26,6 +26,8 @@ Protocol clients (`pkg/providers/protocols/`), each `NewClient(model, opts...) (
 
 Models are values implementing `common.Model`, not strings. `pkg/models` ships a catalog of standard definitions for convenience (`models.Anthropic_ClaudeSonnet4_6`, `models.OpenRouter_KimiK3`, ...), but any `common.Model` implementation — including an inline `common.ModelDefinition` — works the same. API keys and base URLs are yours to supply via client options; the library reads no env vars.
 
+Every protocol retries server 429s with exponential backoff by default (`ratelimit.NewDefaultBackoff()` values); `WithRetryBackoff(ratelimit.RetryBackoff)` overrides the values. Every protocol also takes the same two limiting options, off by default: `WithRateLimit(ratelimit.TokenBucketConfig{Rate, BurstSize, ...})` for a client-side token bucket and `WithMaxConcurrency(n)` to bound in-flight requests. The wrapping happens inside `NewClient` — the returned `common.LLM` is already guarded.
+
 ## Library Usage — OpenRouter example
 
 ```go
@@ -218,7 +220,7 @@ pkg/
   models/               Standard model catalog (convenience; any common.Model works)
   providers/
     protocols/          Protocol clients: anthropic, ollama, openai_compat
-    ratelimit/          Client-side rate limiting (TokenBucket, Semaphore, Wrap)
+      ratelimit/        Shared limiting plumbing (TokenBucket, Semaphore, RetryBackoff)
   tenzing/              Public API facade (aliases over internal/harness)
 ```
 

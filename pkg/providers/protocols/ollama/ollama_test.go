@@ -20,7 +20,7 @@ func TestToOllamaMessages_AssistantToolCalls(t *testing.T) {
 		},
 	}
 
-	msgs := toOllamaMessages(req, nil)
+	msgs := toOllamaMessages(req)
 	if len(msgs) != 1 {
 		t.Fatalf("got %d messages, want 1", len(msgs))
 	}
@@ -56,7 +56,7 @@ func TestToOllamaMessages_RolesAndToolResults(t *testing.T) {
 		},
 	}
 
-	msgs := toOllamaMessages(req, nil)
+	msgs := toOllamaMessages(req)
 	if len(msgs) != 4 {
 		t.Fatalf("got %d messages, want 4", len(msgs))
 	}
@@ -96,7 +96,7 @@ func TestFromOllamaResponse_ToolCalls(t *testing.T) {
 		EvalCount:       5,
 	}
 
-	out := fromOllamaResponse(res, nil)
+	out := fromOllamaResponse(res)
 	if out.StopReason != common.StopReasonToolUse {
 		t.Errorf("stop reason = %q, want %q", out.StopReason, common.StopReasonToolUse)
 	}
@@ -208,7 +208,7 @@ func TestFromOllamaResponse_ThinkingClassified(t *testing.T) {
 				Message:    tt.message,
 				Done:       true,
 				DoneReason: "stop",
-			}, nil)
+			})
 			if got := out.Thinking(); got != tt.wantThinking {
 				t.Errorf("Thinking() = %q, want %q", got, tt.wantThinking)
 			}

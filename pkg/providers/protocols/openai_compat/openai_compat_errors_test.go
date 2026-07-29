@@ -106,7 +106,7 @@ func TestOpenAICompat_StreamingErrorEventCarriesAPIError(t *testing.T) {
 }
 
 func TestOpenAICompat_RetryExhaustedReturnsAPIError(t *testing.T) {
-	compat, _ := newRetryTestCompat(t, int32(compatMaxRetries)+1, respondCompletion(t))
+	compat, _ := newRetryTestCompat(t, int32(testMaxRetries)+1, respondCompletion(t))
 
 	_, err := compat.SendSyncMessage(context.Background(), common.CompletionRequest{
 		Model:    "test-model",

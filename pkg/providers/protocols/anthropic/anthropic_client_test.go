@@ -10,8 +10,7 @@ import (
 	"testing"
 
 	"github.com/tab58/tenzing-agent-harness/pkg/common"
-	"github.com/tab58/tenzing-agent-harness/pkg/providers/ratelimit"
-	"github.com/tab58/tenzing-agent-harness/pkg/providers/testutils"
+	"github.com/tab58/tenzing-agent-harness/pkg/providers/protocols/ratelimit"
 
 	anthropicSDK "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -73,7 +72,7 @@ func TestAnthropic_StreamingAccumulatesContent(t *testing.T) {
 		}, events)
 	}()
 
-	deltas, response := testutils.CollectEvents(t, events)
+	deltas, response := collectEvents(t, events)
 	if err := <-errCh; err != nil {
 		t.Fatalf("SendStreamingMessage: %v", err)
 	}

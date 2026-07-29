@@ -117,7 +117,7 @@ pkg/common/                              Canonical types: LLM/Model/ModelDefinit
 pkg/models/                              Standard model catalog (convenience only; Standard() aggregate)
 pkg/providers/
 ├── protocols/                          anthropic, ollama, openai_compat protocol clients (NewClient(model, opts...) → common.LLM)
-├── ratelimit/                          TokenBucket, Semaphore, Wrap decorator
+├── protocols/ratelimit/                TokenBucket, Semaphore, Wrap, RetryBackoff
 └── testutils/                          Shared test helpers
 
 pkg/tenzing/                             Public facade — pure alias/re-export, no logic
@@ -240,7 +240,7 @@ LLM provider layer: in-repo (pkg/)
     ├── protocols/ollama/               Native Ollama /api/* client (slog diagnostics)
     ├── protocols/openai_compat/        Shared OpenAI-compatible base + 429 retry
     │                                   (OpenAI, Cerebras, Lightning, OpenRouter)
-    └── ratelimit/                      TokenBucket, Semaphore, Wrap decorator
+    └── protocols/ratelimit/            TokenBucket, Semaphore, Wrap, RetryBackoff
 ```
 
 ## 5. Core Loop (`internal/core/loop.go`)
@@ -815,7 +815,7 @@ Three nexus event types are forwarded over SSE by `agentServer.forwardEvents`, m
 
 ## 18. Provider Layer
 
-Lives in-repo under `pkg/`. `pkg/common` holds the canonical types; `pkg/providers/protocols/` holds the protocol clients, each `NewClient(model common.Model, opts...) (common.LLM, error)`: `anthropic` (native SDK), `ollama` (native `/api/*` endpoints), and `openai_compat` (OpenAI, Cerebras, Lightning, OpenRouter via `WithBaseURL`). Models come from `pkg/models` or any `common.Model` implementation. API keys/base URLs are caller-supplied via client options — nothing in `pkg/` reads env vars. The harness never constructs clients; `cmd/app/llm.go` is the app-side factory (`buildLLM` switches on provider, resolves the conventional env vars `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CEREBRAS_API_KEY`, `LIGHTNING_API_KEY`, `OPENROUTER_API_KEY`; Ollama keyless, `OLLAMA_API_KEY` optional) with a process-wide `llms` cache. Optional client-side limiting via `pkg/providers/ratelimit.Wrap`.
+Lives in-repo under `pkg/`. `pkg/common` holds the canonical types; `pkg/providers/protocols/` holds the protocol clients, each `NewClient(model common.Model, opts...) (common.LLM, error)`: `anthropic` (native SDK), `ollama` (native `/api/*` endpoints), and `openai_compat` (OpenAI, Cerebras, Lightning, OpenRouter via `WithBaseURL`). Models come from `pkg/models` or any `common.Model` implementation. API keys/base URLs are caller-supplied via client options — nothing in `pkg/` reads env vars. The harness never constructs clients; `cmd/app/llm.go` is the app-side factory (`buildLLM` switches on provider, resolves the conventional env vars `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CEREBRAS_API_KEY`, `LIGHTNING_API_KEY`, `OPENROUTER_API_KEY`; Ollama keyless, `OLLAMA_API_KEY` optional) with a process-wide `llms` cache. Client-side limiting is uniform across protocols and internal to `NewClient`: `WithRateLimit(ratelimit.TokenBucketConfig)` (API rate) and `WithMaxConcurrency(n)` (concurrency) are independent options, both off by default — callers never call `ratelimit.Wrap` themselves.
 
 ### LLM Interface
 
@@ -838,8 +838,8 @@ Three protocol implementations cover the six standard providers:
 |----------|----------|-------|
 | `Anthropic` | `protocols/anthropic` (direct SDK) | Native tool use, token counting, optional rate limiting |
 | `OpenAI` | `protocols/openai_compat` | `WithMaxCompletionTokens()` |
-| `Cerebras` | `protocols/openai_compat` | `WithBaseURL` + `WithRetryRateLimit()` |
-| `Lightning` | `protocols/openai_compat` | `WithBaseURL` + `WithRetryRateLimit()` |
+| `Cerebras` | `protocols/openai_compat` | `WithBaseURL` |
+| `Lightning` | `protocols/openai_compat` | `WithBaseURL` |
 | `OpenRouter` | `protocols/openai_compat` | `WithBaseURL` |
 | `Ollama` | `protocols/ollama` (direct HTTP) | Local or Ollama Cloud |
 
@@ -896,9 +896,9 @@ Anthropic streaming reconstructs tool call JSON from partial `input_json_delta` 
 
 ### Rate Limiting
 
-**TokenBucket** (`pkg/providers/ratelimit`) — token-bucket algorithm with configurable `Rate` (tokens/second refill), `BurstSize` (max bucket capacity), `MaxConcurrency` (semaphore slots). Anthropic default: 10K input tokens/min, 10 concurrent requests. `Acquire(ctx, cost)` blocks until tokens available or ctx canceled; `Release()` frees the concurrency slot.
+**Client-side limits** — every protocol's `NewClient` takes two independent options: `WithRateLimit(ratelimit.TokenBucketConfig{Rate, BurstSize, ...})` (API token bucket, costed by input token count; providers without token counting charge one unit per request) and `WithMaxConcurrency(n)` (semaphore on in-flight requests). Both off by default; wrapping happens inside `NewClient`.
 
-**Retry** (OpenAI-compat only) — exponential backoff on HTTP 429. 2s base, 60s max, 50% jitter, 5 attempts. Streaming retries only if no events emitted yet.
+**Retry** (all protocols, on by default) — exponential backoff on HTTP 429 with the `NewDefaultBackoff` values: 2s base, 60s max, 50% jitter, 5 attempts. `WithRetryBackoff(ratelimit.RetryBackoff{MaxRetries, BaseBackoff, MaxBackoff, BackoffJitter})` overrides the values; zero fields keep their defaults. Streaming retries only if no events emitted yet. Shared helpers live in `protocols/ratelimit` (`RetryOnRateLimit`, `RetryStreaming`).
 
 ### Provider Conversion
 

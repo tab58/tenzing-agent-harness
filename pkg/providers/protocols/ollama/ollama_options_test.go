@@ -57,9 +57,9 @@ func TestOllamaOptions_BaseURL(t *testing.T) {
 }
 
 func TestOllama_ConcurrencyLimitWrapsClient(t *testing.T) {
-	client := mustNewClient(t, WithConcurrencyLimit(2))
+	client := mustNewClient(t, WithMaxConcurrency(2))
 	if _, ok := client.(*Client); ok {
-		t.Error("WithConcurrencyLimit should wrap the raw client in a limiter")
+		t.Error("WithMaxConcurrency should wrap the raw client in a limiter")
 	}
 }
 

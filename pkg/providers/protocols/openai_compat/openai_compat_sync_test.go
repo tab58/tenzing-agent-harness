@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/tab58/tenzing-agent-harness/pkg/common"
-	"github.com/tab58/tenzing-agent-harness/pkg/providers/ratelimit"
+	"github.com/tab58/tenzing-agent-harness/pkg/providers/protocols/ratelimit"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -173,13 +173,26 @@ func TestOpenAICompat_ListModels(t *testing.T) {
 	}
 }
 
+// NewClient wraps limiting internally: WithRateLimit + WithMaxConcurrency
+// produce a guarded client, no caller-side ratelimit.Wrap needed.
 func TestOpenAICompat_RateLimitAcquireRelease(t *testing.T) {
-	compat := newCompatTestClient(t, respondCompletion(t))
-	limited := ratelimit.Wrap(compat, ratelimit.NewTokenBucket(ratelimit.TokenBucketConfig{
-		Rate:           100_000,
-		BurstSize:      100_000,
-		MaxConcurrency: 1,
-	}), ratelimit.CostByTokenCount)
+	srv := httptest.NewServer(respondCompletion(t))
+	t.Cleanup(srv.Close)
+
+	limited, err := NewClient(common.ModelDefinition{Name: "test-model"},
+		WithName("test"), WithAPIKey("key"), WithBaseURL(srv.URL),
+		WithRateLimit(ratelimit.TokenBucketConfig{
+			Rate:      100_000,
+			BurstSize: 100_000,
+		}),
+		WithMaxConcurrency(1),
+	)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, ok := limited.(*Client); ok {
+		t.Fatal("NewClient with limits returned the raw *Client, want wrapped")
+	}
 
 	// Two sequential sends must both succeed: if Release is broken, the
 	// second send deadlocks on the MaxConcurrency=1 semaphore.
@@ -200,17 +213,20 @@ func TestOpenAICompat_NewClientRequiresModel(t *testing.T) {
 		t.Fatal("NewClient without Model: want error, got nil")
 	}
 
-	client, err := NewClient(common.ModelDefinition{Name: "m"},
+	llm, err := NewClient(common.ModelDefinition{Name: "m"},
 		WithName("test"), WithAPIKey("key"), WithBaseURL("https://example.test"))
 	if err != nil {
 		t.Fatalf("NewClient with Model: %v", err)
 	}
+	client, ok := llm.(*Client)
+	if !ok {
+		t.Fatalf("NewClient without limits = %T, want unwrapped *Client", llm)
+	}
 	if client.Name != "test" || client.GetCurrentModel() != "m" {
 		t.Errorf("client = %s/%s, want test/m", client.Name, client.GetCurrentModel())
 	}
-	if client.BaseBackoff != compatBaseBackoff || client.MaxBackoff != compatMaxBackoff {
-		t.Errorf("backoff defaults = %v/%v, want %v/%v",
-			client.BaseBackoff, client.MaxBackoff, compatBaseBackoff, compatMaxBackoff)
+	if client.RetryBackoff == nil || *client.RetryBackoff != ratelimit.NewDefaultBackoff() {
+		t.Errorf("RetryBackoff = %+v, want defaults (429 retry on by default)", client.RetryBackoff)
 	}
 }
 

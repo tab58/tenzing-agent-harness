@@ -7,20 +7,13 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/tab58/tenzing-agent-harness/pkg/common"
+	"github.com/tab58/tenzing-agent-harness/pkg/providers/protocols/ratelimit"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/param"
-)
-
-const (
-	compatMaxRetries    = 5
-	compatBaseBackoff   = 2 * time.Second
-	compatMaxBackoff    = 60 * time.Second
-	compatBackoffJitter = 0.5
 )
 
 type Model = common.Model
@@ -32,17 +25,19 @@ type clientOptions struct {
 	model                  Model
 	apiKey                 string
 	baseURL                string
-	retryRateLimit         bool
+	retryBackoff           *ratelimit.RetryBackoff
 	useMaxCompletionTokens bool
-	baseBackoff            time.Duration
-	maxBackoff             time.Duration
+	// rateLimit enables the client-side limiter; nil means unlimited.
+	rateLimit *ratelimit.TokenBucketConfig
+	// maxConcurrency bounds concurrent requests; 0 means unlimited.
+	maxConcurrency int
 }
 
 func loadClientOptions(model Model, opts []ClientOption) *clientOptions {
+	backoff := ratelimit.NewDefaultBackoff()
 	o := &clientOptions{
-		model:       model,
-		baseBackoff: compatBaseBackoff,
-		maxBackoff:  compatMaxBackoff,
+		model:        model,
+		retryBackoff: &backoff,
 	}
 	for _, opt := range opts {
 		opt(o)
@@ -71,11 +66,29 @@ func WithBaseURL(baseURL string) ClientOption {
 	}
 }
 
-// WithRetryRateLimit retries requests that fail with HTTP 429 using
-// exponential backoff.
-func WithRetryRateLimit() ClientOption {
+// WithRetryBackoff overrides the 429 retry backoff, which is enabled by
+// default with the ratelimit.NewDefaultBackoff values. Zero cfg fields keep
+// their defaults.
+func WithRetryBackoff(cfg ratelimit.RetryBackoff) ClientOption {
 	return func(o *clientOptions) {
-		o.retryRateLimit = true
+		cfg = cfg.OrDefaults()
+		o.retryBackoff = &cfg
+	}
+}
+
+// WithRateLimit enables a client-side token-bucket rate limiter costed by
+// estimated input token count. Without it the client is unlimited.
+func WithRateLimit(cfg ratelimit.TokenBucketConfig) ClientOption {
+	return func(o *clientOptions) {
+		o.rateLimit = &cfg
+	}
+}
+
+// WithMaxConcurrency bounds concurrent requests. Values <= 0 remove the
+// bound (the default).
+func WithMaxConcurrency(limit int) ClientOption {
+	return func(o *clientOptions) {
+		o.maxConcurrency = max(limit, 0)
 	}
 }
 
@@ -87,14 +100,6 @@ func WithMaxCompletionTokens() ClientOption {
 	}
 }
 
-// WithBackoff overrides retry backoff timing. Test seam.
-func WithBackoff(base, maxB time.Duration) ClientOption {
-	return func(o *clientOptions) {
-		o.baseBackoff = base
-		o.maxBackoff = maxB
-	}
-}
-
 type Client struct {
 	// Name identifies the provider in error messages and logs.
 	Name   string
@@ -102,21 +107,18 @@ type Client struct {
 	// Model is required; it supplies the default max tokens and the
 	// context window size.
 	Model Model
-	// RetryRateLimit retries requests that fail with HTTP 429 using
-	// exponential backoff.
-	RetryRateLimit bool
+	// RetryBackoff, when non-nil, retries requests that fail with HTTP 429
+	// using exponential backoff per its fields (zero fields fall back to the
+	// defaults). NewClient always sets it; nil disables 429 retries.
+	RetryBackoff *ratelimit.RetryBackoff
 	// UseMaxCompletionTokens sends max_completion_tokens instead of the
 	// deprecated max_tokens, required by newer OpenAI models.
 	UseMaxCompletionTokens bool
-	// BaseBackoff and maxBackoff override retry backoff timing; zero values
-	// fall back to compatBaseBackoff/compatMaxBackoff. Test seam.
-	BaseBackoff time.Duration
-	MaxBackoff  time.Duration
 }
 
 // NewClient builds an OpenAI-compatible client. Model is required; there is
 // no default.
-func NewClient(model Model, options ...ClientOption) (*Client, error) {
+func NewClient(model Model, options ...ClientOption) (common.LLM, error) {
 	opts := loadClientOptions(model, options)
 	if opts.model == nil {
 		return nil, fmt.Errorf("%s: Model is required", opts.name)
@@ -131,34 +133,21 @@ func NewClient(model Model, options ...ClientOption) (*Client, error) {
 	}
 	sdk := openai.NewClient(reqOpts...)
 
-	return &Client{
+	raw := &Client{
 		Name:                   opts.name,
 		Client:                 &sdk,
 		Model:                  opts.model,
-		RetryRateLimit:         opts.retryRateLimit,
+		RetryBackoff:           opts.retryBackoff,
 		UseMaxCompletionTokens: opts.useMaxCompletionTokens,
-		BaseBackoff:            opts.baseBackoff,
-		MaxBackoff:             opts.maxBackoff,
-	}, nil
-}
-
-// backoff sleeps before retry attempt+1 using the client's backoff bounds.
-func (c *Client) backoff(ctx context.Context, attempt int) error {
-	base, maxB := c.BaseBackoff, c.MaxBackoff
-	if base == 0 {
-		base = compatBaseBackoff
 	}
-	if maxB == 0 {
-		maxB = compatMaxBackoff
+	var llm common.LLM = raw
+	if opts.rateLimit != nil {
+		llm = ratelimit.Wrap(llm, ratelimit.NewTokenBucket(*opts.rateLimit), ratelimit.CostByTokenCount)
 	}
-	return rateLimitBackoff(ctx, c.Name, attempt, base, maxB)
-}
-
-func (c *Client) maxAttempts() int {
-	if c.RetryRateLimit {
-		return compatMaxRetries
+	if opts.maxConcurrency > 0 {
+		llm = ratelimit.Wrap(llm, ratelimit.NewSemaphore(opts.maxConcurrency), ratelimit.CostPerRequest)
 	}
-	return 1
+	return llm, nil
 }
 
 // apiError wraps an SDK or transport error into *common.APIError so callers
@@ -195,7 +184,7 @@ func (c *Client) send(ctx context.Context, req common.CompletionRequest) (common
 		return common.CompletionResponse{}, err
 	}
 
-	return retryOnRateLimit(ctx, c.Name, c.maxAttempts(), c.backoff, func() (common.CompletionResponse, error) {
+	return ratelimit.RetryOnRateLimit(ctx, c.Name, c.RetryBackoff, func() (common.CompletionResponse, error) {
 		res, err := c.Client.Chat.Completions.New(ctx, params)
 		if err != nil {
 			return common.CompletionResponse{}, fmt.Errorf("%s send message: %w", c.Name, c.apiError(err))
@@ -219,21 +208,16 @@ func (c *Client) SendStreamingMessage(ctx context.Context, req common.Completion
 		IncludeUsage: param.NewOpt(true),
 	}
 
-	attempts := c.maxAttempts()
-	for attempt := range attempts {
+	err = ratelimit.RetryStreaming(ctx, c.Name, c.RetryBackoff, func() (bool, error) {
 		emitted, err := c.streamOnce(ctx, params, events)
-		if err == nil {
-			return nil
+		if err != nil {
+			return emitted, c.apiError(err)
 		}
-		if !emitted && isRateLimitError(err) && attempt < attempts-1 {
-			if backoffErr := c.backoff(ctx, attempt); backoffErr != nil {
-				return backoffErr
-			}
-			continue
-		}
-		wrapped := c.apiError(err)
-		events <- common.StreamEvent{Type: common.StreamEventError, Err: wrapped}
-		return fmt.Errorf("%s streaming: %w", c.Name, wrapped)
+		return emitted, nil
+	})
+	if err != nil {
+		events <- common.StreamEvent{Type: common.StreamEventError, Err: err}
+		return fmt.Errorf("%s streaming: %w", c.Name, err)
 	}
 	return nil
 }
