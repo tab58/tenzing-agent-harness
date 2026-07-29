@@ -49,9 +49,11 @@ func NewTokenBucket(cfg TokenBucketConfig) *TokenBucket {
 }
 
 // Acquire blocks until cost tokens are available in the bucket or ctx is
-// cancelled. If a concurrency semaphore is configured, it is acquired first
-// (one slot per call) and released only when Acquire returns an error —
-// on success the caller must call Release when the work is done.
+// cancelled. Costs above the burst capacity are clamped to it — an oversized
+// request drains the full bucket instead of waiting forever for a level the
+// bucket can never reach. If a concurrency semaphore is configured, it is
+// acquired first (one slot per call) and released only when Acquire returns
+// an error — on success the caller must call Release when the work is done.
 func (tb *TokenBucket) Acquire(ctx context.Context, cost int64) error {
 	if tb.sem != nil {
 		if err := tb.sem.Acquire(ctx, 1); err != nil {
@@ -59,6 +61,7 @@ func (tb *TokenBucket) Acquire(ctx context.Context, cost int64) error {
 		}
 	}
 
+	fcost := min(float64(cost), tb.burstSize)
 	for {
 		if err := ctx.Err(); err != nil {
 			if tb.sem != nil {
@@ -70,7 +73,6 @@ func (tb *TokenBucket) Acquire(ctx context.Context, cost int64) error {
 		tb.mu.Lock()
 		tb.refill()
 
-		fcost := float64(cost)
 		if tb.tokens >= fcost {
 			tb.tokens -= fcost
 			tb.mu.Unlock()

@@ -181,10 +181,7 @@ func TestOpenAICompat_RateLimitAcquireRelease(t *testing.T) {
 
 	limited, err := NewClient(common.ModelDefinition{Name: "test-model"},
 		WithName("test"), WithAPIKey("key"), WithBaseURL(srv.URL),
-		WithRateLimit(ratelimit.TokenBucketConfig{
-			Rate:      100_000,
-			BurstSize: 100_000,
-		}),
+		WithRateLimit(100_000, 100_000),
 		WithMaxConcurrency(1),
 	)
 	if err != nil {

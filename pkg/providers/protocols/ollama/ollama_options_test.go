@@ -40,10 +40,9 @@ func TestOllamaOptions_BaseURL(t *testing.T) {
 		want string
 	}{
 		{"defaults to Ollama Cloud", nil, "https://ollama.com"},
-		{"WithLocalURL uses local server", []ClientOption{WithLocalURL()}, "http://localhost:11434"},
 		{"WithBaseURL overrides", []ClientOption{WithBaseURL("https://example.test")}, "https://example.test"},
+		{"WithBaseURL local server", []ClientOption{WithBaseURL("http://localhost:11434")}, "http://localhost:11434"},
 		{"WithBaseURL empty string keeps default", []ClientOption{WithBaseURL("")}, "https://ollama.com"},
-		{"last option wins", []ClientOption{WithBaseURL("https://example.test"), WithLocalURL()}, "http://localhost:11434"},
 	}
 
 	for _, tt := range tests {
@@ -60,6 +59,17 @@ func TestOllama_ConcurrencyLimitWrapsClient(t *testing.T) {
 	client := mustNewClient(t, WithMaxConcurrency(2))
 	if _, ok := client.(*Client); ok {
 		t.Error("WithMaxConcurrency should wrap the raw client in a limiter")
+	}
+}
+
+func TestOllama_RateLimitOptions(t *testing.T) {
+	client := mustNewClient(t, WithRateLimit(100, 1000))
+	if _, ok := client.(*Client); ok {
+		t.Error("WithRateLimit should wrap the raw client in a limiter")
+	}
+
+	if _, err := NewClient(testModel, WithRateLimit(100, 0)); err == nil {
+		t.Error("WithRateLimit without burst size: want error, got nil")
 	}
 }
 

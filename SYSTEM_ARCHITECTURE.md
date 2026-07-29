@@ -896,7 +896,7 @@ Anthropic streaming reconstructs tool call JSON from partial `input_json_delta` 
 
 ### Rate Limiting
 
-**Client-side limits** — every protocol's `NewClient` takes two independent options: `WithRateLimit(ratelimit.TokenBucketConfig{Rate, BurstSize, ...})` (API token bucket, costed by input token count; providers without token counting charge one unit per request) and `WithMaxConcurrency(n)` (semaphore on in-flight requests). Both off by default; wrapping happens inside `NewClient`.
+**Client-side limits** — every protocol's `NewClient` takes two options: `WithRateLimit(rate, burstSize)` (API token bucket, costed by input token count; providers without token counting charge one unit per request; setting only one of rate/burst is a `NewClient` error) and `WithMaxConcurrency(n)` (in-flight bound). Combined, the concurrency bound lives inside the token bucket; alone, `WithMaxConcurrency` is a pure semaphore. Both off by default; wrapping happens inside `NewClient`.
 
 **Retry** (all protocols, on by default) — exponential backoff on HTTP 429 with the `NewDefaultBackoff` values: 2s base, 60s max, 50% jitter, 5 attempts. `WithRetryBackoff(ratelimit.RetryBackoff{MaxRetries, BaseBackoff, MaxBackoff, BackoffJitter})` overrides the values; zero fields keep their defaults. Streaming retries only if no events emitted yet. Shared helpers live in `protocols/ratelimit` (`RetryOnRateLimit`, `RetryStreaming`).
 

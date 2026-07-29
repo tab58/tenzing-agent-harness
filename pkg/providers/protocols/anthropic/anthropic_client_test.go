@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/tab58/tenzing-agent-harness/pkg/common"
-	"github.com/tab58/tenzing-agent-harness/pkg/providers/protocols/ratelimit"
 
 	anthropicSDK "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -374,15 +373,16 @@ func TestAnthropic_RateLimitOptIn(t *testing.T) {
 		t.Error("default client should be the raw unlimited client")
 	}
 
-	limited, err := NewClient(testModel, WithAPIKey("test"), WithRateLimit(ratelimit.TokenBucketConfig{
-		Rate:           10_000.0 / 60.0,
-		BurstSize:      10_000,
-		MaxConcurrency: 10,
-	}))
+	limited, err := NewClient(testModel, WithAPIKey("test"),
+		WithRateLimit(10_000.0/60.0, 10_000), WithMaxConcurrency(10))
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
 	if _, ok := limited.(*Client); ok {
 		t.Error("WithRateLimit should wrap the raw client in a limiter")
+	}
+
+	if _, err := NewClient(testModel, WithAPIKey("test"), WithRateLimit(100, 0)); err == nil {
+		t.Error("WithRateLimit without burst size: want error, got nil")
 	}
 }

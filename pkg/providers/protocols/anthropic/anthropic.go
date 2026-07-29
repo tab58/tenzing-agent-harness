@@ -55,10 +55,10 @@ type clientOptions struct {
 	// retryBackoff configures client-side 429 retries; defaults to
 	// ratelimit.NewDefaultBackoff.
 	retryBackoff *ratelimit.RetryBackoff
-	// rateLimit enables the client-side limiter; nil means unlimited.
+	// rateLimit configures the client-side limiter: Rate+BurstSize enable the
+	// token bucket, MaxConcurrency bounds in-flight requests. All zero means
+	// unlimited.
 	rateLimit *ratelimit.TokenBucketConfig
-	// maxConcurrency bounds concurrent requests; 0 means unlimited.
-	maxConcurrency int
 }
 
 func loadClientOptions(model Model, opts []ClientOption) *clientOptions {
@@ -66,6 +66,11 @@ func loadClientOptions(model Model, opts []ClientOption) *clientOptions {
 	o := &clientOptions{
 		model:        model,
 		retryBackoff: &backoff,
+		rateLimit: &ratelimit.TokenBucketConfig{
+			Rate:           0,
+			BurstSize:      0,
+			MaxConcurrency: 0,
+		},
 	}
 	for _, opt := range opts {
 		opt(o)
@@ -92,17 +97,19 @@ func WithRetryBackoff(cfg ratelimit.RetryBackoff) ClientOption {
 
 // WithRateLimit enables a client-side token-bucket rate limiter costed by
 // input token count. Without it the client is unlimited.
-func WithRateLimit(cfg ratelimit.TokenBucketConfig) ClientOption {
+func WithRateLimit(rate float64, burstSize int64) ClientOption {
 	return func(o *clientOptions) {
-		o.rateLimit = &cfg
+		o.rateLimit.Rate = rate
+		o.rateLimit.BurstSize = burstSize
 	}
 }
 
 // WithMaxConcurrency bounds concurrent requests. Values <= 0 remove the
-// bound (the default).
+// bound (the default). Combined with WithRateLimit the bound lives inside
+// the token bucket; alone it is a pure semaphore.
 func WithMaxConcurrency(limit int) ClientOption {
 	return func(o *clientOptions) {
-		o.maxConcurrency = max(limit, 0)
+		o.rateLimit.MaxConcurrency = int64(max(limit, 0))
 	}
 }
 
@@ -126,11 +133,17 @@ func NewClient(model Model, options ...ClientOption) (common.LLM, error) {
 		retryBackoff: opts.retryBackoff,
 	}
 	var llm common.LLM = raw
-	if opts.rateLimit != nil {
+	isRateDefined := opts.rateLimit.Rate > 0
+	isBurstDefined := opts.rateLimit.BurstSize > 0
+	switch {
+	case isRateDefined && isBurstDefined:
+		// The bucket's MaxConcurrency field doubles as the in-flight bound,
+		// so no separate semaphore wrap is needed.
 		llm = ratelimit.Wrap(llm, ratelimit.NewTokenBucket(*opts.rateLimit), ratelimit.CostByTokenCount)
-	}
-	if opts.maxConcurrency > 0 {
-		llm = ratelimit.Wrap(llm, ratelimit.NewSemaphore(opts.maxConcurrency), ratelimit.CostPerRequest)
+	case isRateDefined || isBurstDefined:
+		return nil, errors.New("anthropic: rate limit requires positive rate and burst size")
+	case opts.rateLimit.MaxConcurrency > 0:
+		llm = ratelimit.Wrap(llm, ratelimit.NewSemaphore(int(opts.rateLimit.MaxConcurrency)), ratelimit.CostPerRequest)
 	}
 	return llm, nil
 }

@@ -55,6 +55,24 @@ func TestTokenBucket_AcquireBasic(t *testing.T) {
 	}
 }
 
+// A cost above the burst capacity is clamped to it: the bucket can never
+// hold more than BurstSize tokens, so without the clamp the acquire would
+// spin until ctx death.
+func TestTokenBucket_CostAboveBurstIsClamped(t *testing.T) {
+	bucket := NewTokenBucket(TokenBucketConfig{
+		Rate:      100,
+		BurstSize: 10,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// The bucket starts full at 10 tokens; a cost of 1000 must still succeed.
+	if err := bucket.Acquire(ctx, 1000); err != nil {
+		t.Fatalf("Acquire with cost above burst: %v", err)
+	}
+}
+
 func TestTokenBucket_BurstCapacity(t *testing.T) {
 	bucket := NewTokenBucket(TokenBucketConfig{
 		Rate:      100, // 100 tokens/sec
