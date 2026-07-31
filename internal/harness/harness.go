@@ -358,8 +358,7 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 	})
 
 	// create agent runner
-	mainAgentRunner, err := runner.NewAgentRunner(
-		mainAgent,
+	runnerOpts := []runner.AgentRunnerOption{
 		runner.WithID(mainRunnerID),
 		runner.WithToolRegistry(toolRegistry),
 		runner.WithToolPort(composite),
@@ -370,7 +369,11 @@ func New(mainLLM common.LLM, opts ...HarnessOption) (*Harness, error) {
 		runner.WithSystemPrompt(mainSystemPrompt),
 		runner.WithExtensions(allExts),
 		runner.WithApprovalTimeout(o.approvalTimeout),
-	)
+	}
+	if o.dangerouslySkipPermissions {
+		runnerOpts = append(runnerOpts, runner.WithSkipPermissions())
+	}
+	mainAgentRunner, err := runner.NewAgentRunner(mainAgent, runnerOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("unable to initialize runner: %w", err)
 	}

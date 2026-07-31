@@ -67,6 +67,10 @@ type LoopConfig struct {
 	// ApprovalRequestedEvent response. 0 = deny immediately (safe for
 	// unattended drivers with nobody to answer).
 	ApprovalTimeout time.Duration
+	// SkipPermissions auto-approves every AskUser decision — no
+	// ApprovalRequestedEvent is emitted and ApprovalTimeout is irrelevant.
+	// Deny decisions still deny. For sandboxed/unattended drivers only.
+	SkipPermissions bool
 }
 
 // Loop is the invariant agent reasoning-tool execution loop. It owns the FSM,
@@ -81,6 +85,7 @@ type Loop struct {
 	sysPrompt       string
 	fsm             *LoopFSM
 	approvalTimeout time.Duration
+	skipPermissions bool
 	steerCh         chan string
 }
 
@@ -114,6 +119,7 @@ func NewLoop(cfg LoopConfig) (*Loop, error) {
 		sysPrompt:       cfg.SystemPrompt,
 		fsm:             cfg.FSM,
 		approvalTimeout: cfg.ApprovalTimeout,
+		skipPermissions: cfg.SkipPermissions,
 		steerCh:         make(chan string, steeringBufferSize),
 	}, nil
 }
@@ -499,7 +505,14 @@ func (l *Loop) run(ctx context.Context, input string, appendInput func(context.C
 			hookErr := l.extensions.RunToolCall(ctx, tcc)
 			bc := batchCall{call: *tcc.Call, decision: tcc.Decision, reason: tcc.Reason, hookErr: hookErr}
 			if hookErr == nil && tcc.Decision == AskUser {
-				bc.approval = l.requestApproval(bc.call, bc.reason)
+				if l.skipPermissions {
+					// Dangerously-skip-permissions mode: auto-approve
+					// without emitting an approval request. Deny still
+					// denies.
+					bc.decision = Allow
+				} else {
+					bc.approval = l.requestApproval(bc.call, bc.reason)
+				}
 			}
 			pending[i] = bc
 		}

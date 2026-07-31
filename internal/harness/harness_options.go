@@ -85,6 +85,10 @@ type harnessOptions struct {
 	// entirely (explicit opt-out for headless/trusted drivers).
 	permissionsDisabled bool
 
+	// dangerouslySkipPermissions auto-approves every AskUser decision in the
+	// main loop instead of emitting an approval request.
+	dangerouslySkipPermissions bool
+
 	// approvalTimeout bounds how long an AskUser tool call waits for an
 	// approval response before being denied.
 	approvalTimeout time.Duration
@@ -283,6 +287,23 @@ func WithPermissionPolicy(p permissions.Policy) HarnessOption {
 // trusted drivers.
 func WithPermissionsDisabled() HarnessOption {
 	return func(o *harnessOptions) { o.permissionsDisabled = true }
+}
+
+// WithDangerouslySkipPermissions auto-approves every AskUser escalation in
+// the main loop — no approval request is emitted and nothing blocks waiting
+// for an answer. For sandboxed environments (Docker containers, CI
+// pipelines) where no human can respond to approval prompts.
+//
+// Difference from WithPermissionsDisabled: that option removes the
+// permissions extension itself, so the default policy never escalates — but
+// any other hook (a caller-supplied extension via WithExtension) can still
+// escalate to AskUser, and unattended those escalations are denied. This
+// option instead leaves every hook in place and flips the outcome: whatever
+// escalates to AskUser is approved. Deny decisions (policy denylist,
+// read-only mode, tool-call gates) still deny — this skips the asking, not
+// the blocking. The two compose independently.
+func WithDangerouslySkipPermissions() HarnessOption {
+	return func(o *harnessOptions) { o.dangerouslySkipPermissions = true }
 }
 
 // WithApprovalTimeout bounds how long an AskUser tool call waits for an

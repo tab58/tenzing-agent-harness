@@ -11,7 +11,7 @@ import (
 
 // Entry is one buffered message on a channel.
 type Entry struct {
-	Seq     uint64    // per-channel monotonic
+	Seq     uint64 // per-channel monotonic
 	Time    time.Time
 	Text    string
 	IsError bool // channel error_pattern matched

@@ -649,6 +649,51 @@ func TestRunTurnAskUserZeroTimeoutDeniesImmediately(t *testing.T) {
 	}
 }
 
+func TestRunTurnSkipPermissionsAutoApproves(t *testing.T) {
+	emitter := &respondingEmitter{approve: nil} // nobody to answer
+	model := &fakeModel{steps: []ReasoningResult{
+		toolCallResult(ToolCall{ID: "tc1", Name: "bash", Input: `{"cmd":"ls"}`}),
+		{FinalAnswer: "after approval"},
+	}}
+	tools := newFakeTools(map[string]ToolResult{"bash": {Output: "files"}})
+	l := newTestLoop(t, model, tools, newFakeContext(), func(cfg *LoopConfig) {
+		cfg.Emitter = emitter
+		cfg.Extensions = NewExtensions(askExtension{})
+		cfg.SkipPermissions = true
+	})
+
+	if _, err := l.RunTurn(context.Background(), "run it"); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(tools.executed()); got != 1 {
+		t.Fatalf("skip-permissions AskUser must auto-approve and execute, got %d", got)
+	}
+	for _, et := range emitter.eventTypes() {
+		if et == EventApprovalRequested {
+			t.Error("skip-permissions must not emit an approval request")
+		}
+	}
+}
+
+func TestRunTurnSkipPermissionsDoesNotOverrideDeny(t *testing.T) {
+	model := &fakeModel{steps: []ReasoningResult{
+		toolCallResult(ToolCall{ID: "tc1", Name: "bash", Input: `{"cmd":"ls"}`}),
+		{FinalAnswer: "done"},
+	}}
+	tools := newFakeTools(map[string]ToolResult{"bash": {Output: "files"}})
+	l := newTestLoop(t, model, tools, newFakeContext(), func(cfg *LoopConfig) {
+		cfg.Extensions = NewExtensions(denyExtension{})
+		cfg.SkipPermissions = true
+	})
+
+	if _, err := l.RunTurn(context.Background(), "run it"); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(tools.executed()); got != 0 {
+		t.Fatalf("Deny must still deny under skip-permissions, got %d executions", got)
+	}
+}
+
 // usageCapturingExt records the TurnContext usage fields per iteration.
 type usageCapturingExt struct {
 	mu   sync.Mutex

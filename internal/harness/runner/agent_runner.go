@@ -35,6 +35,7 @@ type agentRunnerOptions struct {
 	emitter         core.Emitter
 	extensions      *core.Extensions
 	approvalTimeout time.Duration
+	skipPermissions bool
 }
 
 type AgentRunnerOption func(*agentRunnerOptions)
@@ -114,6 +115,12 @@ func WithApprovalTimeout(d time.Duration) AgentRunnerOption {
 	return func(o *agentRunnerOptions) { o.approvalTimeout = d }
 }
 
+// WithSkipPermissions auto-approves every AskUser tool call instead of
+// emitting an ApprovalRequestedEvent. Deny decisions still deny.
+func WithSkipPermissions() AgentRunnerOption {
+	return func(o *agentRunnerOptions) { o.skipPermissions = true }
+}
+
 // NewAgentRunner creates a new AgentRunner. It performs one-time wiring
 // (tool definitions, skill map, stream callbacks on the Agent) and builds
 // a core.Loop for RunLoop to delegate to.
@@ -169,6 +176,7 @@ func NewAgentRunner(agent core.Agent, opts ...AgentRunnerOption) (*AgentRunner, 
 		Extensions:      o.extensions,
 		SystemPrompt:    o.systemPrompt,
 		ApprovalTimeout: o.approvalTimeout,
+		SkipPermissions: o.skipPermissions,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create loop: %w", err)

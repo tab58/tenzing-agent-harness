@@ -34,8 +34,8 @@ type Preview struct {
 // harmless for LLM previews, revisit if previews must be valid UTF-8.
 func NewPreview(slot, key, value string, headChars, tailChars int) Preview {
 	p := Preview{
-		Slot:  slot,
-		Key:   key,
+		Slot: slot,
+		Key:  key,
 		// rune count, not len(value): agents measure this value with
 		// python len(), which counts code points — the two must agree.
 		Chars: utf8.RuneCountInString(value),

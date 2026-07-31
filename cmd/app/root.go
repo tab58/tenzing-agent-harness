@@ -120,6 +120,7 @@ func newRootCmd() *cobra.Command {
 	fl.IntVar(&cfg.SubagentDepth, "subagent-depth", 1, "subagent nesting depth, 0 disables spawn_agent")
 	fl.DurationVar(&cfg.ApprovalTimeout, "approval-timeout", 0, "tool-approval wait (serve default 120s; print default 0 = deny)")
 	fl.BoolVar(&cfg.NoPermissions, "no-permissions", false, "disable permission gating entirely")
+	fl.BoolVar(&cfg.SkipPermissions, "dangerously-skip-permissions", false, "auto-approve all approval prompts (sandboxes/pipelines)")
 	fl.BoolVar(&cfg.ReadOnly, "read-only", false, "deny tools not marked read-only, no approval prompts")
 	fl.BoolVar(&cfg.Thinking, "thinking", false, "model reasoning on or off (default: provider default)")
 	fl.BoolVar(&cfg.NoSession, "no-session", false, "disable session persistence for this run")

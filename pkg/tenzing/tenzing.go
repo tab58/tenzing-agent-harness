@@ -36,34 +36,141 @@ var New = harness.New
 
 // Harness options.
 var (
-	WithAgentBuilder            = harness.WithAgentBuilder
-	WithSubagentLLM             = harness.WithSubagentLLM
-	WithSubagentDepth           = harness.WithSubagentDepth
-	WithSubagentMaxIterations   = harness.WithSubagentMaxIterations
-	WithBlackboardLLM           = harness.WithBlackboardLLM
-	WithAdvisorLLM              = harness.WithAdvisorLLM
-	WithDisabledTool            = harness.WithDisabledTool
-	WithSkillsDir               = harness.WithSkillsDir
-	WithTool                    = harness.WithTool
-	WithHooks                   = harness.WithHooks
-	WithSystemPrompt            = harness.WithSystemPrompt
-	WithConversationID          = harness.WithConversationID
-	WithEventBus                = harness.WithEventBus
-	WithTextDeltaHandler        = harness.WithTextDeltaHandler
-	WithThinkingDeltaHandler    = harness.WithThinkingDeltaHandler
-	WithExtension               = harness.WithExtension
-	WithPermissionPolicy        = harness.WithPermissionPolicy
-	WithPermissionsDisabled     = harness.WithPermissionsDisabled
-	WithReadOnly                = harness.WithReadOnly
-	WithApprovalTimeout         = harness.WithApprovalTimeout
-	WithSessionDir              = harness.WithSessionDir
-	WithSessionDisabled         = harness.WithSessionDisabled
-	WithPromptTemplatesDir      = harness.WithPromptTemplatesDir
-	WithContextFilesDisabled    = harness.WithContextFilesDisabled
-	WithToolCallGate            = harness.WithToolCallGate
-	WithThinking                = harness.WithThinking
-	WithLLMRetry                = harness.WithLLMRetry
-	WithCompressionThreshold    = harness.WithCompressionThreshold
+	// WithAgentBuilder overrides how the Agent ("brain") is built from an
+	// LLM client and system prompt; applies to the main agent and subagents.
+	WithAgentBuilder = harness.WithAgentBuilder
+
+	// WithSubagentLLM sets the client used for spawned subagents. Unset
+	// falls back to the main LLM.
+	WithSubagentLLM = harness.WithSubagentLLM
+
+	// WithSubagentDepth sets the maximum subagent nesting depth. 0 disables
+	// the spawn_agent tool entirely.
+	WithSubagentDepth = harness.WithSubagentDepth
+
+	// WithSubagentMaxIterations caps a spawned subagent's loop iterations.
+	WithSubagentMaxIterations = harness.WithSubagentMaxIterations
+
+	// WithBlackboardLLM sets the client used for llm_query/llm_batch calls
+	// inside the shared blackboard REPL; unset falls back to the main LLM.
+	// These are stateless one-shot completions (no tools, no agent loop) —
+	// not subagents — so a small/fast model is often the right choice.
+	WithBlackboardLLM = harness.WithBlackboardLLM
+
+	// WithAdvisorLLM enables the advisor tool using the given client.
+	// Without this option the advisor tool is not registered.
+	WithAdvisorLLM = harness.WithAdvisorLLM
+
+	// WithDisabledTool removes a tool by name (case-insensitive) after all
+	// registration, including built-ins like "bash" and "edit".
+	WithDisabledTool = harness.WithDisabledTool
+
+	// WithSkillsDir registers an additional skills directory. Nonexistent
+	// or unreadable directories are skipped at discovery time.
+	WithSkillsDir = harness.WithSkillsDir
+
+	// WithTool registers a custom tool definition; first registration of a
+	// name wins.
+	WithTool = harness.WithTool
+
+	// WithHooks subscribes typed event callbacks to the harness event bus.
+	WithHooks = harness.WithHooks
+
+	// WithSystemPrompt replaces the default main-agent system prompt.
+	WithSystemPrompt = harness.WithSystemPrompt
+
+	// WithConversationID resumes a prior conversation: the main agent runs
+	// under this ID and its latest memory file is loaded as initial
+	// context. The caller owns ID uniqueness across live processes.
+	WithConversationID = harness.WithConversationID
+
+	// WithEventBus replaces the harness's event bus with a caller-owned one.
+	WithEventBus = harness.WithEventBus
+
+	// WithTextDeltaHandler registers a callback for incremental text
+	// output, tagged with the emitting runner's ID.
+	WithTextDeltaHandler = harness.WithTextDeltaHandler
+
+	// WithThinkingDeltaHandler registers a callback for incremental
+	// thinking output, tagged with the emitting runner's ID.
+	WithThinkingDeltaHandler = harness.WithThinkingDeltaHandler
+
+	// WithExtension registers an additional core extension. Order of
+	// WithExtension calls is hook execution order.
+	WithExtension = harness.WithExtension
+
+	// WithPermissionPolicy replaces the default tool permission policy
+	// (DefaultPermissionPolicy: ask for code-executing/file-writing tools,
+	// allow the rest).
+	WithPermissionPolicy = harness.WithPermissionPolicy
+
+	// WithPermissionsDisabled skips the permissions extension entirely —
+	// every tool call runs unquestioned. Explicit opt-out for headless or
+	// fully trusted drivers.
+	WithPermissionsDisabled = harness.WithPermissionsDisabled
+
+	// WithDangerouslySkipPermissions auto-approves every AskUser escalation
+	// in the main loop — no approval request is emitted and nothing blocks
+	// waiting for an answer. For sandboxed environments (Docker containers,
+	// CI pipelines) where no human can respond to approval prompts.
+	//
+	// Difference from WithPermissionsDisabled: that option removes the
+	// permissions extension itself, so the default policy never escalates —
+	// but any other hook (a caller-supplied extension via WithExtension)
+	// can still escalate to AskUser, and unattended those escalations are
+	// denied. This option instead leaves every hook in place and flips the
+	// outcome: whatever escalates to AskUser is approved. Deny decisions
+	// (policy denylist, read-only mode, tool-call gates) still deny — this
+	// skips the asking, not the blocking. The two compose independently.
+	WithDangerouslySkipPermissions = harness.WithDangerouslySkipPermissions
+
+	// WithReadOnly denies every tool call whose tool is not marked
+	// read-only — main agent and all subagents. Replaces the permissions
+	// extension; denials are instant errors, never approval prompts.
+	WithReadOnly = harness.WithReadOnly
+
+	// WithApprovalTimeout bounds how long an AskUser tool call waits for an
+	// approval response before being denied. Default 120s; 0 denies
+	// immediately (unattended drivers with nobody to answer).
+	WithApprovalTimeout = harness.WithApprovalTimeout
+
+	// WithSessionDir relocates message-level session persistence (default
+	// <UserConfigDir>/tenzing/sessions).
+	WithSessionDir = harness.WithSessionDir
+
+	// WithSessionDisabled turns off message-level session persistence; the
+	// compression-summary memory files remain the only resume mechanism.
+	WithSessionDisabled = harness.WithSessionDisabled
+
+	// WithPromptTemplatesDir registers an additional directory of *.md
+	// slash-command templates, invoked as "/name args..." in a RunTurn
+	// query.
+	WithPromptTemplatesDir = harness.WithPromptTemplatesDir
+
+	// WithContextFilesDisabled turns off automatic AGENTS.md loading into
+	// the main system prompt.
+	WithContextFilesDisabled = harness.WithContextFilesDisabled
+
+	// WithToolCallGate installs a gate consulted before every tool call —
+	// the main agent's and all subagents'. Returning a non-nil error blocks
+	// the call; the error string is fed back to the model as the tool
+	// result so it can adapt.
+	WithToolCallGate = harness.WithToolCallGate
+
+	// WithThinking toggles model reasoning for the main agent's requests.
+	// Without this option the provider default applies.
+	WithThinking = harness.WithThinking
+
+	// WithLLMRetry tunes the default agent's transient-LLM-error retry
+	// policy: max attempts (negative disables) and the base backoff delay.
+	WithLLMRetry = harness.WithLLMRetry
+
+	// WithCompressionThreshold overrides the auto-compress trigger point as
+	// a fraction of the model's context window (default 0.75).
+	WithCompressionThreshold = harness.WithCompressionThreshold
+
+	// WithCompressionKeepMessages overrides how many recent messages
+	// survive auto-compression uncompressed (default 6).
 	WithCompressionKeepMessages = harness.WithCompressionKeepMessages
 )
 
@@ -83,16 +190,23 @@ var ErrVisionUnsupported = harness.ErrVisionUnsupported
 // for approval; opt out with WithPermissionsDisabled).
 type PermissionPolicy = permissions.Policy
 
+// DefaultPermissionPolicy returns the built-in policy: code-executing and
+// file-writing tools escalate to AskUser, everything else is allowed.
 var DefaultPermissionPolicy = permissions.DefaultPolicy
 
 // Budget limits for WithBudgets; zero fields are unlimited.
 type BudgetLimits = budgets.Limits
 
+// WithBudgets registers the budgets extension for the main loop: the turn
+// terminates gracefully when any limit is exceeded. Zero fields are
+// unlimited.
 var WithBudgets = harness.WithBudgets
 
 // MCP server config for WithMCPServer (stdio transport).
 type MCPServerConfig = mcp.ServerConfig
 
+// WithMCPServer mounts an external MCP server (stdio transport) as a
+// dynamic tool source.
 var WithMCPServer = harness.WithMCPServer
 
 // Extension system: implement Extension plus any of the capability hook
@@ -170,6 +284,7 @@ type (
 	Hooks    = eventbus.Hooks
 )
 
+// NewEventBus creates a standalone event bus for WithEventBus.
 var NewEventBus = eventbus.NewEventBus
 
 // Typed events delivered to Hooks callbacks and EventBus subscribers.

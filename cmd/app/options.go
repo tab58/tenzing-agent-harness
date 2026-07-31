@@ -39,6 +39,7 @@ type cliConfig struct {
 	ApprovalTimeout    time.Duration
 	ApprovalTimeoutSet bool
 	NoPermissions      bool
+	SkipPermissions    bool
 	ReadOnly           bool
 	Thinking           bool
 	ThinkingSet        bool
@@ -133,6 +134,9 @@ func harnessOptions(cfg *cliConfig) ([]harness.HarnessOption, error) {
 	}
 	if cfg.NoPermissions {
 		opts = append(opts, harness.WithPermissionsDisabled())
+	}
+	if cfg.SkipPermissions {
+		opts = append(opts, harness.WithDangerouslySkipPermissions())
 	}
 	if cfg.ReadOnly {
 		opts = append(opts, harness.WithReadOnly())
